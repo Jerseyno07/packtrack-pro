@@ -18,6 +18,8 @@ const multer = require('multer');
 const { parse: parseCsv } = require('csv-parse/sync');
 const XLSX = require('xlsx');
 const { z } = require('zod');
+const path = require('path');
+const { existsSync } = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const helmet = require('helmet');
@@ -632,6 +634,15 @@ app.get('/api/v1/materials', authenticate, asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────
 // Error handling
 // ─────────────────────────────────────────────────────────────────────────
+
+// Serve React frontend for all non-API routes (production)
+const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
+app.use(express.static(frontendDist));
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
+  const index = path.join(frontendDist, 'index.html');
+  existsSync(index) ? res.sendFile(index) : next();
+});
 
 app.use((req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: `No route for ${req.method} ${req.path}` } }));
 app.use((err, req, res, next) => {
