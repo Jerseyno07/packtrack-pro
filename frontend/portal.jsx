@@ -1,5 +1,7 @@
-import { useState, useMemo } from 'react';
-import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download } from 'lucide-react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X } from 'lucide-react';
+
+const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
 function downloadCSV(filename, rows) {
   const csv = rows.map((r) => r.map((v) => (String(v).includes(',') ? `"${v}"` : v)).join(',')).join('\n');
@@ -84,16 +86,22 @@ function StatCard({ icon: Icon, label, value, sub, tone }) {
 
 // ── LOGIN ───────────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState('pmstore@packtrack.local');
-  const [password, setPassword] = useState('demo1234');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   async function submit() {
     setError(''); setLoading(true);
     try {
-      const res = await MOCK_API.login(email, password);
-      onLogin(res.user);
+      const res = await fetch(`${BASE_URL}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Invalid email or password');
+      onLogin(data.token, data.user);
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
@@ -121,11 +129,6 @@ function LoginScreen({ onLogin }) {
           </button>
         </div>
 
-        <div className="mt-5 pt-4 border-t border-slate-100 text-xs text-slate-400 space-y-1">
-          <div className="font-medium text-slate-500">Demo logins:</div>
-          <div>pmstore@packtrack.local · ccexec@packtrack.local · admin@packtrack.local</div>
-          <div>password: demo1234</div>
-        </div>
       </div>
     </div>
   );
@@ -403,17 +406,330 @@ function DashboardSection() {
   );
 }
 
+// ── ADMIN PANEL ──────────────────────────────────────────────────────────────
+const TERMINAL_PO = ['CANCELLED', 'CLOSED', 'FORCE_COMPLETED'];
+const TERMINAL_ISSUE = ['CANCELLED', 'RECEIVED', 'FORCE_COMPLETED'];
+
+function AdminPanel({ token }) {
+  const [overview, setOverview] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const [tab, setTab] = useState('pos');
+
+  const [auditRows, setAuditRows] = useState([]);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditHasMore, setAuditHasMore] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const [reverseModal, setReverseModal] = useState(null); // { type, id, ref }
+  const [reverseReason, setReverseReason] = useState('');
+  const [reverseSubmitting, setReverseSubmitting] = useState(false);
+  const [reverseError, setReverseError] = useState('');
+
+  const hdrs = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  const fetchOverview = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/overview`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed to load overview');
+      setOverview(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  const fetchAuditLog = useCallback(async (page) => {
+    setAuditLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/audit-log?page=${page}&page_size=20`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed');
+      setAuditRows(data.data ?? []);
+      setAuditHasMore((data.data ?? []).length === 20);
+      setAuditPage(page);
+    } catch { /* silently fail — table stays empty */ }
+    finally { setAuditLoading(false); }
+  }, [token]);
+
+  useEffect(() => { fetchOverview(); }, [fetchOverview]);
+  useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
+
+  async function submitReverse() {
+    if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
+    setReverseSubmitting(true); setReverseError('');
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/${reverseModal.type}/${reverseModal.id}/cancel`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({ reason: reverseReason.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Cancel failed');
+      setReverseModal(null); setReverseReason('');
+      await fetchOverview();
+    } catch (e) {
+      setReverseError(e.message);
+    } finally {
+      setReverseSubmitting(false);
+    }
+  }
+
+  function openCancel(type, id, ref) {
+    setReverseModal({ type, id, ref });
+    setReverseReason(''); setReverseError('');
+  }
+
+  const TABS = [
+    { id: 'pos', label: 'Purchase Orders' },
+    { id: 'issues', label: 'Stock Issues' },
+    { id: 'stock', label: 'Current Stock' },
+    { id: 'audit', label: 'Audit Log' },
+  ];
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-24 text-slate-400 gap-2">
+      <RefreshCw size={18} className="animate-spin" /> Loading overview…
+    </div>
+  );
+
+  if (error) return (
+    <div className="max-w-xl">
+      <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-xl px-4 py-3">
+        <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+        <div className="flex-1">{error}</div>
+        <button onClick={fetchOverview} className="text-red-600 font-medium hover:underline">Retry</button>
+      </div>
+    </div>
+  );
+
+  const pos = overview?.purchase_orders ?? [];
+  const issues = overview?.stock_issues ?? [];
+  const stock = overview?.current_stock ?? [];
+  const lowStock = overview?.low_stock_alerts ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Admin Panel</h2>
+          <p className="text-sm text-slate-500">{pos.length} POs · {issues.length} issues · {lowStock.length} low-stock alerts</p>
+        </div>
+        <button onClick={fetchOverview} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700">
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </div>
+
+      <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit flex-wrap">
+        {TABS.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${tab === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'pos' && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr>
+                <th className="text-left px-4 py-2.5">PO No</th>
+                <th className="text-left px-4 py-2.5">Vendor</th>
+                <th className="text-left px-4 py-2.5">SKU</th>
+                <th className="text-right px-4 py-2.5">PO Qty</th>
+                <th className="text-right px-4 py-2.5">Remaining</th>
+                <th className="text-left px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pos.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No purchase orders</td></tr>}
+              {pos.map((po) => (
+                <tr key={po.id} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-3 font-medium text-slate-800">{po.po_no}</td>
+                  <td className="px-4 py-3 text-slate-600 max-w-[160px] truncate">{po.vendor_name}</td>
+                  <td className="px-4 py-3 text-slate-600">{po.material_code}</td>
+                  <td className="px-4 py-3 text-right text-slate-600">{po.po_qty}</td>
+                  <td className="px-4 py-3 text-right font-bold text-blue-600">{po.remaining_qty ?? (po.po_qty - po.received_qty_cache)}</td>
+                  <td className="px-4 py-3"><Badge tone={po.status === 'OPEN' ? 'blue' : po.status === 'CANCELLED' ? 'red' : po.status === 'CLOSED' ? 'green' : 'gray'}>{po.status.replace(/_/g, ' ')}</Badge></td>
+                  <td className="px-4 py-3 text-right">
+                    {!TERMINAL_PO.includes(po.status) && (
+                      <button onClick={() => openCancel('purchase-orders', po.id, po.po_no)}
+                        className="text-xs px-2 py-1 rounded-md bg-red-50 text-red-600 hover:bg-red-100 font-medium">Cancel</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'issues' && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr>
+                <th className="text-left px-4 py-2.5">Issue Ref</th>
+                <th className="text-left px-4 py-2.5">SKU</th>
+                <th className="text-left px-4 py-2.5">From → To</th>
+                <th className="text-right px-4 py-2.5">Issued Qty</th>
+                <th className="text-left px-4 py-2.5">Date</th>
+                <th className="text-left px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {issues.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No stock issues</td></tr>}
+              {issues.map((si) => (
+                <tr key={si.id} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-3 font-medium text-slate-800">{si.issue_ref}</td>
+                  <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
+                  <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
+                  <td className="px-4 py-3 text-right font-bold text-slate-800">{si.issued_qty}</td>
+                  <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
+                  <td className="px-4 py-3"><Badge tone={si.status === 'DISPATCHED' ? 'blue' : si.status === 'RECEIVED' ? 'green' : si.status === 'CANCELLED' ? 'red' : 'amber'}>{si.status.replace(/_/g, ' ')}</Badge></td>
+                  <td className="px-4 py-3 text-right">
+                    {!TERMINAL_ISSUE.includes(si.status) && (
+                      <button onClick={() => openCancel('stock-issues', si.id, si.issue_ref)}
+                        className="text-xs px-2 py-1 rounded-md bg-red-50 text-red-600 hover:bg-red-100 font-medium">Cancel</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'stock' && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm min-w-[500px]">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr>
+                <th className="text-left px-4 py-2.5">Warehouse</th>
+                <th className="text-left px-4 py-2.5">SKU</th>
+                <th className="text-left px-4 py-2.5">Material</th>
+                <th className="text-right px-4 py-2.5">On Hand</th>
+                <th className="text-right px-4 py-2.5">Avg Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stock.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No stock on record</td></tr>}
+              {stock.map((s, i) => {
+                const isLow = lowStock.some((l) => l.warehouse_id === s.warehouse_id && l.material_id === s.material_id);
+                return (
+                  <tr key={i} className={`border-t border-slate-100 ${isLow ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                    <td className="px-4 py-3 font-medium text-slate-800">{s.warehouse_name}</td>
+                    <td className="px-4 py-3 text-slate-600">{s.material_code}</td>
+                    <td className="px-4 py-3 text-slate-500">{s.material_name}</td>
+                    <td className={`px-4 py-3 text-right font-bold ${isLow ? 'text-red-600' : 'text-slate-800'}`}>{s.on_hand_qty}{isLow && ' ⚠'}</td>
+                    <td className="px-4 py-3 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'audit' && (
+        <div className="space-y-3">
+          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm min-w-[600px]">
+              <thead className="bg-slate-50 text-slate-500 text-xs">
+                <tr>
+                  <th className="text-left px-4 py-2.5">Time</th>
+                  <th className="text-left px-4 py-2.5">Action</th>
+                  <th className="text-left px-4 py-2.5">Entity</th>
+                  <th className="text-left px-4 py-2.5">Detail</th>
+                  <th className="text-left px-4 py-2.5">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditLoading && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
+                {!auditLoading && auditRows.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No audit entries</td></tr>}
+                {auditRows.map((r, i) => (
+                  <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-2.5 text-slate-400 text-xs whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-slate-700">{r.action}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-500">{r.entity_table} #{r.entity_id}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-500 max-w-[200px] truncate">{typeof r.detail === 'object' ? JSON.stringify(r.detail) : r.detail}</td>
+                    <td className="px-4 py-2.5"><Badge tone={r.source === 'reversal' ? 'amber' : 'gray'}>{r.source}</Badge></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-2">
+            <button disabled={auditPage <= 1 || auditLoading} onClick={() => fetchAuditLog(auditPage - 1)}
+              className="px-3 py-1.5 text-sm bg-white border border-slate-200 rounded-lg disabled:opacity-40">← Prev</button>
+            <span className="text-sm text-slate-500">Page {auditPage}</span>
+            <button disabled={!auditHasMore || auditLoading} onClick={() => fetchAuditLog(auditPage + 1)}
+              className="px-3 py-1.5 text-sm bg-white border border-slate-200 rounded-lg disabled:opacity-40">Next →</button>
+          </div>
+        </div>
+      )}
+
+      {reverseModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="font-bold text-slate-900">Cancel {reverseModal.type === 'purchase-orders' ? 'PO' : 'Issue'}</div>
+              <button onClick={() => setReverseModal(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+            </div>
+            <div className="text-sm text-slate-500">
+              You are about to cancel <span className="font-semibold text-slate-800">{reverseModal.ref}</span>. This action is logged and cannot be undone.
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Reason <span className="text-red-500">*</span></label>
+              <textarea rows={3} value={reverseReason} onChange={(e) => setReverseReason(e.target.value)}
+                placeholder="Explain why this is being cancelled…"
+                className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-none" />
+            </div>
+            {reverseError && (
+              <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{reverseError}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button onClick={() => setReverseModal(null)} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">
+                Back
+              </button>
+              <button onClick={submitReverse} disabled={reverseSubmitting}
+                className="flex-1 py-2.5 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 disabled:opacity-60 flex items-center justify-center gap-2">
+                {reverseSubmitting ? <><RefreshCw size={14} className="animate-spin" /> Cancelling…</> : 'Confirm Cancel'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── APP SHELL ────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
   const [section, setSection] = useState('dashboard');
 
-  if (!user) return <LoginScreen onLogin={(u) => { setUser(u); setSection(u.role === 'CC_EXEC' || u.role === 'FC_EXEC' ? 'indent' : 'dashboard'); }} />;
+  if (!user) return (
+    <LoginScreen onLogin={(t, u) => {
+      setToken(t); setUser(u);
+      setSection(['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP'].includes(u.role) ? 'indent' : u.role === 'ADMIN' ? 'admin' : 'dashboard');
+    }} />
+  );
 
   const NAV = [
     { id: 'dashboard', label: 'PM Store Dashboard', icon: TrendingUp, roles: ['PM_STORE_EXEC', 'ADMIN'] },
-    { id: 'indent', label: 'Upload Indent', icon: Box, roles: ['CC_EXEC', 'FC_EXEC', 'ADMIN'] },
+    { id: 'indent', label: 'Upload Indent', icon: Box, roles: ['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'] },
     { id: 'po', label: 'Upload Purchase Orders', icon: Truck, roles: ['PM_STORE_EXEC', 'ADMIN'] },
+    { id: 'admin', label: 'Admin Panel', icon: Shield, roles: ['ADMIN'] },
   ].filter((n) => n.roles.includes(user.role));
 
   return (
@@ -438,7 +754,7 @@ export default function App() {
               <div className="text-xs text-slate-400">{user.role.replace('_', ' ')}</div>
             </div>
           </div>
-          <button onClick={() => setUser(null)} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white">
+          <button onClick={() => { setUser(null); setToken(null); }} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white">
             <LogOut size={14} /> Sign Out
           </button>
         </div>
@@ -448,6 +764,7 @@ export default function App() {
         {section === 'dashboard' && <DashboardSection />}
         {section === 'indent' && <IndentUploadSection />}
         {section === 'po' && <POUploadSection />}
+        {section === 'admin' && <AdminPanel token={token} />}
       </div>
     </div>
   );
