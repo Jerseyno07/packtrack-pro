@@ -159,7 +159,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
     name: z.string().min(1),
     email: z.string().email(),
     password: z.string().min(8),
-    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC']),
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP']),
     warehouse_ids: z.array(z.number().int().positive()).optional().default([]),
   });
   const parsed = schema.safeParse(req.body);
@@ -220,7 +220,7 @@ const indentRowSchema = z.object({
   remarks: z.string().optional(),
 });
 
-app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'ADMIN'), upload.single('file'),
+app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), upload.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw new ApiError(400, 'FILE_REQUIRED', 'No file uploaded under field "file"');
     const indentDate = req.body.indent_date; // the date this whole batch is "for" — required per request
@@ -289,7 +289,7 @@ app.get('/api/v1/indents', authenticate, asyncHandler(async (req, res) => {
   if (status) { params.push(status); conditions.push(`il.status = $${params.length}`); }
   if (date_from) { params.push(date_from); conditions.push(`il.indent_date >= $${params.length}`); }
   if (date_to) { params.push(date_to); conditions.push(`il.indent_date <= $${params.length}`); }
-  if (['CC_EXEC', 'FC_EXEC'].includes(req.user.role)) {
+  if (['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP'].includes(req.user.role)) {
     params.push(req.user.warehouse_ids.length ? req.user.warehouse_ids : [-1]);
     conditions.push(`il.warehouse_id = ANY($${params.length})`);
   }
@@ -430,7 +430,7 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
     const poRes = await client.query('SELECT * FROM purchase_orders WHERE id = $1 FOR UPDATE', [d.po_id]);
     if (!poRes.rows.length) throw new ApiError(404, 'PO_NOT_FOUND', `PO ${d.po_id} not found`);
     const po = poRes.rows[0];
-    if (po.status === 'CLOSED' || po.status === 'CANCELLED') throw new ApiError(409, 'PO_NOT_OPEN', `PO ${po.po_no} is ${po.status}, cannot post GRN`);
+    if (['CLOSED', 'CANCELLED', 'FORCE_COMPLETED'].includes(po.status)) throw new ApiError(409, 'PO_NOT_OPEN', `PO ${po.po_no} is ${po.status}, cannot post GRN`);
 
     const remaining = Number(po.po_qty) - Number(po.received_qty_cache);
     if (d.grn_qty > remaining) throw new ApiError(422, 'GRN_EXCEEDS_PO', `GRN qty ${d.grn_qty} exceeds remaining PO qty ${remaining}`, { remaining });
@@ -463,6 +463,18 @@ const issueSchema = z.object({
   notes: z.string().optional(),
 });
 
+app.get('/api/v1/indent-lines/:id/issue-defaults', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const lineRes = await pool.query('SELECT * FROM indent_lines WHERE id = $1', [req.params.id]);
+  if (!lineRes.rows.length) throw new ApiError(404, 'NOT_FOUND', `Indent line ${req.params.id} not found`);
+  const line = lineRes.rows[0];
+  const expectedQty = Number(line.requested_qty) - Number(line.issued_qty);
+  const pmWhRes = await pool.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
+  const pmWhId = pmWhRes.rows[0]?.id;
+  const onHandQty = pmWhId ? await getOnHandQty(pool, pmWhId, line.material_id) : 0;
+  const suggestedActualQty = Math.min(expectedQty, onHandQty);
+  res.json({ expected_qty: expectedQty, on_hand_qty: onHandQty, suggested_actual_qty: suggestedActualQty });
+}));
+
 app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
   const parsed = issueSchema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid issue payload', parsed.error.issues);
@@ -474,7 +486,7 @@ app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADM
     const lineRes = await client.query('SELECT * FROM indent_lines WHERE id = $1 FOR UPDATE', [d.indent_line_id]);
     if (!lineRes.rows.length) throw new ApiError(404, 'INDENT_LINE_NOT_FOUND', `Indent line ${d.indent_line_id} not found`);
     const line = lineRes.rows[0];
-    if (line.status === 'CANCELLED') throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is cancelled`);
+    if (['CANCELLED', 'FORCE_COMPLETED'].includes(line.status)) throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is ${line.status}`);
 
     const remainingOnIndent = Number(line.requested_qty) - Number(line.issued_qty);
     if (d.issued_qty > remainingOnIndent) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${d.issued_qty} exceeds remaining indent qty ${remainingOnIndent}`, { remainingOnIndent });
@@ -491,11 +503,12 @@ app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADM
     );
     const unitCost = Number(costRes.rows[0].avg_cost || 0);
 
+    const expectedQty = remainingOnIndent;
     const issueRef = genRef('ISS');
     const issueIns = await client.query(
-      `INSERT INTO stock_issues (issue_ref, indent_line_id, from_warehouse_id, to_warehouse_id, material_id, issued_qty, unit_cost_snapshot, issue_date, dispatched_by_user_id, vehicle_no, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-      [issueRef, line.id, fromWhId, line.warehouse_id, line.material_id, d.issued_qty, unitCost, d.issue_date, req.user.id, d.vehicle_no || null, d.notes || null]
+      `INSERT INTO stock_issues (issue_ref, indent_line_id, from_warehouse_id, to_warehouse_id, material_id, issued_qty, expected_qty, unit_cost_snapshot, issue_date, dispatched_by_user_id, vehicle_no, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [issueRef, line.id, fromWhId, line.warehouse_id, line.material_id, d.issued_qty, expectedQty, unitCost, d.issue_date, req.user.id, d.vehicle_no || null, d.notes || null]
     );
     const issueId = issueIns.rows[0].id;
 
@@ -511,7 +524,7 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   const conditions = []; const params = [];
   if (to_warehouse_id) { params.push(to_warehouse_id); conditions.push(`si.to_warehouse_id = $${params.length}`); }
   if (status) { params.push(status); conditions.push(`si.status = $${params.length}`); }
-  if (['CC_EXEC', 'FC_EXEC'].includes(req.user.role)) {
+  if (['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP'].includes(req.user.role)) {
     params.push(req.user.warehouse_ids.length ? req.user.warehouse_ids : [-1]);
     conditions.push(`si.to_warehouse_id = ANY($${params.length})`);
   }
@@ -539,7 +552,17 @@ const receiptSchema = z.object({
   receipt_date: z.string(),
 });
 
-app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+app.get('/api/v1/stock-issues/:id/receipt-defaults', authenticate, asyncHandler(async (req, res) => {
+  const r = await pool.query('SELECT * FROM stock_issues WHERE id = $1', [req.params.id]);
+  if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Stock issue ${req.params.id} not found`);
+  const issue = r.rows[0];
+  const accountedRes = await pool.query(`SELECT COALESCE(SUM(received_qty+shortage_qty+damage_qty),0) AS total FROM stock_receipts WHERE stock_issue_id=$1`, [issue.id]);
+  const alreadyAccounted = Number(accountedRes.rows[0].total);
+  const expectedQty = Number(issue.issued_qty) - alreadyAccounted;
+  res.json({ expected_qty: expectedQty, suggested_received_qty: expectedQty });
+}));
+
+app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
   const parsed = receiptSchema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid receipt payload', parsed.error.issues);
   const d = parsed.data;
@@ -552,10 +575,10 @@ app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     if (!issueRes.rows.length) throw new ApiError(404, 'ISSUE_NOT_FOUND', `Stock issue ${d.stock_issue_id} not found`);
     const issue = issueRes.rows[0];
 
-    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.includes(issue.to_warehouse_id)) {
+    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.includes(Number(issue.to_warehouse_id))) {
       throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to the destination warehouse for this issue');
     }
-    if (issue.status === 'RECEIVED' || issue.status === 'CANCELLED') throw new ApiError(409, 'ISSUE_CLOSED', `Issue ${issue.issue_ref} is already ${issue.status}`);
+    if (['RECEIVED', 'CANCELLED', 'FORCE_COMPLETED'].includes(issue.status)) throw new ApiError(409, 'ISSUE_CLOSED', `Issue ${issue.issue_ref} is already ${issue.status}`);
 
     const accountedRes = await client.query(`SELECT COALESCE(SUM(received_qty+shortage_qty+damage_qty),0) AS total FROM stock_receipts WHERE stock_issue_id=$1`, [issue.id]);
     const alreadyAccounted = Number(accountedRes.rows[0].total);
@@ -563,11 +586,12 @@ app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     const remaining = Number(issue.issued_qty) - alreadyAccounted;
     if (thisTotal > remaining + 0.001) throw new ApiError(422, 'RECEIPT_EXCEEDS_ISSUE', `Receipt total ${thisTotal} exceeds remaining un-receipted qty ${remaining}`, { remaining });
 
+    const expectedQtyForReceipt = remaining;
     const receiptRef = genRef('RCV');
     const receiptIns = await client.query(
-      `INSERT INTO stock_receipts (receipt_ref, stock_issue_id, received_qty, shortage_qty, damage_qty, shortage_reason, received_by_user_id, receipt_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [receiptRef, issue.id, d.received_qty, d.shortage_qty, d.damage_qty, d.shortage_reason || null, req.user.id, d.receipt_date]
+      `INSERT INTO stock_receipts (receipt_ref, stock_issue_id, received_qty, shortage_qty, damage_qty, shortage_reason, received_by_user_id, receipt_date, expected_qty)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [receiptRef, issue.id, d.received_qty, d.shortage_qty, d.damage_qty, d.shortage_reason || null, req.user.id, d.receipt_date, expectedQtyForReceipt]
     );
     const receiptId = receiptIns.rows[0].id;
 
@@ -585,6 +609,294 @@ app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// FORCE COMPLETE endpoints
+// ═══════════════════════════════════════════════════════════════════════════
+
+const forceCompleteSchema = z.object({ reason: z.string().min(1, 'reason is required') });
+
+app.post('/api/v1/purchase-orders/:id/force-complete', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const parsed = forceCompleteSchema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'reason is required', parsed.error.issues);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM purchase_orders WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `PO ${req.params.id} not found`);
+    const po = r.rows[0];
+    if (['CLOSED', 'CANCELLED', 'FORCE_COMPLETED'].includes(po.status))
+      throw new ApiError(409, 'ALREADY_TERMINAL', `PO is already ${po.status}`);
+    await client.query(
+      `UPDATE purchase_orders SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
+      [req.user.id, parsed.data.reason, po.id]
+    );
+    await writeAudit(client, { userId: req.user.id, action: 'PO_FORCE_COMPLETED', entityTable: 'purchase_orders', entityId: po.id, detail: { reason: parsed.data.reason } });
+    await client.query('COMMIT');
+    res.json({ ok: true, po_id: po.id, status: 'FORCE_COMPLETED' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+app.post('/api/v1/indent-lines/:id/force-complete', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const parsed = forceCompleteSchema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'reason is required', parsed.error.issues);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM indent_lines WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Indent line ${req.params.id} not found`);
+    const line = r.rows[0];
+    if (['FULLY_ISSUED', 'CANCELLED', 'FORCE_COMPLETED'].includes(line.status))
+      throw new ApiError(409, 'ALREADY_TERMINAL', `Indent line is already ${line.status}`);
+    await client.query(
+      `UPDATE indent_lines SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
+      [req.user.id, parsed.data.reason, line.id]
+    );
+    await writeAudit(client, { userId: req.user.id, action: 'INDENT_LINE_FORCE_COMPLETED', entityTable: 'indent_lines', entityId: line.id, detail: { reason: parsed.data.reason } });
+    await client.query('COMMIT');
+    res.json({ ok: true, indent_line_id: line.id, status: 'FORCE_COMPLETED' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+app.post('/api/v1/stock-issues/:id/force-complete', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
+  const parsed = forceCompleteSchema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'reason is required', parsed.error.issues);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM stock_issues WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Stock issue ${req.params.id} not found`);
+    const issue = r.rows[0];
+    if (['RECEIVED', 'CANCELLED', 'FORCE_COMPLETED'].includes(issue.status))
+      throw new ApiError(409, 'ALREADY_TERMINAL', `Stock issue is already ${issue.status}`);
+    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.includes(Number(issue.to_warehouse_id)))
+      throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to the destination warehouse for this issue');
+    await client.query(
+      `UPDATE stock_issues SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
+      [req.user.id, parsed.data.reason, issue.id]
+    );
+    await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUE_FORCE_COMPLETED', entityTable: 'stock_issues', entityId: issue.id, detail: { reason: parsed.data.reason } });
+    await client.query('COMMIT');
+    res.json({ ok: true, issue_id: issue.id, status: 'FORCE_COMPLETED' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADMIN OVERRIDE ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function snapshotAndLog(client, { adminUserId, entityTable, entityId, action, reason, previousState }) {
+  await client.query(
+    `INSERT INTO admin_reversals (admin_user_id, entity_table, entity_id, action, reason, previous_state) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [adminUserId, entityTable, entityId, action, reason, JSON.stringify(previousState)]
+  );
+}
+
+// ── Goods Receipts ────────────────────────────────────────────────────────
+app.patch('/api/v1/admin/goods-receipts/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason, ...fields } = req.body;
+  if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const allowed = ['grn_qty', 'grn_date', 'invoice_no', 'invoice_date', 'notes'];
+  const sets = []; const vals = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (allowed.includes(k)) { vals.push(v); sets.push(`${k}=$${vals.length}`); }
+  }
+  if (!sets.length) throw new ApiError(400, 'NO_FIELDS', 'No editable fields provided');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM goods_receipts WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `GRN ${req.params.id} not found`);
+    const grn = r.rows[0];
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'goods_receipts', entityId: grn.id, action: 'EDIT', reason, previousState: grn });
+    vals.push(req.params.id);
+    await client.query(`UPDATE goods_receipts SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+    // Re-run PO sync trigger fires automatically; also re-sync ledger if grn_qty changed
+    if (fields.grn_qty !== undefined) {
+      await client.query(`UPDATE stock_ledger SET qty_delta=$1 WHERE ref_table='goods_receipts' AND ref_id=$2 AND movement_type='GRN_INWARD'`, [fields.grn_qty, grn.id]);
+    }
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_GRN_EDITED', entityTable: 'goods_receipts', entityId: grn.id, detail: { reason, fields } });
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+app.post('/api/v1/admin/goods-receipts/:id/cancel', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+  if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM goods_receipts WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `GRN ${req.params.id} not found`);
+    const grn = r.rows[0];
+    if (grn.status === 'REVERSED') throw new ApiError(409, 'ALREADY_REVERSED', 'GRN is already reversed');
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'goods_receipts', entityId: grn.id, action: 'REVERSE', reason, previousState: grn });
+    await client.query(`UPDATE goods_receipts SET status='REVERSED' WHERE id=$1`, [grn.id]);
+    await postLedgerEntry(client, { warehouseId: grn.warehouse_id, materialId: grn.material_id, movementType: 'REVERSAL', qtyDelta: -Number(grn.grn_qty), unitCost: grn.unit_price, refTable: 'goods_receipts', refId: grn.id, movementDate: new Date().toISOString().slice(0, 10) });
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_GRN_REVERSED', entityTable: 'goods_receipts', entityId: grn.id, detail: { reason } });
+    await client.query('COMMIT');
+    res.json({ ok: true, status: 'REVERSED' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// ── Stock Issues ──────────────────────────────────────────────────────────
+app.patch('/api/v1/admin/stock-issues/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason, ...fields } = req.body;
+  if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const allowed = ['issued_qty', 'issue_date', 'vehicle_no', 'notes'];
+  const sets = []; const vals = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (allowed.includes(k)) { vals.push(v); sets.push(`${k}=$${vals.length}`); }
+  }
+  if (!sets.length) throw new ApiError(400, 'NO_FIELDS', 'No editable fields provided');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM stock_issues WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Stock issue ${req.params.id} not found`);
+    const issue = r.rows[0];
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'stock_issues', entityId: issue.id, action: 'EDIT', reason, previousState: issue });
+    vals.push(req.params.id);
+    await client.query(`UPDATE stock_issues SET ${sets.join(',')}, updated_at=now() WHERE id=$${vals.length}`, vals);
+    if (fields.issued_qty !== undefined) {
+      await client.query(`UPDATE stock_ledger SET qty_delta=$1 WHERE ref_table='stock_issues' AND ref_id=$2 AND movement_type='ISSUE_OUT'`, [-Number(fields.issued_qty), issue.id]);
+    }
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_ISSUE_EDITED', entityTable: 'stock_issues', entityId: issue.id, detail: { reason, fields } });
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+app.post('/api/v1/admin/stock-issues/:id/cancel', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+  if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM stock_issues WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Stock issue ${req.params.id} not found`);
+    const issue = r.rows[0];
+    if (issue.status === 'CANCELLED') throw new ApiError(409, 'ALREADY_CANCELLED', 'Issue is already cancelled');
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'stock_issues', entityId: issue.id, action: 'CANCEL', reason, previousState: issue });
+    await client.query(`UPDATE stock_issues SET status='CANCELLED', updated_at=now() WHERE id=$1`, [issue.id]);
+    await postLedgerEntry(client, { warehouseId: issue.from_warehouse_id, materialId: issue.material_id, movementType: 'REVERSAL', qtyDelta: Number(issue.issued_qty), unitCost: issue.unit_cost_snapshot, refTable: 'stock_issues', refId: issue.id, movementDate: new Date().toISOString().slice(0, 10) });
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_ISSUE_CANCELLED', entityTable: 'stock_issues', entityId: issue.id, detail: { reason } });
+    await client.query('COMMIT');
+    res.json({ ok: true, status: 'CANCELLED' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// ── Stock Receipts ────────────────────────────────────────────────────────
+app.patch('/api/v1/admin/stock-receipts/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason, ...fields } = req.body;
+  if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const allowed = ['received_qty', 'shortage_qty', 'damage_qty', 'shortage_reason', 'receipt_date'];
+  const sets = []; const vals = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (allowed.includes(k)) { vals.push(v); sets.push(`${k}=$${vals.length}`); }
+  }
+  if (!sets.length) throw new ApiError(400, 'NO_FIELDS', 'No editable fields provided');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM stock_receipts WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Stock receipt ${req.params.id} not found`);
+    const receipt = r.rows[0];
+    const issueRes = await client.query('SELECT * FROM stock_issues WHERE id=$1', [receipt.stock_issue_id]);
+    const issue = issueRes.rows[0];
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'stock_receipts', entityId: receipt.id, action: 'EDIT', reason, previousState: receipt });
+    vals.push(req.params.id);
+    await client.query(`UPDATE stock_receipts SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+    if (fields.received_qty !== undefined) {
+      await client.query(`UPDATE stock_ledger SET qty_delta=$1 WHERE ref_table='stock_receipts' AND ref_id=$2 AND movement_type='RECEIPT_IN'`, [Number(fields.received_qty), receipt.id]);
+    }
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_RECEIPT_EDITED', entityTable: 'stock_receipts', entityId: receipt.id, detail: { reason, fields } });
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+app.post('/api/v1/admin/stock-receipts/:id/cancel', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+  if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM stock_receipts WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Stock receipt ${req.params.id} not found`);
+    const receipt = r.rows[0];
+    const issueRes = await client.query('SELECT * FROM stock_issues WHERE id=$1', [receipt.stock_issue_id]);
+    const issue = issueRes.rows[0];
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'stock_receipts', entityId: receipt.id, action: 'REVERSE', reason, previousState: receipt });
+    if (receipt.received_qty > 0) {
+      await postLedgerEntry(client, { warehouseId: issue.to_warehouse_id, materialId: issue.material_id, movementType: 'REVERSAL', qtyDelta: -Number(receipt.received_qty), unitCost: issue.unit_cost_snapshot, refTable: 'stock_receipts', refId: receipt.id, movementDate: new Date().toISOString().slice(0, 10) });
+    }
+    await client.query(`DELETE FROM stock_receipts WHERE id=$1`, [receipt.id]);
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_RECEIPT_CANCELLED', entityTable: 'stock_receipts', entityId: receipt.id, detail: { reason } });
+    await client.query('COMMIT');
+    res.json({ ok: true, deleted: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// ── Admin Audit Log ───────────────────────────────────────────────────────
+app.get('/api/v1/admin/audit-log', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { entity_table, entity_id, user_id, date_from, date_to, page = 1, page_size = 50 } = req.query;
+  const limit = Math.min(Number(page_size), 200);
+  const offset = (Number(page) - 1) * limit;
+
+  const buildWhere = (prefix, idField = 'entity_id', userField = 'user_id') => {
+    const conds = []; const params = [];
+    if (entity_table) { params.push(entity_table); conds.push(`${prefix}entity_table=$${params.length}`); }
+    if (entity_id) { params.push(entity_id); conds.push(`${prefix}${idField}=$${params.length}`); }
+    if (user_id) { params.push(user_id); conds.push(`${prefix}${userField}=$${params.length}`); }
+    if (date_from) { params.push(date_from); conds.push(`${prefix}created_at>=$${params.length}`); }
+    if (date_to) { params.push(date_to); conds.push(`${prefix}created_at<=$${params.length}`); }
+    return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
+  };
+
+  const aw = buildWhere('');
+  const rw = buildWhere('', 'entity_id', 'admin_user_id');
+
+  const [auditRows, reversalRows] = await Promise.all([
+    pool.query(`SELECT 'audit' AS source, id, user_id, action, entity_table, entity_id, detail, created_at FROM audit_log ${aw.where} ORDER BY created_at DESC`, aw.params),
+    pool.query(`SELECT 'reversal' AS source, id, admin_user_id AS user_id, action, entity_table, entity_id, reason AS detail, created_at FROM admin_reversals ${rw.where} ORDER BY created_at DESC`, rw.params),
+  ]);
+
+  const merged = [...auditRows.rows, ...reversalRows.rows]
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .slice(offset, offset + limit);
+
+  res.json({ data: merged, page: Number(page), page_size: limit });
+}));
+
+// ── Admin Overview ────────────────────────────────────────────────────────
+app.get('/api/v1/admin/overview', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { since } = req.query;
+  const sinceClause = since ? `AND created_at >= '${since}'` : '';
+  const sinceDateClause = since ? `AND indent_date >= '${since}'` : '';
+  const sincePoClause = since ? `AND po_date >= '${since}'` : '';
+  const sinceIssuedClause = since ? `AND issue_date >= '${since}'` : '';
+  const sinceReceiptClause = since ? `AND receipt_date >= '${since}'` : '';
+
+  const [indents, pos, stock, issues, receipts, lowStock] = await Promise.all([
+    pool.query(`SELECT il.*, w.name AS warehouse_name, m.code AS material_code, m.name AS material_name, m.unit FROM indent_lines il JOIN warehouses w ON w.id=il.warehouse_id JOIN materials m ON m.id=il.material_id WHERE 1=1 ${sinceDateClause} ORDER BY il.indent_date DESC`),
+    pool.query(`SELECT po.*, m.code AS material_code, m.name AS material_name, w.name AS warehouse_name FROM purchase_orders po JOIN materials m ON m.id=po.material_id JOIN warehouses w ON w.id=po.pm_store_warehouse_id WHERE 1=1 ${sincePoClause} ORDER BY po.po_date DESC`),
+    pool.query(`SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, cs.on_hand_qty, cs.weighted_avg_cost FROM v_current_stock cs JOIN warehouses w ON w.id=cs.warehouse_id JOIN materials m ON m.id=cs.material_id ORDER BY w.name, m.code`),
+    pool.query(`SELECT si.*, m.code AS material_code, m.name AS material_name, fw.name AS from_warehouse_name, tw.name AS to_warehouse_name FROM stock_issues si JOIN materials m ON m.id=si.material_id JOIN warehouses fw ON fw.id=si.from_warehouse_id JOIN warehouses tw ON tw.id=si.to_warehouse_id WHERE 1=1 ${sinceIssuedClause} ORDER BY si.issue_date DESC`),
+    pool.query(`SELECT sr.*, si.issue_ref, m.code AS material_code, m.name AS material_name FROM stock_receipts sr JOIN stock_issues si ON si.id=sr.stock_issue_id JOIN materials m ON m.id=si.material_id WHERE 1=1 ${sinceReceiptClause} ORDER BY sr.receipt_date DESC`),
+    pool.query(`SELECT * FROM v_low_stock_alerts ORDER BY warehouse_name, material_code`),
+  ]);
+
+  res.json({
+    indents: indents.rows,
+    purchase_orders: pos.rows,
+    current_stock: stock.rows,
+    stock_issues: issues.rows,
+    stock_receipts: receipts.rows,
+    low_stock_alerts: lowStock.rows,
+  });
+}));
+
 // MODULE 6: PM STORE EXEC DASHBOARD — read-only aggregates
 // ═══════════════════════════════════════════════════════════════════════════
 
