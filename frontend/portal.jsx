@@ -1,5 +1,14 @@
 import { useState, useMemo } from 'react';
-import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar } from 'lucide-react';
+import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download } from 'lucide-react';
+
+function downloadCSV(filename, rows) {
+  const csv = rows.map((r) => r.map((v) => (String(v).includes(',') ? `"${v}"` : v)).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PackTrack Portal — three sections:
@@ -147,8 +156,19 @@ function IndentUploadSection() {
         <p className="text-sm text-slate-500">Bulk upload facility-wise, SKU-wise demand for a given date.</p>
       </div>
 
-      <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800">
-        <strong>Expected columns:</strong> facility_code, sku_code, requested_qty, remarks (optional)
+      <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
+        <div><strong>Expected columns:</strong> facility_code, sku_code, requested_qty, remarks (optional)</div>
+        <button
+          onClick={() => downloadCSV('indent_sample.csv', [
+            ['facility_code', 'sku_code', 'requested_qty', 'remarks'],
+            ['BLR-CC-01', 'LDPE-06', 500, 'Weekly stock'],
+            ['BLR-CC-01', 'NTRLL-01', 40, ''],
+            ['BLR-FC-01', 'WXRB-01', 20, 'Urgent'],
+          ])}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
+        >
+          <Download size={13} /> Sample CSV
+        </button>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
@@ -229,8 +249,19 @@ function POUploadSection() {
         <p className="text-sm text-slate-500">Bulk upload vendor POs for inward into the packaging material shop.</p>
       </div>
 
-      <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800">
-        <strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty, unit_price, po_date, expected_delivery (optional)
+      <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
+        <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty, unit_price, po_date, expected_delivery (optional)</div>
+        <button
+          onClick={() => downloadCSV('purchase_orders_sample.csv', [
+            ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'unit_price', 'po_date', 'expected_delivery'],
+            ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'BLR-PM-01', 2000, 2.50, '2026-07-01', '2026-07-10'],
+            ['PO-2026-0002', 'Karnataka Packaging Co', 'NTRLL-01', 'BLR-PM-01', 150, 180.00, '2026-07-01', '2026-07-08'],
+            ['PO-2026-0003', 'Tamil Nadu Ribbons Ltd', 'WXRB-01', 'BLR-PM-01', 50, 95.00, '2026-07-02', ''],
+          ])}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
+        >
+          <Download size={13} /> Sample CSV
+        </button>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
