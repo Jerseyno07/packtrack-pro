@@ -20,7 +20,7 @@ function makeApi(token) {
   return {
     login: (email, password) => req('POST', '/api/v1/auth/login', { email, password }),
     listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN'),
-    listPendingIndents: () => req('GET', '/api/v1/indent-lines?status=PENDING'),
+    listPendingIndents: () => req('GET', '/api/v1/indents?status=PENDING&page_size=200'),
     issueDefaults: (indentLineId) => req('GET', `/api/v1/indent-lines/${indentLineId}/issue-defaults`),
     postGRN: (payload) => req('POST', '/api/v1/goods-receipts', payload),
     postIssue: (payload) => req('POST', '/api/v1/stock-issues', payload),
@@ -143,7 +143,7 @@ function GRNScreen({ api }) {
     setFetchError('');
     try {
       const data = await api.listOpenPOs();
-      setOpenPOs(Array.isArray(data) ? data : data.rows ?? []);
+      setOpenPOs(Array.isArray(data) ? data : data.data ?? data.rows ?? []);
     } catch (e) {
       setFetchError(e.message || 'Failed to load open POs');
     } finally {
@@ -302,7 +302,7 @@ function IssueScreen({ api }) {
     setFetchError('');
     try {
       const data = await api.listPendingIndents();
-      setPendingIndents(Array.isArray(data) ? data : data.rows ?? []);
+      setPendingIndents(Array.isArray(data) ? data : data.data ?? data.rows ?? []);
     } catch (e) {
       setFetchError(e.message || 'Failed to load pending indents');
     } finally {
@@ -312,15 +312,19 @@ function IssueScreen({ api }) {
 
   useEffect(() => { loadIndents(); }, [loadIndents]);
 
+  function pendingOf(ind) {
+    return Number(ind.pending_qty ?? (ind.requested_qty - ind.issued_qty));
+  }
+
   async function selectIndent(ind) {
     setSelectedIndent(ind);
     setDefaults(null);
     try {
       const d = await api.issueDefaults(ind.id);
       setDefaults(d);
-      setQty(String(d.suggested_actual_qty ?? d.expected_qty ?? ind.pending_qty));
+      setQty(String(d.suggested_actual_qty ?? d.expected_qty ?? pendingOf(ind)));
     } catch {
-      setQty(String(ind.pending_qty ?? ind.requested_qty));
+      setQty(String(pendingOf(ind)));
     }
   }
 
@@ -329,7 +333,7 @@ function IssueScreen({ api }) {
     const q = Number(qty);
     if (!selectedIndent) return;
     if (!q || q <= 0) { setError('Enter a valid issue quantity.'); return; }
-    const pending = Number(selectedIndent.pending_qty ?? selectedIndent.requested_qty);
+    const pending = pendingOf(selectedIndent);
     if (q > pending) { setError(`Exceeds pending indent qty (${pending}).`); return; }
     if (defaults && q > Number(defaults.on_hand_qty)) {
       setError(`Insufficient PM Store stock (available ${defaults.on_hand_qty}).`); return;
@@ -393,7 +397,7 @@ function IssueScreen({ api }) {
                   <div className="text-xs text-slate-500">{ind.material_code} — {ind.material_name}</div>
                 </div>
                 <div className="text-right">
-                  <div className="font-bold text-amber-600">{ind.pending_qty ?? ind.requested_qty}</div>
+                  <div className="font-bold text-amber-600">{Number(ind.requested_qty) - Number(ind.issued_qty)}</div>
                   <div className="text-xs text-slate-400">pending of {ind.requested_qty}</div>
                 </div>
                 <ChevronRight size={16} className="text-slate-300" />
@@ -405,7 +409,7 @@ function IssueScreen({ api }) {
     );
   }
 
-  const pending = Number(selectedIndent.pending_qty ?? selectedIndent.requested_qty);
+  const pending = pendingOf(selectedIndent);
   const actualQty = Number(qty) || 0;
   const expectedQty = defaults ? Number(defaults.expected_qty) : pending;
   const variance = actualQty - expectedQty;
