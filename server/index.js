@@ -739,6 +739,26 @@ app.post('/api/v1/admin/goods-receipts/:id/cancel', authenticate, requireRole('A
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
+// ── Purchase Orders (admin cancel) ───────────────────────────────────────
+app.post('/api/v1/admin/purchase-orders/:id/cancel', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+  if (!reason?.trim()) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM purchase_orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `PO ${req.params.id} not found`);
+    const po = r.rows[0];
+    if (['CANCELLED', 'CLOSED', 'FORCE_COMPLETED'].includes(po.status))
+      throw new ApiError(409, 'ALREADY_TERMINAL', `PO is already ${po.status}`);
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'purchase_orders', entityId: po.id, action: 'CANCEL', reason: reason.trim(), previousState: po });
+    await client.query(`UPDATE purchase_orders SET status='CANCELLED', updated_at=now() WHERE id=$1`, [po.id]);
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_PO_CANCELLED', entityTable: 'purchase_orders', entityId: po.id, detail: { reason: reason.trim() } });
+    await client.query('COMMIT');
+    res.json({ ok: true, id: po.id, status: 'CANCELLED' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
 // ── Stock Issues ──────────────────────────────────────────────────────────
 app.patch('/api/v1/admin/stock-issues/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { reason, ...fields } = req.body;
