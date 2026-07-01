@@ -135,7 +135,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── INDENT UPLOAD ───────────────────────────────────────────────────────────
-function IndentUploadSection() {
+function IndentUploadSection({ token }) {
   const [file, setFile] = useState(null);
   const [indentDate, setIndentDate] = useState(new Date().toISOString().slice(0, 10));
   const [uploading, setUploading] = useState(false);
@@ -147,9 +147,18 @@ function IndentUploadSection() {
     if (!file) { setError('Please choose a file.'); return; }
     setUploading(true);
     try {
-      const res = await MOCK_API.uploadIndent(file, indentDate);
-      setResult(res);
-    } catch (e) { setError('Upload failed. Please try again.'); } finally { setUploading(false); }
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('indent_date', indentDate);
+      const res = await fetch(`${BASE_URL}/api/v1/indents/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
+      setResult(data);
+    } catch (e) { setError(e.message || 'Upload failed. Please try again.'); } finally { setUploading(false); }
   }
 
   return (
@@ -164,9 +173,9 @@ function IndentUploadSection() {
         <button
           onClick={() => downloadCSV('indent_sample.csv', [
             ['facility_code', 'sku_code', 'requested_qty', 'remarks'],
-            ['BLR-CC-01', 'LDPE-06', 500, 'Weekly stock'],
-            ['BLR-CC-01', 'NTRLL-01', 40, ''],
-            ['BLR-FC-01', 'WXRB-01', 20, 'Urgent'],
+            ['CC-BLR', 'LDPE-06', 500, 'Weekly stock'],
+            ['CC-BLR', 'NTRLL-01', 40, ''],
+            ['FC-BLR', 'WXRB-01', 20, 'Urgent'],
           ])}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
         >
@@ -229,7 +238,7 @@ function IndentUploadSection() {
 }
 
 // ── PO UPLOAD ────────────────────────────────────────────────────────────────
-function POUploadSection() {
+function POUploadSection({ token }) {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState(null);
@@ -240,9 +249,17 @@ function POUploadSection() {
     if (!file) { setError('Please choose a file.'); return; }
     setUploading(true);
     try {
-      const res = await MOCK_API.uploadPO(file);
-      setResult(res);
-    } catch (e) { setError('Upload failed. Please try again.'); } finally { setUploading(false); }
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch(`${BASE_URL}/api/v1/purchase-orders/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
+      setResult(data);
+    } catch (e) { setError(e.message || 'Upload failed. Please try again.'); } finally { setUploading(false); }
   }
 
   return (
@@ -257,9 +274,9 @@ function POUploadSection() {
         <button
           onClick={() => downloadCSV('purchase_orders_sample.csv', [
             ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'unit_price', 'po_date', 'expected_delivery'],
-            ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'BLR-PM-01', 2000, 2.50, '2026-07-01', '2026-07-10'],
-            ['PO-2026-0002', 'Karnataka Packaging Co', 'NTRLL-01', 'BLR-PM-01', 150, 180.00, '2026-07-01', '2026-07-08'],
-            ['PO-2026-0003', 'Tamil Nadu Ribbons Ltd', 'WXRB-01', 'BLR-PM-01', 50, 95.00, '2026-07-02', ''],
+            ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'CS-001', 2000, 2.50, '2026-07-01', '2026-07-10'],
+            ['PO-2026-0002', 'Karnataka Packaging Co', 'NTRLL-01', 'CS-001', 150, 180.00, '2026-07-01', '2026-07-08'],
+            ['PO-2026-0003', 'Tamil Nadu Ribbons Ltd', 'WXRB-01', 'CS-001', 50, 95.00, '2026-07-02', ''],
           ])}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
         >
@@ -762,8 +779,8 @@ export default function App() {
 
       <div className="flex-1 p-6 overflow-y-auto">
         {section === 'dashboard' && <DashboardSection />}
-        {section === 'indent' && <IndentUploadSection />}
-        {section === 'po' && <POUploadSection />}
+        {section === 'indent' && <IndentUploadSection token={token} />}
+        {section === 'po' && <POUploadSection token={token} />}
         {section === 'admin' && <AdminPanel token={token} />}
       </div>
     </div>
