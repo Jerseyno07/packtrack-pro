@@ -386,7 +386,7 @@ export default function ReceiptApp() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
-      const rows = Array.isArray(data) ? data : data.rows ?? [];
+      const rows = Array.isArray(data) ? data : data.data ?? data.rows ?? [];
       setIssues(rows.filter((i) => ['DISPATCHED', 'PARTIALLY_RECEIVED'].includes(i.status)));
     } catch (e) {
       setFetchError(e.message || 'Failed to load pending shipments');
