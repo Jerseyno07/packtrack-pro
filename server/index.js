@@ -604,7 +604,7 @@ app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     if (!issueRes.rows.length) throw new ApiError(404, 'ISSUE_NOT_FOUND', `Stock issue ${d.stock_issue_id} not found`);
     const issue = issueRes.rows[0];
 
-    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.includes(Number(issue.to_warehouse_id))) {
+    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.map(String).includes(String(issue.to_warehouse_id))) {
       throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to the destination warehouse for this issue');
     }
     if (['RECEIVED', 'CANCELLED', 'FORCE_COMPLETED'].includes(issue.status)) throw new ApiError(409, 'ISSUE_CLOSED', `Issue ${issue.issue_ref} is already ${issue.status}`);
@@ -697,7 +697,7 @@ app.post('/api/v1/stock-issues/:id/force-complete', authenticate, requireRole('C
     const issue = r.rows[0];
     if (['RECEIVED', 'CANCELLED', 'FORCE_COMPLETED'].includes(issue.status))
       throw new ApiError(409, 'ALREADY_TERMINAL', `Stock issue is already ${issue.status}`);
-    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.includes(Number(issue.to_warehouse_id)))
+    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.map(String).includes(String(issue.to_warehouse_id)))
       throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to the destination warehouse for this issue');
     await client.query(
       `UPDATE stock_issues SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
