@@ -434,6 +434,7 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
 
     const remaining = Number(po.po_qty) - Number(po.received_qty_cache);
     if (d.grn_qty > remaining) throw new ApiError(422, 'GRN_EXCEEDS_PO', `GRN qty ${d.grn_qty} exceeds remaining PO qty ${remaining}`, { remaining });
+    if (d.grn_qty < remaining) throw new ApiError(422, 'PARTIAL_GRN_NOT_ALLOWED', `GRN qty (${d.grn_qty}) is less than remaining PO qty (${remaining}). Receive the full quantity or use Force Complete to close the PO with a shortage.`, { remaining });
 
     const grnRef = genRef('GRN');
     const grnIns = await client.query(

@@ -91,7 +91,7 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function ForceCompletePanel({ onForce, submitting, error }) {
+function ForceCompletePanel({ onForce, submitting, error, hint }) {
   const [show, setShow] = useState(false);
   const [reason, setReason] = useState('');
   return (
@@ -102,7 +102,7 @@ function ForceCompletePanel({ onForce, submitting, error }) {
       </button>
       {show && (
         <>
-          <p className="text-xs text-slate-500">Permanently closes this record with no further transactions allowed. Cannot be undone.</p>
+          <p className="text-xs text-slate-500">{hint ?? 'Permanently closes this record with no further transactions allowed. Cannot be undone.'}</p>
           <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
             placeholder="Reason for force completing…"
             className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none" />
@@ -128,7 +128,6 @@ function GRNScreen({ api }) {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
   const [selectedPO, setSelectedPO] = useState(null);
-  const [qty, setQty] = useState('');
   const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
   const [invoiceNo, setInvoiceNo] = useState('');
   const [hasInvoice, setHasInvoice] = useState(false);
@@ -155,15 +154,12 @@ function GRNScreen({ api }) {
 
   async function submit() {
     setError('');
-    const q = Number(qty);
     if (!selectedPO) return;
-    if (!q || q <= 0) { setError('Enter a valid GRN quantity.'); return; }
     const remaining = Number(selectedPO.remaining_qty ?? selectedPO.po_qty);
-    if (q > remaining) { setError(`GRN qty exceeds remaining PO qty (${remaining}).`); return; }
     if (!hasInvoice) { setError('Invoice copy attachment is mandatory.'); return; }
     setSubmitting(true);
     try {
-      const res = await api.postGRN({ po_id: selectedPO.id, grn_qty: q, grn_date: grnDate, invoice_no: invoiceNo, has_invoice_attachment: hasInvoice });
+      const res = await api.postGRN({ po_id: selectedPO.id, grn_qty: remaining, grn_date: grnDate, invoice_no: invoiceNo, has_invoice_attachment: hasInvoice });
       setSuccess(res);
     } catch (e) {
       setError(e.message || 'Failed to post GRN.');
@@ -209,7 +205,7 @@ function GRNScreen({ api }) {
             {openPOs.map((po) => {
               const remaining = Number(po.remaining_qty ?? po.po_qty);
               return (
-                <button key={po.id} onClick={() => { setSelectedPO(po); setQty(String(remaining)); }} className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 transition-colors">
+                <button key={po.id} onClick={() => { setSelectedPO(po); setError(''); setHasInvoice(false); setInvoiceNo(''); }} className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 transition-colors">
                   <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0"><Truck size={18} /></div>
                   <div className="flex-1">
                     <div className="font-semibold text-sm text-slate-900">{po.po_no} <span className="text-slate-400">· {po.vendor_name}</span></div>
@@ -230,53 +226,51 @@ function GRNScreen({ api }) {
   }
 
   const remaining = Number(selectedPO.remaining_qty ?? selectedPO.po_qty);
-  const actualQty = Number(qty) || 0;
-  const variance = actualQty - remaining;
 
   return (
     <div className="space-y-4 max-w-xl">
       <button onClick={() => setSelectedPO(null)} className="flex items-center gap-1.5 text-sm text-slate-500 font-medium"><ArrowLeft size={15} /> Back</button>
+
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
         <div className="pb-3 border-b border-slate-100">
           <div className="font-semibold text-slate-900">{selectedPO.po_no} <Badge tone="blue">{selectedPO.vendor_name}</Badge></div>
           <div className="text-sm text-slate-500 mt-0.5">{selectedPO.material_code} — {selectedPO.material_name}</div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 bg-slate-50 rounded-lg p-3 text-sm">
-          <div><div className="text-xs text-slate-400">Expected (remaining)</div><div className="font-bold text-slate-900">{remaining}</div></div>
-          <div>
-            <div className="text-xs text-slate-400">Variance</div>
-            <div className={`font-bold ${variance < 0 ? 'text-red-600' : variance > 0 ? 'text-amber-600' : 'text-green-600'}`}>
-              {variance === 0 ? '0 (exact)' : variance > 0 ? `+${variance} over` : `${variance} short`}
-            </div>
-          </div>
+        <div className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 flex items-center justify-between">
+          <div className="text-sm text-blue-800">Quantity to inward</div>
+          <div className="text-xl font-bold text-blue-900">{remaining} <span className="text-sm font-normal text-blue-600">{selectedPO.material_unit ?? 'units'}</span></div>
         </div>
+        <p className="text-xs text-slate-400">GRN must match the full remaining PO quantity. If the vendor will not supply the balance, use Force Complete below.</p>
 
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">Actual GRN Qty <span className="text-red-500">*</span></label>
-            <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">GRN Date</label>
             <input type="date" value={grnDate} onChange={(e) => setGrnDate(e.target.value)} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
+          <div>
+            <label className="text-xs font-medium text-slate-500 mb-1 block">Invoice Number</label>
+            <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="Optional" className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
         </div>
-        <div>
-          <label className="text-xs font-medium text-slate-500 mb-1 block">Invoice Number</label>
-          <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="Optional" className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
+
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input type="checkbox" checked={hasInvoice} onChange={(e) => setHasInvoice(e.target.checked)} className="w-4 h-4" />
           Invoice copy attached <span className="text-red-500">*</span>
         </label>
+
         {error && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}</div>}
         <button onClick={submit} disabled={submitting} className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-60">
-          {submitting ? 'Posting...' : 'Post GRN'}
+          {submitting ? 'Posting...' : `Post GRN for ${remaining} units`}
         </button>
       </div>
 
-      <ForceCompletePanel onForce={handleForce} submitting={fcSubmitting} error={fcError} />
+      <ForceCompletePanel
+        onForce={handleForce}
+        submitting={fcSubmitting}
+        error={fcError}
+        hint={`Vendor will not supply the remaining ${remaining} units. Closes this PO permanently.`}
+      />
     </div>
   );
 }
