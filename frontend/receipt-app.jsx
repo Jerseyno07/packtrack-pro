@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Truck, Package, CheckCircle2, AlertTriangle, Camera, Clock, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap } from 'lucide-react';
+import { Truck, Package, CheckCircle2, AlertTriangle, Clock, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap } from 'lucide-react';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -144,16 +144,13 @@ function IssueListItem({ issue, onSelect }) {
 function ReceiptForm({ issue, token, onBack, onSubmitted }) {
   const [defaults, setDefaults] = useState(null);
   const [receivedQty, setReceivedQty] = useState('');
-  const [shortageQty, setShortageQty] = useState('0');
-  const [damageQty, setDamageQty] = useState('0');
-  const [reason, setReason] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [receiptDate, setReceiptDate] = useState(new Date().toISOString().slice(0, 10));
   const [fcReason, setFcReason] = useState('');
-  const [showFcPanel, setShowFcPanel] = useState(false);
-  const [fcSubmitting, setFcSubmitting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
   const client = api(token);
+  const expectedQty = Number(defaults?.expected_qty ?? issue.pending_qty ?? issue.issued_qty);
 
   useEffect(() => {
     client.receiptDefaults(issue.id).then((d) => {
@@ -164,29 +161,25 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
     });
   }, [issue.id]);
 
-  const rq = Number(receivedQty) || 0;
-  const sq = Number(shortageQty) || 0;
-  const dq = Number(damageQty) || 0;
-  const total = rq + sq + dq;
-  const pendingQty = issue.pending_qty ?? issue.issued_qty;
-  const overLimit = total > pendingQty;
-  const needsReason = sq > 0 || dq > 0;
+  const qty = Number(receivedQty) || 0;
+  const isExact = qty === expectedQty;
+  const isUnder = qty > 0 && qty < expectedQty;
+  const isOver = qty > expectedQty;
 
-  async function handleSubmit() {
+  const canConfirm = isExact && !submitting;
+  const canForce = isUnder && fcReason.trim().length > 0 && !submitting;
+
+  async function handleConfirm() {
     setError('');
-    if (total <= 0) { setError('Enter at least one quantity (received, shortage, or damage).'); return; }
-    if (overLimit) { setError(`Total (${total}) exceeds pending quantity (${pendingQty}).`); return; }
-    if (needsReason && !reason.trim()) { setError('A reason is required when reporting shortage or damage.'); return; }
     setSubmitting(true);
     try {
       const res = await client.confirmReceipt({
         stock_issue_id: issue.id,
-        received_qty: rq,
-        shortage_qty: sq,
-        damage_qty: dq,
-        shortage_reason: needsReason ? reason.trim() : undefined,
-        receipt_date: new Date().toISOString().slice(0, 10),
-        expected_qty: defaults?.expected_qty,
+        received_qty: qty,
+        shortage_qty: 0,
+        damage_qty: 0,
+        receipt_date: receiptDate,
+        expected_qty: expectedQty,
       });
       onSubmitted(res);
     } catch (e) {
@@ -197,16 +190,15 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
   }
 
   async function handleForceComplete() {
-    if (!fcReason.trim()) { setError('A reason is required to force complete.'); return; }
-    setFcSubmitting(true);
     setError('');
+    setSubmitting(true);
     try {
       await client.forceComplete(issue.id, fcReason.trim());
       onSubmitted({ receipt_ref: 'FORCE_COMPLETED', forced: true });
     } catch (e) {
       setError(e.message || 'Force complete failed.');
     } finally {
-      setFcSubmitting(false);
+      setSubmitting(false);
     }
   }
 
@@ -216,6 +208,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
         <ArrowLeft size={16} /> Back to pending list
       </button>
 
+      {/* Shipment summary */}
       <div className="bg-white rounded-xl border border-slate-200 p-4">
         <div className="flex items-center gap-3 mb-3">
           <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
@@ -226,68 +219,70 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
             <div className="text-xs text-slate-500">{issue.material_code} · {issue.issue_ref}</div>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-3 text-sm pt-2 border-t border-slate-100">
-          <div><div className="text-slate-400 text-xs">From</div><div className="text-slate-700">{issue.from_warehouse_name}</div></div>
-          <div><div className="text-slate-400 text-xs">Vehicle</div><div className="text-slate-700">{issue.vehicle_no || '—'}</div></div>
-          <div><div className="text-slate-400 text-xs">Dispatched</div><div className="text-slate-700">{issue.issue_date}</div></div>
-          <div>
-            <div className="text-slate-400 text-xs">Expected</div>
-            <div className="text-slate-900 font-bold">
-              {defaults ? `${defaults.expected_qty} ${issue.unit}` : `${pendingQty} ${issue.unit}`}
-            </div>
+        <div className="grid grid-cols-3 gap-2 text-center pt-3 border-t border-slate-100">
+          <div className="bg-slate-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-slate-400 mb-0.5">Dispatched</div>
+            <div className="font-bold text-slate-900">{issue.issued_qty}</div>
+          </div>
+          <div className="bg-slate-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-slate-400 mb-0.5">From</div>
+            <div className="font-bold text-slate-900 text-xs leading-tight">{issue.from_warehouse_name}</div>
+          </div>
+          <div className="bg-blue-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-blue-600 mb-0.5">Expected</div>
+            <div className="font-bold text-blue-800">{expectedQty} {issue.unit}</div>
           </div>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
-        <div className="text-sm font-semibold text-slate-700">Confirm quantities received</div>
+      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
 
+        {/* Editable received qty */}
         <div>
-          <label className="text-xs font-medium text-slate-500 mb-1 block">Received in good condition <span className="text-red-500">*</span></label>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">
+            Actual Received Qty <span className="text-red-500">*</span>
+          </label>
           <input
-            type="number" min="0" inputMode="decimal" value={receivedQty}
-            onChange={(e) => setReceivedQty(e.target.value)}
-            className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            type="number" min={1} max={expectedQty} inputMode="decimal"
+            value={receivedQty} onChange={(e) => setReceivedQty(e.target.value)}
+            className={`w-full px-3 py-2.5 border rounded-lg text-base font-medium focus:outline-none focus:ring-2 ${
+              isOver    ? 'border-red-400 bg-red-50 focus:ring-red-400 text-red-700'
+              : isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
+              : isUnder ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
+              : 'border-slate-300 focus:ring-blue-500'
+            }`}
+          />
+          {isOver && (
+            <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
+              <AlertTriangle size={12} /> Cannot receive more than dispatched qty. Max: {expectedQty}
+            </p>
+          )}
+          {isExact && <p className="text-xs text-green-700 mt-1">Qty matches — Confirm Receipt enabled.</p>}
+          {isUnder && <p className="text-xs text-amber-700 mt-1">Qty is less than expected — only Force Complete is allowed.</p>}
+        </div>
+
+        {/* Receipt date */}
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">Receipt Date</label>
+          <input
+            type="date" value={receiptDate} onChange={(e) => setReceiptDate(e.target.value)}
+            className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">Shortage</label>
-            <input
-              type="number" min="0" inputMode="decimal" value={shortageQty}
-              onChange={(e) => setShortageQty(e.target.value)}
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">Damaged</label>
-            <input
-              type="number" min="0" inputMode="decimal" value={damageQty}
-              onChange={(e) => setDamageQty(e.target.value)}
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
-          </div>
-        </div>
 
-        {needsReason && (
+        {/* FC reason — only when under */}
+        {isUnder && (
           <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">Reason for shortage/damage <span className="text-red-500">*</span></label>
+            <label className="text-xs font-medium text-amber-700 mb-1 block">
+              Force Complete Reason <span className="text-red-500">*</span>
+            </label>
             <textarea
-              rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
-              placeholder="e.g. Torn packaging on 6 rolls, vehicle delay caused damage"
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+              rows={2} value={fcReason} onChange={(e) => setFcReason(e.target.value)}
+              placeholder="e.g. Material damaged in transit, balance waived off"
+              className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
             />
           </div>
         )}
-
-        <button className="w-full flex items-center justify-center gap-2 py-2.5 border border-dashed border-slate-300 rounded-lg text-sm text-slate-500 font-medium active:bg-slate-50">
-          <Camera size={16} /> Attach photo (optional)
-        </button>
-
-        <div className={`flex items-center justify-between text-sm px-3 py-2 rounded-lg ${overLimit ? 'bg-red-50 text-red-700' : 'bg-slate-50 text-slate-600'}`}>
-          <span>Total accounted</span>
-          <span className="font-semibold">{total} / {pendingQty} {issue.unit}</span>
-        </div>
 
         {error && (
           <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
@@ -296,46 +291,28 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           </div>
         )}
 
-        <button
-          onClick={handleSubmit}
-          disabled={submitting}
-          className="w-full py-3 bg-blue-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 active:bg-blue-700 disabled:opacity-60"
-        >
-          {submitting ? <RefreshCw size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
-          {submitting ? 'Submitting...' : 'Confirm Receipt'}
-        </button>
-      </div>
+        {/* Side-by-side action buttons */}
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <button
+            onClick={handleConfirm}
+            disabled={!canConfirm}
+            className="py-2.5 bg-blue-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed active:bg-blue-700"
+          >
+            {submitting && isExact ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+            Confirm Receipt
+          </button>
+          <button
+            onClick={handleForceComplete}
+            disabled={!canForce}
+            className="py-2.5 bg-amber-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed active:bg-amber-700"
+          >
+            {submitting && isUnder ? <RefreshCw size={16} className="animate-spin" /> : <Zap size={16} />}
+            Force Complete
+          </button>
+        </div>
 
-      <div className="bg-white rounded-xl border border-amber-200 p-4 space-y-3">
-        <button
-          onClick={() => setShowFcPanel((v) => !v)}
-          className="w-full flex items-center gap-2 text-sm font-semibold text-amber-700"
-        >
-          <Zap size={16} /> Force Complete this issue
-          <span className="ml-auto text-xs font-normal text-slate-400">{showFcPanel ? 'hide' : 'expand'}</span>
-        </button>
-
-        {showFcPanel && (
-          <>
-            <p className="text-xs text-slate-500">Use this when no further receipts will arrive and you want to mark the issue closed without a full receipt. This action cannot be undone.</p>
-            <div>
-              <label className="text-xs font-medium text-slate-500 mb-1 block">Reason <span className="text-red-500">*</span></label>
-              <textarea
-                rows={2} value={fcReason} onChange={(e) => setFcReason(e.target.value)}
-                placeholder="e.g. Material damaged in transit, balance waived off"
-                className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 resize-none"
-              />
-            </div>
-            <button
-              onClick={handleForceComplete}
-              disabled={fcSubmitting}
-              className="w-full py-2.5 bg-amber-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 active:bg-amber-700 disabled:opacity-60"
-            >
-              {fcSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <Zap size={16} />}
-              {fcSubmitting ? 'Processing...' : 'Force Complete'}
-            </button>
-          </>
-        )}
+        {isOver && <p className="text-xs text-red-500 text-center">Both actions disabled — qty exceeds dispatched.</p>}
+        {!isOver && !isExact && !isUnder && <p className="text-xs text-slate-400 text-center">Enter a quantity to enable actions.</p>}
       </div>
     </div>
   );
