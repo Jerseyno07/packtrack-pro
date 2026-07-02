@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap } from 'lucide-react';
+import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus } from 'lucide-react';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -26,6 +26,18 @@ function makeApi(token) {
     postIssue: (payload) => req('POST', '/api/v1/stock-issues', payload),
     forcePO: (id, reason) => req('POST', `/api/v1/purchase-orders/${id}/force-complete`, { reason }),
     forceIndent: (id, reason) => req('POST', `/api/v1/indent-lines/${id}/force-complete`, { reason }),
+    uploadGrnImage: async (grnId, imageFile) => {
+      const fd = new FormData();
+      fd.append('invoice_image', imageFile);
+      const res = await fetch(`${BASE_URL}/api/v1/goods-receipts/${grnId}/invoice-image`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Image upload failed');
+      return data;
+    },
   };
 }
 
@@ -130,12 +142,12 @@ function GRNScreen({ api }) {
   const [selectedPO, setSelectedPO] = useState(null);
   const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
   const [invoiceNo, setInvoiceNo] = useState('');
-  const [hasInvoice, setHasInvoice] = useState(false);
+  const [inwardQty, setInwardQty] = useState('');
+  const [fcReason, setFcReason] = useState('');
+  const [invoiceImage, setInvoiceImage] = useState(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(null);
-  const [fcSubmitting, setFcSubmitting] = useState(false);
-  const [fcError, setFcError] = useState('');
 
   const loadPOs = useCallback(async () => {
     setLoading(true);
@@ -152,39 +164,67 @@ function GRNScreen({ api }) {
 
   useEffect(() => { loadPOs(); }, [loadPOs]);
 
-  async function submit() {
+  function selectPO(po) {
+    setSelectedPO(po);
+    const remaining = Number(po.remaining_qty ?? po.po_qty);
+    setInwardQty(String(remaining));
+    setFcReason('');
+    setInvoiceImage(null);
+    setInvoiceNo('');
     setError('');
-    if (!selectedPO) return;
-    const remaining = Number(selectedPO.remaining_qty ?? selectedPO.po_qty);
-    if (!hasInvoice) { setError('Invoice copy attachment is mandatory.'); return; }
+  }
+
+  function resetForm() {
+    setSuccess(null);
+    setSelectedPO(null);
+    setInwardQty('');
+    setFcReason('');
+    setInvoiceImage(null);
+    setInvoiceNo('');
+    setError('');
+    loadPOs();
+  }
+
+  async function submitGRN() {
+    setError('');
     setSubmitting(true);
     try {
-      const res = await api.postGRN({ po_id: selectedPO.id, grn_qty: remaining, grn_date: grnDate, invoice_no: invoiceNo, has_invoice_attachment: hasInvoice });
-      setSuccess(res);
+      const res = await api.postGRN({
+        po_id: selectedPO.id,
+        grn_qty: Number(inwardQty),
+        grn_date: grnDate,
+        invoice_no: invoiceNo,
+        has_invoice_attachment: !!invoiceImage,
+      });
+      if (invoiceImage && res.id) {
+        try { await api.uploadGrnImage(res.id, invoiceImage); } catch (_) {}
+      }
+      setSuccess({ grn_ref: res.grn_ref ?? res.id, forced: false });
     } catch (e) {
       setError(e.message || 'Failed to post GRN.');
     } finally { setSubmitting(false); }
   }
 
-  async function handleForce(reason) {
-    setFcError('');
-    setFcSubmitting(true);
+  async function submitForce() {
+    setError('');
+    setSubmitting(true);
     try {
-      await api.forcePO(selectedPO.id, reason);
-      setSuccess({ grn_ref: 'FORCE_COMPLETED', forced: true });
+      await api.forcePO(selectedPO.id, fcReason);
+      setSuccess({ forced: true });
     } catch (e) {
-      setFcError(e.message || 'Force complete failed.');
-    } finally { setFcSubmitting(false); }
+      setError(e.message || 'Force complete failed.');
+    } finally { setSubmitting(false); }
   }
 
   if (success) {
     return (
       <div className="text-center py-16">
-        {success.forced ? <Zap size={40} className="text-amber-500 mx-auto mb-3" /> : <CheckCircle2 size={40} className="text-green-500 mx-auto mb-3" />}
+        {success.forced
+          ? <Zap size={40} className="text-amber-500 mx-auto mb-3" />
+          : <CheckCircle2 size={40} className="text-green-500 mx-auto mb-3" />}
         <div className="font-bold text-lg text-slate-900">{success.forced ? 'PO Force Completed' : 'GRN Posted'}</div>
         {!success.forced && <div className="text-sm text-slate-500 mt-1">{success.grn_ref}</div>}
-        <button onClick={() => { setSuccess(null); setSelectedPO(null); setQty(''); setHasInvoice(false); setInvoiceNo(''); loadPOs(); }}
-          className="mt-5 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
+        <button onClick={resetForm} className="mt-5 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
           {success.forced ? 'Back to PO List' : 'Post Another GRN'}
         </button>
       </div>
@@ -205,7 +245,7 @@ function GRNScreen({ api }) {
             {openPOs.map((po) => {
               const remaining = Number(po.remaining_qty ?? po.po_qty);
               return (
-                <button key={po.id} onClick={() => { setSelectedPO(po); setError(''); setHasInvoice(false); setInvoiceNo(''); }} className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 transition-colors">
+                <button key={po.id} onClick={() => selectPO(po)} className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 transition-colors">
                   <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0"><Truck size={18} /></div>
                   <div className="flex-1">
                     <div className="font-semibold text-sm text-slate-900">{po.po_no} <span className="text-slate-400">· {po.vendor_name}</span></div>
@@ -226,6 +266,13 @@ function GRNScreen({ api }) {
   }
 
   const remaining = Number(selectedPO.remaining_qty ?? selectedPO.po_qty);
+  const qty = Number(inwardQty) || 0;
+  const isExact = qty === remaining;
+  const isUnder = qty > 0 && qty < remaining;
+  const isOver = qty > remaining;
+
+  const canGRN = isExact && !submitting;
+  const canForce = isUnder && fcReason.trim().length > 0 && !submitting;
 
   return (
     <div className="space-y-4 max-w-xl">
@@ -237,11 +284,50 @@ function GRNScreen({ api }) {
           <div className="text-sm text-slate-500 mt-0.5">{selectedPO.material_code} — {selectedPO.material_name}</div>
         </div>
 
-        <div className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 flex items-center justify-between">
-          <div className="text-sm text-blue-800">Quantity to inward</div>
-          <div className="text-xl font-bold text-blue-900">{remaining} <span className="text-sm font-normal text-blue-600">{selectedPO.material_unit ?? 'units'}</span></div>
+        {/* PO quantity summary */}
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div className="bg-slate-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-slate-400 mb-0.5">PO Qty</div>
+            <div className="font-bold text-slate-900">{selectedPO.po_qty}</div>
+          </div>
+          <div className="bg-slate-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-slate-400 mb-0.5">Already Received</div>
+            <div className="font-bold text-slate-900">{Number(selectedPO.received_qty_cache ?? 0)}</div>
+          </div>
+          <div className="bg-blue-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-blue-600 mb-0.5">Remaining</div>
+            <div className="font-bold text-blue-800">{remaining}</div>
+          </div>
         </div>
-        <p className="text-xs text-slate-400">GRN must match the full remaining PO quantity. If the vendor will not supply the balance, use Force Complete below.</p>
+
+        {/* Editable inward qty */}
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">
+            Actual Inward Qty <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={remaining}
+            value={inwardQty}
+            onChange={(e) => setInwardQty(e.target.value)}
+            className={`w-full px-3 py-2.5 border rounded-lg text-sm focus:outline-none focus:ring-2 font-medium ${
+              isOver ? 'border-red-400 bg-red-50 focus:ring-red-400 text-red-700'
+              : isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
+              : isUnder ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
+              : 'border-slate-300 focus:ring-blue-500'
+            }`}
+          />
+          {isOver && (
+            <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertTriangle size={12} /> Cannot inward more than PO qty. Max allowed: {remaining}</p>
+          )}
+          {isExact && (
+            <p className="text-xs text-green-700 mt-1">Inward qty matches PO — Post GRN enabled.</p>
+          )}
+          {isUnder && (
+            <p className="text-xs text-amber-700 mt-1">Qty is less than remaining PO qty — only Force Complete is allowed.</p>
+          )}
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -254,23 +340,70 @@ function GRNScreen({ api }) {
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-slate-700">
-          <input type="checkbox" checked={hasInvoice} onChange={(e) => setHasInvoice(e.target.checked)} className="w-4 h-4" />
-          Invoice copy attached <span className="text-red-500">*</span>
-        </label>
+        {/* Invoice image upload */}
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+            <ImagePlus size={13} /> Invoice Image
+          </label>
+          <label className={`flex items-center gap-2 px-3 py-2.5 border rounded-lg cursor-pointer text-sm transition-colors ${invoiceImage ? 'border-green-400 bg-green-50 text-green-700' : 'border-dashed border-slate-300 text-slate-500 hover:border-blue-400 hover:text-blue-600'}`}>
+            <ImagePlus size={15} />
+            {invoiceImage ? invoiceImage.name : 'Click to attach invoice image (JPG / PNG / PDF)'}
+            <input type="file" accept="image/*,application/pdf" className="hidden" onChange={(e) => setInvoiceImage(e.target.files?.[0] ?? null)} />
+          </label>
+          {invoiceImage && (
+            <button onClick={() => setInvoiceImage(null)} className="text-xs text-slate-400 mt-1 hover:text-red-500">Remove</button>
+          )}
+        </div>
 
-        {error && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}</div>}
-        <button onClick={submit} disabled={submitting} className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-60">
-          {submitting ? 'Posting...' : `Post GRN for ${remaining} units`}
-        </button>
+        {/* FC reason — shown only when qty is under */}
+        {isUnder && (
+          <div>
+            <label className="text-xs font-medium text-amber-700 mb-1 block">
+              Force Complete Reason <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              rows={2}
+              value={fcReason}
+              onChange={(e) => setFcReason(e.target.value)}
+              placeholder="Reason why full PO qty will not be received…"
+              className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+            />
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+            <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}
+          </div>
+        )}
+
+        {/* Side-by-side action buttons */}
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <button
+            onClick={submitGRN}
+            disabled={!canGRN}
+            className="py-2.5 bg-blue-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {submitting && isExact ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            Post GRN
+          </button>
+          <button
+            onClick={submitForce}
+            disabled={!canForce}
+            className="py-2.5 bg-amber-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {submitting && isUnder ? <RefreshCw size={15} className="animate-spin" /> : <Zap size={15} />}
+            Force Complete
+          </button>
+        </div>
+
+        {!isOver && !isExact && !isUnder && (
+          <p className="text-xs text-slate-400 text-center">Enter a quantity to enable actions.</p>
+        )}
+        {isOver && (
+          <p className="text-xs text-red-500 text-center">Both actions are disabled — qty exceeds PO.</p>
+        )}
       </div>
-
-      <ForceCompletePanel
-        onForce={handleForce}
-        submitting={fcSubmitting}
-        error={fcError}
-        hint={`Vendor will not supply the remaining ${remaining} units. Closes this PO permanently.`}
-      />
     </div>
   );
 }

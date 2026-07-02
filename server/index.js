@@ -451,6 +451,34 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
+// ── GRN Invoice Image Upload ──────────────────────────────────────────────
+const grnImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'uploads', 'grn-images');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => cb(null, `grn-${req.params.id}-${Date.now()}${path.extname(file.originalname)}`),
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) return cb(new ApiError(400, 'INVALID_FILE', 'Only image files are allowed'));
+    cb(null, true);
+  },
+});
+
+app.post('/api/v1/goods-receipts/:id/invoice-image', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'),
+  grnImageUpload.single('invoice_image'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new ApiError(400, 'FILE_REQUIRED', 'No image file uploaded under field "invoice_image"');
+    const relPath = `uploads/grn-images/${req.file.filename}`;
+    const r = await pool.query('UPDATE goods_receipts SET invoice_image_path=$1 WHERE id=$2 RETURNING id', [relPath, req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `GRN ${req.params.id} not found`);
+    res.json({ ok: true, invoice_image_path: relPath });
+  })
+);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE 4: ISSUE STOCK FROM PM STORE AGAINST INDENT
 // ═══════════════════════════════════════════════════════════════════════════
