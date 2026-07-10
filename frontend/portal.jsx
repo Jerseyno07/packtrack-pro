@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X } from 'lucide-react';
+import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap } from 'lucide-react';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -444,6 +444,15 @@ function AdminPanel({ token }) {
   const [reverseSubmitting, setReverseSubmitting] = useState(false);
   const [reverseError, setReverseError] = useState('');
 
+  const [skuFile, setSkuFile] = useState(null);
+  const [skuUploading, setSkuUploading] = useState(false);
+  const [skuResult, setSkuResult] = useState(null);
+  const [skuError, setSkuError] = useState('');
+
+  const [consumptionRuns, setConsumptionRuns] = useState([]);
+  const [consumptionLoading, setConsumptionLoading] = useState(false);
+  const [runNowLoading, setRunNowLoading] = useState(false);
+
   const hdrs = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   const fetchOverview = useCallback(async () => {
@@ -473,8 +482,47 @@ function AdminPanel({ token }) {
     finally { setAuditLoading(false); }
   }, [token]);
 
+  const fetchConsumptionRuns = useCallback(async () => {
+    setConsumptionLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/consumption/runs`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed');
+      setConsumptionRuns(data.data ?? []);
+    } catch { /* silent */ }
+    finally { setConsumptionLoading(false); }
+  }, [token]);
+
+  async function uploadSkuMaster() {
+    if (!skuFile) { setSkuError('Select a file first.'); return; }
+    setSkuUploading(true); setSkuError(''); setSkuResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', skuFile);
+      const res = await fetch(`${BASE_URL}/api/v1/sku-packaging-master/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
+      setSkuResult(data);
+    } catch (e) { setSkuError(e.message); }
+    finally { setSkuUploading(false); }
+  }
+
+  async function triggerRunNow() {
+    setRunNowLoading(true);
+    try {
+      await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs });
+      setTimeout(() => fetchConsumptionRuns(), 2000);
+    } catch { /* silent */ }
+    finally { setRunNowLoading(false); }
+  }
+
   useEffect(() => { fetchOverview(); }, [fetchOverview]);
   useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
+  useEffect(() => { if (tab === 'consumption') fetchConsumptionRuns(); }, [tab, fetchConsumptionRuns]);
 
   async function submitReverse() {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
@@ -505,6 +553,8 @@ function AdminPanel({ token }) {
     { id: 'issues', label: 'Stock Issues' },
     { id: 'stock', label: 'Current Stock' },
     { id: 'audit', label: 'Audit Log' },
+    { id: 'sku', label: 'SKU Master' },
+    { id: 'consumption', label: 'Consumption Runs' },
   ];
 
   if (loading) return (
@@ -688,6 +738,91 @@ function AdminPanel({ token }) {
             <span className="text-sm text-slate-500">Page {auditPage}</span>
             <button disabled={!auditHasMore || auditLoading} onClick={() => fetchAuditLog(auditPage + 1)}
               className="px-3 py-1.5 text-sm bg-white border border-slate-200 rounded-lg disabled:opacity-40">Next →</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'sku' && (
+        <div className="space-y-4 max-w-xl">
+          <div>
+            <h3 className="font-semibold text-slate-800 mb-1">Upload SKU Packaging Master</h3>
+            <p className="text-xs text-slate-500 mb-3">CSV/Excel with columns: <code>sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code</code></p>
+            <div className="flex gap-2">
+              <label className={`flex-1 flex items-center gap-2 px-3 py-2.5 border rounded-lg cursor-pointer text-sm ${skuFile ? 'border-green-400 bg-green-50 text-green-700' : 'border-dashed border-slate-300 text-slate-500 hover:border-blue-400'}`}>
+                <FileSpreadsheet size={15} />
+                {skuFile ? skuFile.name : 'Choose CSV / Excel file'}
+                <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { setSkuFile(e.target.files?.[0] ?? null); setSkuResult(null); setSkuError(''); }} />
+              </label>
+              <button onClick={uploadSkuMaster} disabled={skuUploading || !skuFile}
+                className="px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-1.5">
+                {skuUploading ? <RefreshCw size={14} className="animate-spin" /> : <Upload size={14} />}
+                {skuUploading ? 'Uploading…' : 'Upload'}
+              </button>
+            </div>
+            <button onClick={() => downloadCSV('sku_master_sample.csv', [
+              ['sku_code','sku_name','primary_pm_code','secondary_pm_code','tertiary_pm_code'],
+              ['SKU-001','Product A Box','LDPE-06','WXRB-01',''],
+              ['SKU-002','Product B Wrap','NTRLL-01','',''],
+            ])} className="mt-2 text-xs text-blue-600 hover:underline">↓ Download sample CSV</button>
+          </div>
+          {skuError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{skuError}</div>}
+          {skuResult && (
+            <div className={`rounded-xl border p-4 space-y-2 ${skuResult.error_rows > 0 ? 'border-amber-200 bg-amber-50' : 'border-green-200 bg-green-50'}`}>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                {skuResult.error_rows === 0 ? <CheckCircle2 size={16} className="text-green-600" /> : <AlertTriangle size={16} className="text-amber-600" />}
+                {skuResult.upserted} upserted · {skuResult.error_rows} errors
+              </div>
+              {skuResult.errors?.map((e, i) => (
+                <div key={i} className="text-xs text-red-700">Row {e.row}: {e.error}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'consumption' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-800">Consumption Runs</h3>
+            <button onClick={triggerRunNow} disabled={runNowLoading}
+              className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg font-medium flex items-center gap-1.5 disabled:opacity-50">
+              {runNowLoading ? <RefreshCw size={14} className="animate-spin" /> : <Zap size={14} />}
+              Run Now
+            </button>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm min-w-[640px]">
+              <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="px-4 py-2.5 text-left">Run Date</th>
+                  <th className="px-4 py-2.5 text-left">Scraped Range</th>
+                  <th className="px-4 py-2.5 text-center">Status</th>
+                  <th className="px-4 py-2.5 text-right">Total Rows</th>
+                  <th className="px-4 py-2.5 text-right">Deducted</th>
+                  <th className="px-4 py-2.5 text-right">Skipped</th>
+                  <th className="px-4 py-2.5 text-right">Errors</th>
+                  <th className="px-4 py-2.5 text-left">Completed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {consumptionLoading && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
+                {!consumptionLoading && consumptionRuns.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">No runs yet</td></tr>}
+                {consumptionRuns.map((r, i) => (
+                  <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-2.5 font-medium text-slate-800">{r.run_date?.slice(0,10)}</td>
+                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.scraped_from?.slice(0,10)} → {r.scraped_to?.slice(0,10)}</td>
+                    <td className="px-4 py-2.5 text-center">
+                      <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : 'amber'}>{r.status}</Badge>
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-slate-600">{r.total_sku_facility_rows}</td>
+                    <td className="px-4 py-2.5 text-right text-green-700 font-medium">{r.deducted_lines}</td>
+                    <td className="px-4 py-2.5 text-right text-amber-600">{r.skipped_lines}</td>
+                    <td className="px-4 py-2.5 text-right text-red-600">{r.error_lines}</td>
+                    <td className="px-4 py-2.5 text-slate-400 text-xs">{r.completed_at ? new Date(r.completed_at).toLocaleString() : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
