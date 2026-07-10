@@ -1002,6 +1002,202 @@ app.get('/api/v1/materials', authenticate, asyncHandler(async (req, res) => {
 // Serve React frontend for all non-API routes (production)
 const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
 app.use(express.static(frontendDist));
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE: SKU PACKAGING MASTER UPLOAD
+// ═══════════════════════════════════════════════════════════════════════════
+
+app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN'), upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new ApiError(400, 'FILE_REQUIRED', 'No file uploaded under field "file"');
+    const rawRows = parseUploadedFile(req.file);
+    if (!rawRows.length) throw new ApiError(400, 'EMPTY_FILE', 'File contains no data rows');
+
+    const matSet = new Set((await pool.query('SELECT code FROM materials WHERE is_active')).rows.map((r) => r.code));
+
+    const errors = [];
+    const upserted = [];
+
+    for (let i = 0; i < rawRows.length; i++) {
+      const rowNum = i + 2;
+      const row = rawRows[i];
+      const sku_code = String(row.sku_code ?? '').trim();
+      const sku_name = String(row.sku_name ?? '').trim() || null;
+      const primary_pm_code = String(row.primary_pm_code ?? '').trim() || null;
+      const secondary_pm_code = String(row.secondary_pm_code ?? '').trim() || null;
+      const tertiary_pm_code = String(row.tertiary_pm_code ?? '').trim() || null;
+
+      if (!sku_code) { errors.push({ row: rowNum, error: 'sku_code is required' }); continue; }
+      if (!primary_pm_code) { errors.push({ row: rowNum, error: 'primary_pm_code is required' }); continue; }
+      if (!matSet.has(primary_pm_code)) { errors.push({ row: rowNum, error: `primary_pm_code '${primary_pm_code}' not found in materials` }); continue; }
+      if (secondary_pm_code && !matSet.has(secondary_pm_code)) { errors.push({ row: rowNum, error: `secondary_pm_code '${secondary_pm_code}' not found in materials` }); continue; }
+      if (tertiary_pm_code && !matSet.has(tertiary_pm_code)) { errors.push({ row: rowNum, error: `tertiary_pm_code '${tertiary_pm_code}' not found in materials` }); continue; }
+
+      await pool.query(
+        `INSERT INTO sku_packaging_master (sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code, uploaded_by, uploaded_at)
+         VALUES ($1,$2,$3,$4,$5,$6,now())
+         ON CONFLICT (sku_code) DO UPDATE SET sku_name=$2, primary_pm_code=$3, secondary_pm_code=$4, tertiary_pm_code=$5, uploaded_by=$6, uploaded_at=now()`,
+        [sku_code, sku_name, primary_pm_code, secondary_pm_code || null, tertiary_pm_code || null, req.user.id]
+      );
+      upserted.push(sku_code);
+    }
+
+    await writeAudit(pool, { userId: req.user.id, action: 'SKU_MASTER_UPLOADED', entityTable: 'sku_packaging_master', entityId: 0, detail: { upserted: upserted.length, errors: errors.length } });
+    res.status(201).json({ total_rows: rawRows.length, upserted: upserted.length, error_rows: errors.length, errors: errors.slice(0, 200) });
+  })
+);
+
+app.get('/api/v1/sku-packaging-master', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { page = 1, page_size = 100 } = req.query;
+  const limit = Math.min(Number(page_size), 500);
+  const offset = (Number(page) - 1) * limit;
+  const r = await pool.query(
+    `SELECT s.*, u.name AS uploaded_by_name FROM sku_packaging_master s LEFT JOIN users u ON u.id = s.uploaded_by ORDER BY s.sku_code LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  res.json({ data: r.rows, page: Number(page), page_size: limit });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE: PHYSICAL AUDIT
+// ═══════════════════════════════════════════════════════════════════════════
+
+app.get('/api/v1/audits/prefill', authenticate, asyncHandler(async (req, res) => {
+  const { warehouse_id } = req.query;
+  if (!warehouse_id) throw new ApiError(400, 'WAREHOUSE_REQUIRED', 'warehouse_id query param is required');
+  if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.map(String).includes(String(warehouse_id))) {
+    throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to this warehouse');
+  }
+  const r = await pool.query(
+    `SELECT m.id AS material_id, m.code AS material_code, m.name AS material_name, m.unit,
+            COALESCE(cs.on_hand_qty, 0) AS system_qty
+     FROM materials m
+     LEFT JOIN v_current_stock cs ON cs.material_id = m.id AND cs.warehouse_id = $1
+     WHERE m.is_active
+     ORDER BY m.code`,
+    [warehouse_id]
+  );
+  res.json({ data: r.rows });
+}));
+
+app.post('/api/v1/audits', authenticate, requireRole('PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const schema = z.object({
+      warehouse_id: z.coerce.number().int().positive(),
+      remarks: z.string().min(1),
+      audit_date: z.string().optional(),
+      lines: z.array(z.object({
+        material_id: z.coerce.number().int().positive(),
+        physical_qty: z.coerce.number().nonnegative(),
+      })).min(1),
+    });
+    const d = schema.parse(req.body);
+
+    if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role) && !req.user.warehouse_ids.map(String).includes(String(d.warehouse_id))) {
+      throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to this warehouse');
+    }
+
+    const auditDate = d.audit_date || new Date().toISOString().slice(0, 10);
+    const auditRef = genRef('AUD');
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const entryRes = await client.query(
+        `INSERT INTO audit_entries (audit_ref, warehouse_id, conducted_by, remarks, audit_date)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        [auditRef, d.warehouse_id, req.user.id, d.remarks, auditDate]
+      );
+      const entryId = entryRes.rows[0].id;
+
+      const stockRes = await client.query(
+        `SELECT material_id, COALESCE(on_hand_qty,0) AS on_hand_qty FROM v_current_stock WHERE warehouse_id=$1`,
+        [d.warehouse_id]
+      );
+      const stockMap = new Map(stockRes.rows.map((r) => [String(r.material_id), Number(r.on_hand_qty)]));
+
+      const summary = [];
+      for (const line of d.lines) {
+        const systemQty = stockMap.get(String(line.material_id)) ?? 0;
+        const delta = line.physical_qty - systemQty;
+
+        let ledgerId = null;
+        if (delta !== 0) {
+          const ledgerRes = await client.query(
+            `INSERT INTO stock_ledger (warehouse_id, material_id, movement_type, qty_delta, unit_cost, ref_table, ref_id, movement_date)
+             VALUES ($1,$2,'AUDIT_ADJUSTMENT',$3,0,'audit_entry_lines',0,$4) RETURNING id`,
+            [d.warehouse_id, line.material_id, delta, auditDate]
+          );
+          ledgerId = ledgerRes.rows[0].id;
+          // update ref_id now that we have the ledger row id
+          await client.query(`UPDATE stock_ledger SET ref_id=$1 WHERE id=$1`, [ledgerId]);
+        }
+
+        await client.query(
+          `INSERT INTO audit_entry_lines (audit_entry_id, material_id, system_qty, physical_qty, ledger_id)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [entryId, line.material_id, systemQty, line.physical_qty, ledgerId]
+        );
+        summary.push({ material_id: line.material_id, system_qty: systemQty, physical_qty: line.physical_qty, delta });
+      }
+
+      await writeAudit(client, { userId: req.user.id, action: 'AUDIT_CONDUCTED', entityTable: 'audit_entries', entityId: entryId, detail: { auditRef, warehouse_id: d.warehouse_id, lines: d.lines.length } });
+      await client.query('COMMIT');
+      res.status(201).json({ audit_ref: auditRef, audit_entry_id: entryId, lines: summary });
+    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  })
+);
+
+app.get('/api/v1/audits', authenticate, asyncHandler(async (req, res) => {
+  const { warehouse_id, page = 1, page_size = 50 } = req.query;
+  const conditions = []; const params = [];
+  if (warehouse_id) { params.push(warehouse_id); conditions.push(`ae.warehouse_id = $${params.length}`); }
+  if (!['ADMIN', 'PM_STORE_EXEC'].includes(req.user.role)) {
+    params.push(req.user.warehouse_ids.length ? req.user.warehouse_ids : [-1]);
+    conditions.push(`ae.warehouse_id = ANY($${params.length})`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = Math.min(Number(page_size), 200);
+  const offset = (Number(page) - 1) * limit;
+  const r = await pool.query(
+    `SELECT ae.*, w.name AS warehouse_name, u.name AS conducted_by_name,
+            json_agg(json_build_object('material_id', ael.material_id, 'material_code', m.code, 'material_name', m.name, 'unit', m.unit, 'system_qty', ael.system_qty, 'physical_qty', ael.physical_qty, 'delta', ael.delta) ORDER BY m.code) AS lines
+     FROM audit_entries ae
+     JOIN warehouses w ON w.id = ae.warehouse_id
+     JOIN users u ON u.id = ae.conducted_by
+     LEFT JOIN audit_entry_lines ael ON ael.audit_entry_id = ae.id
+     LEFT JOIN materials m ON m.id = ael.material_id
+     ${where}
+     GROUP BY ae.id, w.name, u.name
+     ORDER BY ae.audit_date DESC, ae.created_at DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]
+  );
+  res.json({ data: r.rows, page: Number(page), page_size: limit });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE: CONSUMPTION RUNS (admin trigger + listing)
+// ═══════════════════════════════════════════════════════════════════════════
+
+app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { runConsumption } = require('./cron/consumptionScraper');
+  res.json({ ok: true, message: 'Consumption run started in background' });
+  setImmediate(() => runConsumption().catch((e) => console.error('[consumption] manual run error:', e.message)));
+}));
+
+app.get('/api/v1/admin/consumption/runs', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const r = await pool.query(
+    `SELECT cr.*, COUNT(crl.id) AS total_lines
+     FROM consumption_runs cr
+     LEFT JOIN consumption_run_lines crl ON crl.run_id = cr.id
+     GROUP BY cr.id
+     ORDER BY cr.run_date DESC
+     LIMIT 30`
+  );
+  res.json({ data: r.rows });
+}));
+
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   const index = path.join(frontendDist, 'index.html');
