@@ -967,10 +967,21 @@ app.get('/api/v1/dashboard/low-stock-alerts', authenticate, requireRole('PM_STOR
 app.get('/api/v1/stock/current', authenticate, asyncHandler(async (req, res) => {
   const { warehouse_id } = req.query;
   const params = [];
-  const where = warehouse_id ? (params.push(warehouse_id), 'WHERE cs.warehouse_id = $1') : '';
+  const conditions = [];
+  if (warehouse_id) { params.push(warehouse_id); conditions.push(`cs.warehouse_id = $${params.length}`); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
-    `SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, cs.on_hand_qty, cs.weighted_avg_cost
-     FROM v_current_stock cs JOIN warehouses w ON w.id = cs.warehouse_id JOIN materials m ON m.id = cs.material_id ${where} ORDER BY w.name, m.code`, params
+    `SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, m.unit,
+            COALESCE(cs.on_hand_qty, 0) AS on_hand_qty, cs.weighted_avg_cost,
+            COALESCE(msl.min_qty, m.low_stock_qty) AS min_qty,
+            CASE WHEN COALESCE(cs.on_hand_qty, 0) <= COALESCE(msl.min_qty, m.low_stock_qty) THEN true ELSE false END AS is_low_stock
+     FROM v_current_stock cs
+     JOIN warehouses w ON w.id = cs.warehouse_id
+     JOIN materials m ON m.id = cs.material_id
+     LEFT JOIN min_stock_levels msl ON msl.warehouse_id = cs.warehouse_id AND msl.material_id = cs.material_id
+     ${where}
+     ORDER BY w.name, m.code`,
+    params
   );
   res.json({ data: result.rows });
 }));

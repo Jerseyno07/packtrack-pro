@@ -337,6 +337,72 @@ function SuccessScreen({ receiptInfo, onDone }) {
   );
 }
 
+function StockView({ token, warehouseId }) {
+  const [stock, setStock] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true); setError('');
+      try {
+        if (!token || !warehouseId) {
+          setStock([
+            { material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', unit: 'Pcs', on_hand_qty: '1211.000', weighted_avg_cost: '2.50', is_low_stock: false },
+            { material_code: 'NTRLL-01', material_name: 'Net Roll', unit: 'Roll', on_hand_qty: '950.000', weighted_avg_cost: '12.00', is_low_stock: false },
+            { material_code: 'WXRB-01', material_name: 'Wax Ribbon', unit: 'Roll', on_hand_qty: '0.000', weighted_avg_cost: '0.00', is_low_stock: true },
+          ]);
+          return;
+        }
+        const res = await fetch(`${BASE_URL}/api/v1/stock/current?warehouse_id=${warehouseId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+        setStock(data.data ?? []);
+      } catch (e) { setError(e.message); }
+      finally { setLoading(false); }
+    }
+    load();
+  }, [token, warehouseId]);
+
+  return (
+    <div className="space-y-3">
+      <h2 className="text-lg font-bold text-slate-900">My Stock</h2>
+      {error && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}</div>}
+      {loading ? <div className="text-center text-sm text-slate-400 py-10">Loading…</div> : (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+              <tr>
+                <th className="px-3 py-2.5 text-left">Material</th>
+                <th className="px-3 py-2.5 text-right">On Hand</th>
+                <th className="px-3 py-2.5 text-right">Avg Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stock.length === 0 && <tr><td colSpan={3} className="px-3 py-8 text-center text-slate-400">No stock records</td></tr>}
+              {stock.map((s, i) => (
+                <tr key={i} className={`border-t border-slate-100 ${s.is_low_stock ? 'bg-red-50' : ''}`}>
+                  <td className="px-3 py-2.5">
+                    <div className="font-medium text-slate-800">{s.material_name}</div>
+                    <div className="text-xs text-slate-400 flex items-center gap-1">
+                      {s.material_code} · {s.unit}
+                      {s.is_low_stock && <span className="text-red-500 font-semibold">⚠ Below minimum</span>}
+                    </div>
+                  </td>
+                  <td className={`px-3 py-2.5 text-right font-bold ${s.is_low_stock ? 'text-red-600' : 'text-slate-900'}`}>{Number(s.on_hand_qty)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ReceiptApp() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
@@ -400,12 +466,15 @@ export default function ReceiptApp() {
       {/* Tab bar */}
       <div className="flex gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
         <button onClick={() => setTab('receive')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
+        <button onClick={() => setTab('stock')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>My Stock</button>
         <button onClick={() => setTab('audit')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
       </div>
 
       <div className="p-4 space-y-3">
         {tab === 'audit' ? (
           <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />
+        ) : tab === 'stock' ? (
+          <StockView token={token} warehouseId={user?.warehouse_ids?.[0]} />
         ) : successInfo ? (
           <SuccessScreen receiptInfo={successInfo} onDone={() => { setSuccessInfo(null); setSelected(null); refresh(); }} />
         ) : selected ? (
