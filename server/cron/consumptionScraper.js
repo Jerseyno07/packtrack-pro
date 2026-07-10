@@ -20,29 +20,75 @@ async function getCurrentStock(client, warehouseId, materialCode) {
   return Number(r.rows[0].qty);
 }
 
-async function scrapePackagedQty(fromDate, toDate) {
-  const url = `${process.env.CONSUMPTION_DASHBOARD_URL}/api/queries/${process.env.CONSUMPTION_QUERY_ID}/results`;
-  const params = new URLSearchParams({ p_from: fromDate, p_to: toDate });
+// Redash query columns (query 53716 — "PackTrack-FC/CC Day level consumption"):
+//   DeliveryDate, CityId, City, FacilityId, Facility, SkuId, Sku,
+//   lotweightId, FSN, FSN_Name, PackagingSubCategory, LotSize,
+//   orderlot, Billedlot, BilledQuantity, PackingCost, FC_Pct, CC_Pct
+//
+// Each row covers one delivery-facility+SKU combination.
+// BilledQuantity × FC_Pct/100 was packed at FC; × CC_Pct/100 at CC.
+// We expand each row into up to two consumption records keyed to warehouse codes.
+// sku_code uses FSN (stable Ninjacart product code) — match against sku_packaging_master.
 
-  const res = await fetch(`${url}?${params}`, {
-    headers: {
-      'Authorization': `Key ${process.env.CONSUMPTION_DASHBOARD_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
+const WAREHOUSE_KEYS = [
+  { key: 'FC_Pct', facility_id: 'FC-BLR' },
+  { key: 'CC_Pct', facility_id: 'CC-BLR' },
+];
+
+async function executeRedashQuery(fromDate, toDate) {
+  const base = process.env.CONSUMPTION_DASHBOARD_URL;
+  const apiKey = process.env.CONSUMPTION_DASHBOARD_API_KEY;
+  const qid = process.env.CONSUMPTION_QUERY_ID;
+  const hdrs = { 'Authorization': `Key ${apiKey}`, 'Content-Type': 'application/json' };
+
+  // Trigger execution
+  const triggerRes = await fetch(`${base}/api/queries/${qid}/results`, {
+    method: 'POST',
+    headers: hdrs,
+    body: JSON.stringify({ parameters: { from: fromDate, to: toDate }, max_age: 0 }),
   });
+  if (!triggerRes.ok) throw new Error(`Redash trigger error: ${triggerRes.status}`);
+  const triggerData = await triggerRes.json();
 
-  if (!res.ok) throw new Error(`Redash API error: ${res.status} ${await res.text()}`);
+  // If result already cached, return immediately
+  if (triggerData.query_result) return triggerData.query_result.data?.rows ?? [];
 
-  const data = await res.json();
-  const rows = data?.query_result?.data?.rows;
-  if (!rows?.length) return [];
+  const jobId = triggerData.job?.id;
+  if (!jobId) throw new Error('Redash returned neither job nor query_result');
 
-  // TODO: confirm exact column names from Redash query output, then map here:
-  return rows.map((row) => ({
-    facility_id:  row['facility_id'],
-    sku_code:     row['sku_id'] ?? row['sku_code'],
-    packaged_qty: Number(row['packaged_qty'] ?? row['packed_qty'] ?? 0),
-  })).filter((r) => r.facility_id && r.sku_code && r.packaged_qty > 0);
+  // Poll until complete (up to 5 min)
+  for (let i = 0; i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const jobRes = await fetch(`${base}/api/jobs/${jobId}`, { headers: hdrs });
+    const job = (await jobRes.json()).job;
+    if (job.status === 3) {
+      const resultRes = await fetch(`${base}/api/query_results/${job.query_result_id}`, { headers: hdrs });
+      const rd = await resultRes.json();
+      return rd?.query_result?.data?.rows ?? [];
+    }
+    if (job.status === 4) throw new Error(`Redash job failed: ${job.error}`);
+  }
+  throw new Error('Redash query timed out after 5 minutes');
+}
+
+async function scrapePackagedQty(fromDate, toDate) {
+  const rawRows = await executeRedashQuery(fromDate, toDate);
+  console.log(`[consumption] Redash returned ${rawRows.length} raw rows`);
+
+  const out = [];
+  for (const row of rawRows) {
+    const fsn = row['FSN'];
+    const billedQty = Number(row['BilledQuantity'] ?? 0);
+    if (!fsn || billedQty <= 0) continue;
+
+    for (const { key, facility_id } of WAREHOUSE_KEYS) {
+      const pct = Number(row[key] ?? 0);
+      if (pct <= 0) continue;
+      const qty = billedQty * pct / 100;
+      if (qty > 0) out.push({ facility_id, sku_code: fsn, packaged_qty: qty });
+    }
+  }
+  return out;
 }
 
 async function runConsumption() {
