@@ -26,14 +26,9 @@ async function getCurrentStock(client, warehouseId, materialCode) {
 //   orderlot, Billedlot, BilledQuantity, PackingCost, FC_Pct, CC_Pct
 //
 // Each row covers one delivery-facility+SKU combination.
-// BilledQuantity × FC_Pct/100 was packed at FC; × CC_Pct/100 at CC.
-// We expand each row into up to two consumption records keyed to warehouse codes.
+// FacilityId maps directly to warehouses.code (e.g. "9382", "9575").
+// BilledQuantity is the full quantity consumed at that facility.
 // sku_code uses FSN (stable Ninjacart product code) — match against sku_packaging_master.
-
-const WAREHOUSE_KEYS = [
-  { key: 'FC_Pct', facility_id: 'FC-BLR' },
-  { key: 'CC_Pct', facility_id: 'CC-BLR' },
-];
 
 async function executeRedashQuery(fromDate, toDate) {
   const base = process.env.CONSUMPTION_DASHBOARD_URL;
@@ -78,15 +73,10 @@ async function scrapePackagedQty(fromDate, toDate) {
   const out = [];
   for (const row of rawRows) {
     const fsn = row['FSN'];
+    const facilityId = String(row['FacilityId'] ?? '').trim();
     const billedQty = Number(row['BilledQuantity'] ?? 0);
-    if (!fsn || billedQty <= 0) continue;
-
-    for (const { key, facility_id } of WAREHOUSE_KEYS) {
-      const pct = Number(row[key] ?? 0);
-      if (pct <= 0) continue;
-      const qty = billedQty * pct / 100;
-      if (qty > 0) out.push({ facility_id, sku_code: fsn, packaged_qty: qty });
-    }
+    if (!fsn || !facilityId || billedQty <= 0) continue;
+    out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: billedQty });
   }
   return out;
 }
