@@ -746,7 +746,7 @@ function AdminPanel({ token }) {
         <div className="space-y-4 max-w-xl">
           <div>
             <h3 className="font-semibold text-slate-800 mb-1">Upload SKU Packaging Master</h3>
-            <p className="text-xs text-slate-500 mb-3">CSV/Excel with columns: <code>sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code</code></p>
+            <p className="text-xs text-slate-500 mb-3">Use your existing master CSV — required columns: <code>FSN ID</code>, <code>SKU Name</code>, <code>Packing Material</code>. Optional: <code>Sec. packing (…)</code> columns for secondary/tertiary materials.</p>
             <div className="flex gap-2">
               <label className={`flex-1 flex items-center gap-2 px-3 py-2.5 border rounded-lg cursor-pointer text-sm ${skuFile ? 'border-green-400 bg-green-50 text-green-700' : 'border-dashed border-slate-300 text-slate-500 hover:border-blue-400'}`}>
                 <FileSpreadsheet size={15} />
@@ -760,9 +760,9 @@ function AdminPanel({ token }) {
               </button>
             </div>
             <button onClick={() => downloadCSV('sku_master_sample.csv', [
-              ['sku_code','sku_name','primary_pm_code','secondary_pm_code','tertiary_pm_code'],
-              ['SKU-001','Product A Box','LDPE-06','WXRB-01',''],
-              ['SKU-002','Product B Wrap','NTRLL-01','',''],
+              ['FSN ID','SKU Name','Packing Type','Packing Material','Sec. packing (Cling wrap)','Sec. packing (Foam Roll)','Sec. packing (Butter Paper)','Sec. packing (Foam Net)'],
+              ['VEGFFHGDAHJVZQEN','Beans (cluster)','Bag','LDPE Cover 6 Kg','','','',''],
+              ['VEGHZA5FHUVZRZ7C','Fresh Yam','Net','Net Roll','1','','',''],
             ])} className="mt-2 text-xs text-blue-600 hover:underline">↓ Download sample CSV</button>
           </div>
           {skuError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{skuError}</div>}

@@ -1017,13 +1017,33 @@ app.use(express.static(frontendDist));
 // MODULE: SKU PACKAGING MASTER UPLOAD
 // ═══════════════════════════════════════════════════════════════════════════
 
+// CSV columns (after parseUploadedFile normalisation — lowercase, spaces→underscore):
+//   fsn_id           → sku_code
+//   sku_name         → sku_name
+//   packing_material → primary material (looked up by name OR code, case-insensitive)
+//   sec._packing_(*) → secondary / tertiary materials (any col matching this pattern,
+//                       non-empty/non-zero value = material is used; name extracted
+//                       from between the outer parentheses)
 app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN'), upload.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw new ApiError(400, 'FILE_REQUIRED', 'No file uploaded under field "file"');
     const rawRows = parseUploadedFile(req.file);
     if (!rawRows.length) throw new ApiError(400, 'EMPTY_FILE', 'File contains no data rows');
 
-    const matSet = new Set((await pool.query('SELECT code FROM materials WHERE is_active')).rows.map((r) => r.code));
+    // Build lookup: lowercase(name) → code  AND  lowercase(code) → code
+    const matRows = (await pool.query('SELECT code, name FROM materials WHERE is_active')).rows;
+    const matByName = new Map(matRows.map((r) => [r.name.toLowerCase().trim(), r.code]));
+    const matByCode = new Map(matRows.map((r) => [r.code.toLowerCase().trim(), r.code]));
+    function resolveMaterial(val) {
+      if (!val) return null;
+      const v = String(val).toLowerCase().trim();
+      return matByName.get(v) ?? matByCode.get(v) ?? null;
+    }
+
+    // Detect secondary packing column keys from first data row
+    // Keys look like: sec._packing_(cling_wrap), sec._packing_(foam_roll), etc.
+    const firstRowKeys = Object.keys(rawRows[0] ?? {});
+    const secPackingCols = firstRowKeys.filter((k) => /^sec[._].*packing/i.test(k));
 
     const errors = [];
     const upserted = [];
@@ -1031,23 +1051,41 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
     for (let i = 0; i < rawRows.length; i++) {
       const rowNum = i + 2;
       const row = rawRows[i];
-      const sku_code = String(row.sku_code ?? '').trim();
-      const sku_name = String(row.sku_name ?? '').trim() || null;
-      const primary_pm_code = String(row.primary_pm_code ?? '').trim() || null;
-      const secondary_pm_code = String(row.secondary_pm_code ?? '').trim() || null;
-      const tertiary_pm_code = String(row.tertiary_pm_code ?? '').trim() || null;
 
-      if (!sku_code) { errors.push({ row: rowNum, error: 'sku_code is required' }); continue; }
-      if (!primary_pm_code) { errors.push({ row: rowNum, error: 'primary_pm_code is required' }); continue; }
-      if (!matSet.has(primary_pm_code)) { errors.push({ row: rowNum, error: `primary_pm_code '${primary_pm_code}' not found in materials` }); continue; }
-      if (secondary_pm_code && !matSet.has(secondary_pm_code)) { errors.push({ row: rowNum, error: `secondary_pm_code '${secondary_pm_code}' not found in materials` }); continue; }
-      if (tertiary_pm_code && !matSet.has(tertiary_pm_code)) { errors.push({ row: rowNum, error: `tertiary_pm_code '${tertiary_pm_code}' not found in materials` }); continue; }
+      const sku_code = String(row['fsn_id'] ?? row['fsn'] ?? row['sku_code'] ?? '').trim();
+      const sku_name = String(row['sku_name'] ?? '').trim() || null;
+      const primaryRaw = String(row['packing_material'] ?? row['primary_pm_code'] ?? '').trim();
+
+      if (!sku_code) { errors.push({ row: rowNum, error: 'FSN ID is required' }); continue; }
+      if (!primaryRaw) { errors.push({ row: rowNum, error: 'Packing Material (col H) is required' }); continue; }
+
+      const primary_pm_code = resolveMaterial(primaryRaw);
+      if (!primary_pm_code) {
+        errors.push({ row: rowNum, error: `Packing Material '${primaryRaw}' not found in materials (match by name or code)` });
+        continue;
+      }
+
+      // Collect sec. packing materials — any column with a non-empty, non-zero value
+      const secCodes = [];
+      for (const col of secPackingCols) {
+        const val = row[col];
+        const isEmpty = val === '' || val === null || val === undefined || Number(val) === 0;
+        if (isEmpty) continue;
+        // Extract material name from the column header, e.g. "sec._packing_(foam_roll)" → "Foam Roll"
+        const nameMatch = col.match(/\(([^)]+)\)$/);
+        const matName = nameMatch ? nameMatch[1].replace(/_/g, ' ') : col;
+        const code = resolveMaterial(matName);
+        if (code && code !== primary_pm_code && !secCodes.includes(code)) secCodes.push(code);
+      }
+
+      const secondary_pm_code = secCodes[0] ?? null;
+      const tertiary_pm_code = secCodes[1] ?? null;
 
       await pool.query(
         `INSERT INTO sku_packaging_master (sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code, uploaded_by, uploaded_at)
          VALUES ($1,$2,$3,$4,$5,$6,now())
          ON CONFLICT (sku_code) DO UPDATE SET sku_name=$2, primary_pm_code=$3, secondary_pm_code=$4, tertiary_pm_code=$5, uploaded_by=$6, uploaded_at=now()`,
-        [sku_code, sku_name, primary_pm_code, secondary_pm_code || null, tertiary_pm_code || null, req.user.id]
+        [sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code, req.user.id]
       );
       upserted.push(sku_code);
     }
