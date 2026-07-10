@@ -1,9 +1,9 @@
-// Consumption scraper — deducts stock based on packaging usage scraped from dashboard.
+// Consumption scraper — deducts stock based on packaging usage from Redash API.
 // Schedule: 0 5 * * * (5am daily)
 // Environment vars required:
-//   CONSUMPTION_DASHBOARD_URL   — base URL of the packaging dashboard
-//   CONSUMPTION_DASHBOARD_USER  — login username / email
-//   CONSUMPTION_DASHBOARD_PASS  — login password
+//   CONSUMPTION_DASHBOARD_URL     — e.g. https://analytics-new-k8s.ninjacart.in
+//   CONSUMPTION_DASHBOARD_API_KEY — Redash API key
+//   CONSUMPTION_QUERY_ID          — Redash query ID to execute
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
@@ -20,50 +20,30 @@ async function getCurrentStock(client, warehouseId, materialCode) {
   return Number(r.rows[0].qty);
 }
 
-// ─── TODO: SCRAPER_IMPL ───────────────────────────────────────────────────────
-// Replace this stub with real Playwright navigation and table extraction.
-// The function must return an array of:
-//   { facility_id: string, sku_code: string, packaged_qty: number }
-// where facility_id matches warehouses.code (e.g. 'CC-BLR', 'FC-BLR').
-//
-// Stub implementation — returns an empty array until selectors are provided.
-async function scrapePackagingData(fromDate, toDate) {
-  const dashboardUrl = process.env.CONSUMPTION_DASHBOARD_URL;
-  const dashUser = process.env.CONSUMPTION_DASHBOARD_USER;
-  const dashPass = process.env.CONSUMPTION_DASHBOARD_PASS;
+async function scrapePackagedQty(fromDate, toDate) {
+  const url = `${process.env.CONSUMPTION_DASHBOARD_URL}/api/queries/${process.env.CONSUMPTION_QUERY_ID}/results`;
+  const params = new URLSearchParams({ p_from: fromDate, p_to: toDate });
 
-  if (!dashboardUrl || !dashUser || !dashPass) {
-    console.warn('[consumption] CONSUMPTION_DASHBOARD_URL / USER / PASS not set — skipping scrape, returning []');
-    return [];
-  }
+  const res = await fetch(`${url}?${params}`, {
+    headers: {
+      'Authorization': `Key ${process.env.CONSUMPTION_DASHBOARD_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+  });
 
-  // TODO: SCRAPER_IMPL
-  // const { chromium } = require('playwright');
-  // const browser = await chromium.launch({ headless: true });
-  // const page = await browser.newPage();
-  // await page.goto(dashboardUrl);
-  // await page.fill('#email', dashUser);        // <-- replace with actual selector
-  // await page.fill('#password', dashPass);     // <-- replace with actual selector
-  // await page.click('button[type="submit"]');  // <-- replace with actual selector
-  // await page.waitForNavigation();
-  // // set date range to fromDate..toDate using dashboard controls
-  // // extract rows from the results table
-  // const rows = await page.$$eval('table.results tbody tr', (trs) =>
-  //   trs.map((tr) => {
-  //     const cells = tr.querySelectorAll('td');
-  //     return {
-  //       facility_id: cells[0]?.innerText.trim(),   // <-- adjust column index
-  //       sku_code:    cells[1]?.innerText.trim(),   // <-- adjust column index
-  //       packaged_qty: Number(cells[2]?.innerText.replace(/,/g, '').trim()), // <-- adjust
-  //     };
-  //   })
-  // );
-  // await browser.close();
-  // return rows;
+  if (!res.ok) throw new Error(`Redash API error: ${res.status} ${await res.text()}`);
 
-  return []; // stub — remove when SCRAPER_IMPL is filled in
+  const data = await res.json();
+  const rows = data?.query_result?.data?.rows;
+  if (!rows?.length) return [];
+
+  // TODO: confirm exact column names from Redash query output, then map here:
+  return rows.map((row) => ({
+    facility_id:  row['facility_id'],
+    sku_code:     row['sku_id'] ?? row['sku_code'],
+    packaged_qty: Number(row['packaged_qty'] ?? row['packed_qty'] ?? 0),
+  })).filter((r) => r.facility_id && r.sku_code && r.packaged_qty > 0);
 }
-// ─── END TODO: SCRAPER_IMPL ───────────────────────────────────────────────────
 
 async function runConsumption() {
   const today = new Date();
@@ -97,7 +77,7 @@ async function runConsumption() {
   const runId = runRes.rows[0].id;
 
   try {
-    const rows = await scrapePackagingData(scraped_from, scraped_to);
+    const rows = await scrapePackagedQty(scraped_from, scraped_to);
     console.log(`[consumption] Scraped ${rows.length} rows for ${scraped_from}..${scraped_to}`);
 
     const skuMap = new Map(
