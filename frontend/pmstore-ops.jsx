@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus } from 'lucide-react';
+import AuditScreen from './AuditScreen.jsx';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -618,8 +619,11 @@ export default function PMStoreOps() {
         <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-5">
           <button onClick={() => setTab('grn')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Post GRN</button>
           <button onClick={() => setTab('issue')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue Against Indent</button>
+          <button onClick={() => setTab('audit')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
         </div>
-        {tab === 'grn' ? <GRNScreen api={client} /> : <IssueScreen api={client} />}
+        {tab === 'grn' && <GRNScreen api={client} />}
+        {tab === 'issue' && <IssueScreen api={client} />}
+        {tab === 'audit' && <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />}
       </div>
     </div>
   );
