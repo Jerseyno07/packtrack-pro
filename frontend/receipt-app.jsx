@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Truck, Package, CheckCircle2, AlertTriangle, Clock, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap } from 'lucide-react';
+import AuditScreen from './AuditScreen.jsx';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -339,6 +340,7 @@ function SuccessScreen({ receiptInfo, onDone }) {
 export default function ReceiptApp() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
+  const [tab, setTab] = useState('receive');
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -395,8 +397,16 @@ export default function ReceiptApp() {
         </div>
       </div>
 
+      {/* Tab bar */}
+      <div className="flex gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
+        <button onClick={() => setTab('receive')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
+        <button onClick={() => setTab('audit')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
+      </div>
+
       <div className="p-4 space-y-3">
-        {successInfo ? (
+        {tab === 'audit' ? (
+          <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />
+        ) : successInfo ? (
           <SuccessScreen receiptInfo={successInfo} onDone={() => { setSuccessInfo(null); setSelected(null); refresh(); }} />
         ) : selected ? (
           <ReceiptForm
