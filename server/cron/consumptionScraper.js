@@ -1,9 +1,10 @@
 // Consumption scraper — deducts stock based on packaging usage from Redash API.
 // Schedule: 0 5 * * * (5am daily)
 // Environment vars required:
-//   CONSUMPTION_DASHBOARD_URL     — e.g. https://analytics-new-k8s.ninjacart.in
-//   CONSUMPTION_DASHBOARD_API_KEY — Redash API key
-//   CONSUMPTION_QUERY_ID          — Redash query ID to execute
+//   CONSUMPTION_DASHBOARD_URL      — e.g. https://analytics-new-k8s.ninjacart.in
+//   CONSUMPTION_DASHBOARD_API_KEY  — Redash API key
+//   CONSUMPTION_QUERY_ID           — FC query ID (53716)
+//   CONSUMPTION_CC_QUERY_ID        — CC query ID (53761)
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
@@ -20,38 +21,32 @@ async function getCurrentStock(client, warehouseId, materialCode) {
   return Number(r.rows[0].qty);
 }
 
-// Redash query columns (query 53716 — "PackTrack-FC/CC Day level consumption"):
-//   DeliveryDate, CityId, City, FacilityId, Facility, SkuId, Sku,
-//   lotweightId, FSN, FSN_Name, PackagingSubCategory, LotSize,
-//   orderlot, Billedlot, BilledQuantity, PackingCost, FC_Pct, CC_Pct
+// FC query (CONSUMPTION_QUERY_ID):
+//   FacilityId → warehouses.code, FSN → sku_code, Billedlot → qty
+//   Parameters: from, to
 //
-// Each row covers one delivery-facility+SKU combination.
-// FacilityId maps directly to warehouses.code (e.g. "9382", "9575").
-// BilledQuantity is the full quantity consumed at that facility.
-// sku_code uses FSN (stable Ninjacart product code) — match against sku_packaging_master.
+// CC query (CONSUMPTION_CC_QUERY_ID):
+//   FromFacilityId → warehouses.code, fsncode → sku_code, AllocatedQuantity → qty
+//   Parameters: "from date", "to date"
 
-async function executeRedashQuery(fromDate, toDate) {
+async function executeRedashQuery(qid, params) {
   const base = process.env.CONSUMPTION_DASHBOARD_URL;
   const apiKey = process.env.CONSUMPTION_DASHBOARD_API_KEY;
-  const qid = process.env.CONSUMPTION_QUERY_ID;
   const hdrs = { 'Authorization': `Key ${apiKey}`, 'Content-Type': 'application/json' };
 
-  // Trigger execution
   const triggerRes = await fetch(`${base}/api/queries/${qid}/results`, {
     method: 'POST',
     headers: hdrs,
-    body: JSON.stringify({ parameters: { from: fromDate, to: toDate }, max_age: 0 }),
+    body: JSON.stringify({ parameters: params, max_age: 0 }),
   });
-  if (!triggerRes.ok) throw new Error(`Redash trigger error: ${triggerRes.status}`);
+  if (!triggerRes.ok) throw new Error(`Redash trigger error ${triggerRes.status} for query ${qid}`);
   const triggerData = await triggerRes.json();
 
-  // If result already cached, return immediately
   if (triggerData.query_result) return triggerData.query_result.data?.rows ?? [];
 
   const jobId = triggerData.job?.id;
-  if (!jobId) throw new Error('Redash returned neither job nor query_result');
+  if (!jobId) throw new Error(`Redash returned neither job nor query_result for query ${qid}`);
 
-  // Poll until complete (up to 5 min)
   for (let i = 0; i < 100; i++) {
     await new Promise((r) => setTimeout(r, 3000));
     const jobRes = await fetch(`${base}/api/jobs/${jobId}`, { headers: hdrs });
@@ -61,23 +56,39 @@ async function executeRedashQuery(fromDate, toDate) {
       const rd = await resultRes.json();
       return rd?.query_result?.data?.rows ?? [];
     }
-    if (job.status === 4) throw new Error(`Redash job failed: ${job.error}`);
+    if (job.status === 4) throw new Error(`Redash job failed for query ${qid}: ${job.error}`);
   }
-  throw new Error('Redash query timed out after 5 minutes');
+  throw new Error(`Redash query ${qid} timed out after 5 minutes`);
 }
 
 async function scrapePackagedQty(fromDate, toDate) {
-  const rawRows = await executeRedashQuery(fromDate, toDate);
-  console.log(`[consumption] Redash returned ${rawRows.length} raw rows`);
+  const fcQid = process.env.CONSUMPTION_QUERY_ID;
+  const ccQid = process.env.CONSUMPTION_CC_QUERY_ID;
+
+  const [fcRows, ccRows] = await Promise.all([
+    executeRedashQuery(fcQid, { from: fromDate, to: toDate }),
+    executeRedashQuery(ccQid, { 'from date': fromDate, 'to date': toDate }),
+  ]);
+  console.log(`[consumption] FC rows: ${fcRows.length}, CC rows: ${ccRows.length}`);
 
   const out = [];
-  for (const row of rawRows) {
+
+  for (const row of fcRows) {
     const fsn = row['FSN'];
     const facilityId = String(row['FacilityId'] ?? '').trim();
-    const billedQty = Number(row['BilledQuantity'] ?? 0);
-    if (!fsn || !facilityId || billedQty <= 0) continue;
-    out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: billedQty });
+    const qty = Number(row['Billedlot'] ?? 0);
+    if (!fsn || !facilityId || qty <= 0) continue;
+    out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: qty });
   }
+
+  for (const row of ccRows) {
+    const fsn = row['fsncode'];
+    const facilityId = String(row['FromFacilityId'] ?? '').trim();
+    const qty = Number(row['AllocatedQuantity'] ?? 0);
+    if (!fsn || !facilityId || qty <= 0) continue;
+    out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: qty });
+  }
+
   return out;
 }
 
@@ -85,7 +96,6 @@ async function runConsumption() {
   const today = new Date();
   const runDate = today.toISOString().slice(0, 10);
 
-  // Determine date range
   const lastRun = await pool.query('SELECT run_date FROM consumption_runs WHERE status=\'COMPLETED\' ORDER BY run_date DESC LIMIT 1');
   let scraped_from, scraped_to;
   if (lastRun.rows.length) {
@@ -122,7 +132,7 @@ async function runConsumption() {
     const whMap = new Map(
       (await pool.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id])
     );
-    const matDateMap = new Map(
+    const matMap = new Map(
       (await pool.query('SELECT id, code FROM materials WHERE is_active')).rows.map((r) => [r.code, r.id])
     );
 
@@ -150,13 +160,13 @@ async function runConsumption() {
       }
 
       const tiers = [
-        { tier: 'PRIMARY', code: sku.primary_pm_code },
+        { tier: 'PRIMARY',   code: sku.primary_pm_code },
         { tier: 'SECONDARY', code: sku.secondary_pm_code },
-        { tier: 'TERTIARY', code: sku.tertiary_pm_code },
+        { tier: 'TERTIARY',  code: sku.tertiary_pm_code },
       ].filter((t) => t.code);
 
       for (const { tier, code } of tiers) {
-        const materialId = matDateMap.get(code);
+        const materialId = matMap.get(code);
         if (!materialId) {
           await pool.query(
             `INSERT INTO consumption_run_lines (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, status, error_detail)
