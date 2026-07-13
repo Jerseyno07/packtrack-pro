@@ -4,7 +4,7 @@
 //   CONSUMPTION_DASHBOARD_URL      — e.g. https://analytics-new-k8s.ninjacart.in
 //   CONSUMPTION_DASHBOARD_API_KEY  — Redash API key
 //   CONSUMPTION_QUERY_ID           — FC query ID (53716)
-//   CONSUMPTION_CC_QUERY_ID        — CC query ID (53761)
+//   CONSUMPTION_CC_QUERY_ID        — CC query ID (53767)
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
