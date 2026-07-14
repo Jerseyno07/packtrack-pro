@@ -1247,6 +1247,42 @@ app.get('/api/v1/admin/consumption/runs', authenticate, requireRole('ADMIN'), as
   res.json({ data: r.rows });
 }));
 
+// GET /api/v1/admin/min-stock-levels — all warehouses × materials with current thresholds
+app.get('/api/v1/admin/min-stock-levels', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const [warehouses, materials, levels] = await Promise.all([
+    pool.query('SELECT id, code, name, warehouse_type, city FROM warehouses WHERE is_active ORDER BY warehouse_type, name'),
+    pool.query('SELECT id, code, name, unit FROM materials WHERE is_active ORDER BY category, name'),
+    pool.query('SELECT warehouse_id, material_id, min_qty FROM min_stock_levels'),
+  ]);
+  const levelMap = {};
+  for (const l of levels.rows) {
+    levelMap[`${l.warehouse_id}:${l.material_id}`] = Number(l.min_qty);
+  }
+  res.json({ warehouses: warehouses.rows, materials: materials.rows, levels: levelMap });
+}));
+
+// PUT /api/v1/admin/min-stock-levels — upsert one or many warehouse+material thresholds
+app.put('/api/v1/admin/min-stock-levels', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  // body: { updates: [{ warehouse_id, material_id, min_qty }] }
+  const { updates } = req.body;
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'updates must be a non-empty array' } });
+  }
+  for (const u of updates) {
+    if (!u.warehouse_id || !u.material_id || u.min_qty == null || Number(u.min_qty) < 0) {
+      return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Each update needs warehouse_id, material_id, min_qty >= 0' } });
+    }
+    await pool.query(
+      `INSERT INTO min_stock_levels (warehouse_id, material_id, min_qty, updated_by)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (warehouse_id, material_id)
+       DO UPDATE SET min_qty=EXCLUDED.min_qty, updated_by=EXCLUDED.updated_by, updated_at=now()`,
+      [u.warehouse_id, u.material_id, u.min_qty, req.user.id]
+    );
+  }
+  res.json({ updated: updates.length });
+}));
+
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   const index = path.join(frontendDist, 'index.html');
