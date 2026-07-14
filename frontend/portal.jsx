@@ -453,6 +453,16 @@ function AdminPanel({ token }) {
   const [consumptionLoading, setConsumptionLoading] = useState(false);
   const [runNowLoading, setRunNowLoading] = useState(false);
 
+  const [mslWarehouses, setMslWarehouses] = useState([]);
+  const [mslMaterials, setMslMaterials] = useState([]);
+  const [mslLevels, setMslLevels] = useState({});
+  const [mslEdits, setMslEdits] = useState({});
+  const [mslLoading, setMslLoading] = useState(false);
+  const [mslSaving, setMslSaving] = useState(false);
+  const [mslSaved, setMslSaved] = useState(false);
+  const [mslFilter, setMslFilter] = useState('ALL');
+  const [mslError, setMslError] = useState('');
+
   const hdrs = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   const fetchOverview = useCallback(async () => {
@@ -520,9 +530,45 @@ function AdminPanel({ token }) {
     finally { setRunNowLoading(false); }
   }
 
+  async function fetchMinStockLevels() {
+    setMslLoading(true); setMslError('');
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/min-stock-levels`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed');
+      setMslWarehouses(data.warehouses ?? []);
+      setMslMaterials(data.materials ?? []);
+      setMslLevels(data.levels ?? {});
+      setMslEdits({});
+    } catch (e) { setMslError(e.message); }
+    finally { setMslLoading(false); }
+  }
+
+  async function saveMinStockLevels() {
+    const updates = Object.entries(mslEdits).map(([key, min_qty]) => {
+      const [warehouse_id, material_id] = key.split(':');
+      return { warehouse_id: Number(warehouse_id), material_id: Number(material_id), min_qty: Number(min_qty) };
+    });
+    if (!updates.length) return;
+    setMslSaving(true); setMslError(''); setMslSaved(false);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/min-stock-levels`, {
+        method: 'PUT', headers: hdrs, body: JSON.stringify({ updates }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Save failed');
+      setMslLevels((prev) => { const next = { ...prev }; updates.forEach((u) => { next[`${u.warehouse_id}:${u.material_id}`] = u.min_qty; }); return next; });
+      setMslEdits({});
+      setMslSaved(true);
+      setTimeout(() => setMslSaved(false), 3000);
+    } catch (e) { setMslError(e.message); }
+    finally { setMslSaving(false); }
+  }
+
   useEffect(() => { fetchOverview(); }, [fetchOverview]);
   useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
   useEffect(() => { if (tab === 'consumption') fetchConsumptionRuns(); }, [tab, fetchConsumptionRuns]);
+  useEffect(() => { if (tab === 'msl') fetchMinStockLevels(); }, [tab]);
 
   async function submitReverse() {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
@@ -555,6 +601,7 @@ function AdminPanel({ token }) {
     { id: 'audit', label: 'Audit Log' },
     { id: 'sku', label: 'SKU Master' },
     { id: 'consumption', label: 'Consumption Runs' },
+    { id: 'msl', label: 'Min Stock Levels' },
   ];
 
   if (loading) return (
@@ -824,6 +871,100 @@ function AdminPanel({ token }) {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {tab === 'msl' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-slate-800">Min Stock Levels</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Set per-facility low-stock thresholds for each packaging material.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <select value={mslFilter} onChange={(e) => setMslFilter(e.target.value)}
+                className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 text-slate-700">
+                <option value="ALL">All Facility Types</option>
+                <option value="PM_STORE">PM Store</option>
+                <option value="FC">FC</option>
+                <option value="CC">CC</option>
+              </select>
+              {Object.keys(mslEdits).length > 0 && (
+                <button onClick={saveMinStockLevels} disabled={mslSaving}
+                  className="px-4 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50">
+                  {mslSaving ? 'Saving…' : `Save ${Object.keys(mslEdits).length} change${Object.keys(mslEdits).length > 1 ? 's' : ''}`}
+                </button>
+              )}
+              {mslSaved && <span className="text-sm text-emerald-600 font-medium">Saved!</span>}
+              <button onClick={fetchMinStockLevels} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+                <RefreshCw size={14} />
+              </button>
+            </div>
+          </div>
+          {mslError && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{mslError}</div>}
+          {mslLoading ? (
+            <div className="py-12 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
+          ) : (
+            <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="px-4 py-2.5 text-left font-medium text-slate-500 sticky left-0 bg-slate-50 min-w-[200px]">Facility</th>
+                    <th className="px-3 py-2.5 text-left font-medium text-slate-500 text-xs min-w-[80px]">Type</th>
+                    {mslMaterials.map((m) => (
+                      <th key={m.id} className="px-3 py-2.5 text-center font-medium text-slate-500 text-xs min-w-[90px]">
+                        <div>{m.code}</div>
+                        <div className="font-normal text-slate-400 truncate max-w-[80px]">{m.unit}</div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {mslWarehouses
+                    .filter((w) => mslFilter === 'ALL' || w.warehouse_type === mslFilter)
+                    .map((w) => (
+                      <tr key={w.id} className="border-t border-slate-100 hover:bg-slate-50">
+                        <td className="px-4 py-2 sticky left-0 bg-white font-medium text-slate-700 text-xs">
+                          <div>{w.name}</div>
+                          <div className="text-slate-400">{w.city}</div>
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-400">{w.warehouse_type}</td>
+                        {mslMaterials.map((m) => {
+                          const key = `${w.id}:${m.id}`;
+                          const saved = mslLevels[key] ?? '';
+                          const edited = mslEdits[key];
+                          const display = edited !== undefined ? edited : saved;
+                          const isDirty = edited !== undefined;
+                          return (
+                            <td key={m.id} className="px-2 py-1.5 text-center">
+                              <input
+                                type="number" min="0"
+                                value={display}
+                                placeholder="—"
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setMslEdits((prev) => {
+                                    const next = { ...prev };
+                                    if (val === '' || val === String(mslLevels[key] ?? '')) {
+                                      delete next[key];
+                                    } else {
+                                      next[key] = val;
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className={`w-16 text-center text-xs rounded-md border px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-400
+                                  ${isDirty ? 'border-amber-400 bg-amber-50' : 'border-slate-200 bg-white'}`}
+                              />
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
