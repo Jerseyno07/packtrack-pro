@@ -133,7 +133,7 @@ async function runConsumption() {
       (await pool.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id])
     );
     const matMap = new Map(
-      (await pool.query('SELECT id, code FROM materials WHERE is_active')).rows.map((r) => [r.code, r.id])
+      (await pool.query('SELECT id, code, meters_per_unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r])
     );
 
     let deducted = 0, skipped = 0, errored = 0;
@@ -166,8 +166,8 @@ async function runConsumption() {
       ].filter((t) => t.code);
 
       for (const { tier, code } of tiers) {
-        const materialId = matMap.get(code);
-        if (!materialId) {
+        const mat = matMap.get(code);
+        if (!mat) {
           await pool.query(
             `INSERT INTO consumption_run_lines (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, status, error_detail)
              VALUES ($1,$2,$3,$4,$5,$6,$7,'UNMAPPED_SKU','PM code not found in materials')`,
@@ -176,8 +176,13 @@ async function runConsumption() {
           errored++; continue;
         }
 
+        // For roll materials, deduct meters_per_unit × packaged_qty instead of units
+        const deductQty = mat.meters_per_unit
+          ? row.packaged_qty * Number(mat.meters_per_unit)
+          : row.packaged_qty;
+
         const onHand = await getCurrentStock(pool, warehouseId, code);
-        const lineStatus = onHand - row.packaged_qty < 0 ? 'STOCK_BELOW_ZERO' : 'DEDUCTED';
+        const lineStatus = onHand - deductQty < 0 ? 'STOCK_BELOW_ZERO' : 'DEDUCTED';
 
         const client = await pool.connect();
         try {
@@ -185,15 +190,15 @@ async function runConsumption() {
           const ledgerRes = await client.query(
             `INSERT INTO stock_ledger (warehouse_id, material_id, movement_type, qty_delta, unit_cost, ref_table, ref_id, movement_date)
              VALUES ($1,$2,'CONSUMPTION',$3,0,'consumption_run_lines',0,$4) RETURNING id`,
-            [warehouseId, materialId, -row.packaged_qty, scraped_to]
+            [warehouseId, mat.id, -deductQty, scraped_to]
           );
           const ledgerId = ledgerRes.rows[0].id;
           await client.query(`UPDATE stock_ledger SET ref_id=$1 WHERE id=$1`, [ledgerId]);
 
           await client.query(
             `INSERT INTO consumption_run_lines (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status, ledger_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9)`,
-            [runId, row.facility_id, warehouseId, row.sku_code, tier, code, row.packaged_qty, lineStatus, ledgerId]
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [runId, row.facility_id, warehouseId, row.sku_code, tier, code, row.packaged_qty, deductQty, lineStatus, ledgerId]
           );
           await client.query('COMMIT');
           deducted++;

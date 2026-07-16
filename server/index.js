@@ -216,7 +216,8 @@ function toIsoDateOrNull(val) {
 const indentRowSchema = z.object({
   facility_code: z.string().min(1),
   sku_code: z.string().min(1),
-  requested_qty: z.coerce.number().positive(),
+  requested_qty: z.coerce.number().positive().optional(),
+  no_of_rolls: z.coerce.number().positive().optional(),
   remarks: z.string().optional(),
 });
 
@@ -243,7 +244,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
       const batchId = batchIns.rows[0].id;
 
       const whMap = new Map((await client.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id]));
-      const matMap = new Map((await client.query('SELECT id, code FROM materials WHERE is_active')).rows.map((r) => [r.code, r.id]));
+      const matMap = new Map((await client.query('SELECT id, code, unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
 
       const errors = [];
       let validCount = 0;
@@ -253,17 +254,27 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         const row = rawRows[i];
         const parsed = indentRowSchema.safeParse(row);
         if (!parsed.success) { errors.push({ row: rowNum, error: parsed.error.issues.map((e) => e.message).join('; ') }); continue; }
-        const { facility_code, sku_code, requested_qty, remarks } = parsed.data;
+        const { facility_code, sku_code, requested_qty, no_of_rolls, remarks } = parsed.data;
         const warehouseId = whMap.get(facility_code);
-        const materialId = matMap.get(sku_code);
+        const mat = matMap.get(sku_code);
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown facility_code '${facility_code}'` }); continue; }
-        if (!materialId) { errors.push({ row: rowNum, error: `Unknown sku_code '${sku_code}'` }); continue; }
+        if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${sku_code}'` }); continue; }
+
+        // Roll materials use no_of_rolls; non-roll use requested_qty
+        let finalQty;
+        if (mat.unit === 'Roll') {
+          if (!no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${sku_code}' requires no_of_rolls column` }); continue; }
+          finalQty = no_of_rolls;
+        } else {
+          if (!requested_qty) { errors.push({ row: rowNum, error: `Non-roll material '${sku_code}' requires requested_qty column` }); continue; }
+          finalQty = requested_qty;
+        }
 
         const indentRef = genRef('IND');
         await client.query(
           `INSERT INTO indent_lines (indent_ref, batch_id, row_number_in_file, warehouse_id, material_id, indent_date, requested_qty, remarks)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [indentRef, batchId, rowNum, warehouseId, materialId, indentDate, requested_qty, remarks || null]
+          [indentRef, batchId, rowNum, warehouseId, mat.id, indentDate, finalQty, remarks || null]
         );
         validCount++;
       }
@@ -316,7 +327,9 @@ const poRowSchema = z.object({
   vendor_name: z.string().min(1),
   sku_code: z.string().min(1),
   pm_store_code: z.string().min(1),
-  po_qty: z.coerce.number().positive(),
+  po_qty: z.coerce.number().positive().optional(),
+  no_of_rolls: z.coerce.number().positive().optional(),
+  length_per_roll: z.coerce.number().positive().optional(),
   unit_price: z.coerce.number().nonnegative(),
   po_date: z.string().min(1),
   expected_delivery: z.string().optional(),
@@ -338,7 +351,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
       );
       const batchId = batchIns.rows[0].id;
 
-      const matMap = new Map((await client.query('SELECT id, code FROM materials WHERE is_active')).rows.map((r) => [r.code, r.id]));
+      const matMap = new Map((await client.query('SELECT id, code, unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
       const whMap = new Map((await client.query("SELECT id, code FROM warehouses WHERE is_active AND warehouse_type='PM_STORE'")).rows.map((r) => [r.code, r.id]));
 
       const errors = [];
@@ -351,10 +364,21 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         if (!parsed.success) { errors.push({ row: rowNum, error: parsed.error.issues.map((e) => e.message).join('; ') }); continue; }
         const d = parsed.data;
 
-        const materialId = matMap.get(d.sku_code);
+        const mat = matMap.get(d.sku_code);
         const warehouseId = whMap.get(d.pm_store_code);
-        if (!materialId) { errors.push({ row: rowNum, error: `Unknown sku_code '${d.sku_code}'` }); continue; }
+        if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${d.sku_code}'` }); continue; }
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown or non-PM-Store pm_store_code '${d.pm_store_code}'` }); continue; }
+
+        // Roll materials: qty in meters = no_of_rolls × length_per_roll
+        // Non-roll materials: use po_qty directly
+        let finalQty;
+        if (mat.unit === 'Roll') {
+          if (!d.no_of_rolls || !d.length_per_roll) { errors.push({ row: rowNum, error: `Roll material '${d.sku_code}' requires no_of_rolls and length_per_roll columns` }); continue; }
+          finalQty = d.no_of_rolls * d.length_per_roll;
+        } else {
+          if (!d.po_qty) { errors.push({ row: rowNum, error: `Non-roll material '${d.sku_code}' requires po_qty column` }); continue; }
+          finalQty = d.po_qty;
+        }
 
         const poDate = toIsoDateOrNull(d.po_date);
         if (poDate === undefined) { errors.push({ row: rowNum, error: `Invalid po_date '${d.po_date}'` }); continue; }
@@ -372,7 +396,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         await client.query(
           `INSERT INTO purchase_orders (po_no, batch_id, row_number_in_file, vendor_name, material_id, pm_store_warehouse_id, po_qty, unit_price, po_date, expected_delivery)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [d.po_no, batchId, rowNum, d.vendor_name, materialId, warehouseId, d.po_qty, d.unit_price, poDate, expDelivery]
+          [d.po_no, batchId, rowNum, d.vendor_name, mat.id, warehouseId, finalQty, d.unit_price, poDate, expDelivery]
         );
         validCount++;
       }
