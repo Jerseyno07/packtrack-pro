@@ -1351,6 +1351,26 @@ app.put('/api/v1/admin/min-stock-levels', authenticate, requireRole('ADMIN'), as
   res.json({ updated: updates.length });
 }));
 
+// ── Admin: User Management ────────────────────────────────────────────────
+app.get('/api/v1/admin/users', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const r = await pool.query(
+    'SELECT id, name, email, role, is_active, created_at FROM users ORDER BY role, email'
+  );
+  res.json({ users: r.rows });
+}));
+
+app.put('/api/v1/admin/users/:id/reset-password', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { newPassword } = req.body;
+  if (!newPassword || typeof newPassword !== 'string') throw new ApiError(400, 'VALIDATION_ERROR', 'newPassword is required');
+  if (newPassword.length < 8) throw new ApiError(400, 'VALIDATION_ERROR', 'Password must be at least 8 characters');
+  const userRes = await pool.query('SELECT id, email FROM users WHERE id = $1', [req.params.id]);
+  if (!userRes.rows.length) throw new ApiError(404, 'NOT_FOUND', 'User not found');
+  const hash = await bcrypt.hash(newPassword, 10);
+  await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.params.id]);
+  await writeAudit(pool, { userId: req.user.id, action: 'ADMIN_PASSWORD_RESET', entityTable: 'users', entityId: Number(req.params.id), detail: { target_email: userRes.rows[0].email } });
+  res.json({ message: 'Password reset successfully' });
+}));
+
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   const index = path.join(frontendDist, 'index.html');

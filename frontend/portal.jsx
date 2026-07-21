@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap } from 'lucide-react';
+import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap, Users } from 'lucide-react';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -464,6 +464,14 @@ function AdminPanel({ token }) {
   const [mslFilter, setMslFilter] = useState('ALL');
   const [mslError, setMslError] = useState('');
 
+  const [usersList, setUsersList] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [resetModal, setResetModal] = useState(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirm, setResetConfirm] = useState('');
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetError, setResetError] = useState('');
+
   const hdrs = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   const fetchOverview = useCallback(async () => {
@@ -545,6 +553,37 @@ function AdminPanel({ token }) {
     finally { setMslLoading(false); }
   }
 
+  const fetchUsers = useCallback(async () => {
+    setUsersLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/users`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed');
+      setUsersList(data.users ?? []);
+    } catch { /* silent */ }
+    finally { setUsersLoading(false); }
+  }, [token]);
+
+  async function submitResetPassword() {
+    if (!resetPassword) { setResetError('New password is required.'); return; }
+    if (resetPassword.length < 8) { setResetError('Password must be at least 8 characters.'); return; }
+    if (resetPassword !== resetConfirm) { setResetError('Passwords do not match.'); return; }
+    setResetSubmitting(true); setResetError('');
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/users/${resetModal.id}/reset-password`, {
+        method: 'PUT', headers: hdrs,
+        body: JSON.stringify({ newPassword: resetPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Reset failed');
+      setResetModal(null); setResetPassword(''); setResetConfirm('');
+    } catch (e) {
+      setResetError(e.message);
+    } finally {
+      setResetSubmitting(false);
+    }
+  }
+
   async function saveMinStockLevels() {
     const updates = Object.entries(mslEdits).map(([key, min_qty]) => {
       const [warehouse_id, material_id] = key.split(':');
@@ -570,6 +609,7 @@ function AdminPanel({ token }) {
   useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
   useEffect(() => { if (tab === 'consumption') fetchConsumptionRuns(); }, [tab, fetchConsumptionRuns]);
   useEffect(() => { if (tab === 'msl') fetchMinStockLevels(); }, [tab]);
+  useEffect(() => { if (tab === 'users') fetchUsers(); }, [tab, fetchUsers]);
 
   async function submitReverse() {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
@@ -609,6 +649,7 @@ function AdminPanel({ token }) {
     { id: 'sku', label: 'SKU Master' },
     { id: 'consumption', label: 'Consumption Runs' },
     { id: 'msl', label: 'Min Stock Levels' },
+    { id: 'users', label: 'Users' },
   ];
 
   if (loading) return (
@@ -987,6 +1028,100 @@ function AdminPanel({ token }) {
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'users' && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-slate-800">User Accounts</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Reset passwords for any user account.</p>
+            </div>
+            <button onClick={fetchUsers} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+              <RefreshCw size={14} />
+            </button>
+          </div>
+          {usersLoading ? (
+            <div className="py-12 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
+          ) : (
+            <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+              <table className="w-full text-sm min-w-[500px]">
+                <thead className="bg-slate-50 text-slate-500 text-xs">
+                  <tr>
+                    <th className="text-left px-4 py-2.5">Email</th>
+                    <th className="text-left px-4 py-2.5">Name</th>
+                    <th className="text-left px-4 py-2.5">Role</th>
+                    <th className="text-left px-4 py-2.5">Status</th>
+                    <th className="px-4 py-2.5"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usersList.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No users</td></tr>}
+                  {usersList.map((u) => (
+                    <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-3 text-slate-800 font-medium">{u.email}</td>
+                      <td className="px-4 py-3 text-slate-600">{u.name}</td>
+                      <td className="px-4 py-3"><Badge tone="gray">{u.role.replace(/_/g, ' ')}</Badge></td>
+                      <td className="px-4 py-3">
+                        <Badge tone={u.is_active ? 'green' : 'red'}>{u.is_active ? 'Active' : 'Inactive'}</Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => { setResetModal(u); setResetPassword(''); setResetConfirm(''); setResetError(''); }}
+                          className="text-xs px-2 py-1 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium"
+                        >
+                          Reset Password
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {resetModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="font-bold text-slate-900">Reset Password</div>
+              <button onClick={() => setResetModal(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+            </div>
+            <div className="text-sm text-slate-500">
+              Set a new password for <span className="font-semibold text-slate-800">{resetModal.email}</span>. Communicate the new password to the user directly.
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">New Password <span className="text-red-500">*</span></label>
+                <input type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)}
+                  placeholder="Min. 8 characters"
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Confirm Password <span className="text-red-500">*</span></label>
+                <input type="password" value={resetConfirm} onChange={(e) => setResetConfirm(e.target.value)}
+                  placeholder="Re-enter new password"
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            </div>
+            {resetError && (
+              <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{resetError}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button onClick={() => setResetModal(null)} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">
+                Cancel
+              </button>
+              <button onClick={submitResetPassword} disabled={resetSubmitting}
+                className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-60 flex items-center justify-center gap-2">
+                {resetSubmitting ? <><RefreshCw size={14} className="animate-spin" /> Resetting…</> : 'Reset Password'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
