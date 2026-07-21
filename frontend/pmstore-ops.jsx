@@ -20,7 +20,7 @@ function makeApi(token) {
   }
   return {
     login: (email, password) => req('POST', '/api/v1/auth/login', { email, password }),
-    listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN'),
+    listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN,PARTIALLY_RECEIVED'),
     listPendingIndents: () => req('GET', '/api/v1/indents?status=PENDING&page_size=200'),
     issueDefaults: (indentLineId) => req('GET', `/api/v1/indent-lines/${indentLineId}/issue-defaults`),
     postGRN: (payload) => req('POST', '/api/v1/goods-receipts', payload),
