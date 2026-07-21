@@ -574,12 +574,13 @@ function AdminPanel({ token }) {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
     setReverseSubmitting(true); setReverseError('');
     try {
-      const res = await fetch(`${BASE_URL}/api/v1/admin/${reverseModal.type}/${reverseModal.id}/cancel`, {
+      const action = reverseModal.action || 'cancel';
+      const res = await fetch(`${BASE_URL}/api/v1/admin/${reverseModal.type}/${reverseModal.id}/${action}`, {
         method: 'POST', headers: hdrs,
         body: JSON.stringify({ reason: reverseReason.trim() }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message || 'Cancel failed');
+      if (!res.ok) throw new Error(data?.error?.message || 'Action failed');
       setReverseModal(null); setReverseReason('');
       await fetchOverview();
     } catch (e) {
@@ -590,7 +591,12 @@ function AdminPanel({ token }) {
   }
 
   function openCancel(type, id, ref) {
-    setReverseModal({ type, id, ref });
+    setReverseModal({ type, id, ref, action: 'cancel' });
+    setReverseReason(''); setReverseError('');
+  }
+
+  function openReverseForceComplete(type, id, ref) {
+    setReverseModal({ type, id, ref, action: 'reverse-force-complete' });
     setReverseReason(''); setReverseError('');
   }
 
@@ -670,10 +676,14 @@ function AdminPanel({ token }) {
                   <td className="px-4 py-3 text-right text-slate-600">{po.po_qty}</td>
                   <td className="px-4 py-3 text-right font-bold text-blue-600">{po.remaining_qty ?? (po.po_qty - po.received_qty_cache)}</td>
                   <td className="px-4 py-3"><Badge tone={po.status === 'OPEN' ? 'blue' : po.status === 'CANCELLED' ? 'red' : po.status === 'CLOSED' ? 'green' : 'gray'}>{po.status.replace(/_/g, ' ')}</Badge></td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
                     {!TERMINAL_PO.includes(po.status) && (
                       <button onClick={() => openCancel('purchase-orders', po.id, po.po_no)}
                         className="text-xs px-2 py-1 rounded-md bg-red-50 text-red-600 hover:bg-red-100 font-medium">Cancel</button>
+                    )}
+                    {po.status === 'FORCE_COMPLETED' && (
+                      <button onClick={() => openReverseForceComplete('purchase-orders', po.id, po.po_no)}
+                        className="text-xs px-2 py-1 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 font-medium">Reverse Force Complete</button>
                     )}
                   </td>
                 </tr>
@@ -972,16 +982,20 @@ function AdminPanel({ token }) {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
             <div className="flex items-center justify-between">
-              <div className="font-bold text-slate-900">Cancel {reverseModal.type === 'purchase-orders' ? 'PO' : 'Issue'}</div>
+              <div className="font-bold text-slate-900">
+                {reverseModal.action === 'reverse-force-complete' ? 'Reverse Force Complete' : `Cancel ${reverseModal.type === 'purchase-orders' ? 'PO' : 'Issue'}`}
+              </div>
               <button onClick={() => setReverseModal(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
             </div>
             <div className="text-sm text-slate-500">
-              You are about to cancel <span className="font-semibold text-slate-800">{reverseModal.ref}</span>. This action is logged and cannot be undone.
+              {reverseModal.action === 'reverse-force-complete'
+                ? <>You are about to undo the Force Complete on <span className="font-semibold text-slate-800">{reverseModal.ref}</span>, reopening it at its correct received-qty status. This action is logged.</>
+                : <>You are about to cancel <span className="font-semibold text-slate-800">{reverseModal.ref}</span>. This action is logged and cannot be undone.</>}
             </div>
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">Reason <span className="text-red-500">*</span></label>
               <textarea rows={3} value={reverseReason} onChange={(e) => setReverseReason(e.target.value)}
-                placeholder="Explain why this is being cancelled…"
+                placeholder={reverseModal.action === 'reverse-force-complete' ? 'Explain why the Force Complete is being reversed…' : 'Explain why this is being cancelled…'}
                 className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-none" />
             </div>
             {reverseError && (

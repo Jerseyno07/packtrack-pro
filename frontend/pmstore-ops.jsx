@@ -236,7 +236,7 @@ function GRNScreen({ api }) {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <div><h2 className="text-lg font-bold text-slate-900">Post GRN</h2><p className="text-sm text-slate-500">Select an open PO to receive stock against.</p></div>
+          <div><h2 className="text-lg font-bold text-slate-900">Post GRN</h2><p className="text-sm text-slate-500">Select a PO line to receive stock against. A PO with multiple materials appears as one card per material.</p></div>
           <button onClick={loadPOs} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
         </div>
         {fetchError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{fetchError}</div>}
@@ -272,8 +272,12 @@ function GRNScreen({ api }) {
   const isUnder = qty > 0 && qty < remaining;
   const isOver = qty > remaining;
 
-  const canGRN = isExact && !submitting;
-  const canForce = isUnder && fcReason.trim().length > 0 && !submitting;
+  // Partial inward is a normal flow now — vendors often ship a PO line across
+  // multiple deliveries. Post GRN is enabled for any qty in (0, remaining].
+  // Force Complete is a separate, always-available action for deliberately
+  // closing the line short (e.g. vendor won't deliver the rest).
+  const canGRN = qty > 0 && qty <= remaining && !submitting;
+  const canForce = fcReason.trim().length > 0 && !submitting;
 
   return (
     <div className="space-y-4 max-w-xl">
@@ -323,10 +327,10 @@ function GRNScreen({ api }) {
             <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertTriangle size={12} /> Cannot inward more than PO qty. Max allowed: {remaining}</p>
           )}
           {isExact && (
-            <p className="text-xs text-green-700 mt-1">Inward qty matches PO — Post GRN enabled.</p>
+            <p className="text-xs text-green-700 mt-1">Inward qty matches remaining PO qty.</p>
           )}
           {isUnder && (
-            <p className="text-xs text-amber-700 mt-1">Qty is less than remaining PO qty — only Force Complete is allowed.</p>
+            <p className="text-xs text-amber-700 mt-1">Partial inward — this posts a GRN and leaves the rest of the PO open for a future delivery.</p>
           )}
         </div>
 
@@ -356,21 +360,19 @@ function GRNScreen({ api }) {
           )}
         </div>
 
-        {/* FC reason — shown only when qty is under */}
-        {isUnder && (
-          <div>
-            <label className="text-xs font-medium text-amber-700 mb-1 block">
-              Force Complete Reason <span className="text-red-500">*</span>
-            </label>
-            <textarea
-              rows={2}
-              value={fcReason}
-              onChange={(e) => setFcReason(e.target.value)}
-              placeholder="Reason why full PO qty will not be received…"
-              className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
-            />
-          </div>
-        )}
+        {/* FC reason — Force Complete is always available as a deliberate "close it short" action */}
+        <div>
+          <label className="text-xs font-medium text-amber-700 mb-1 block">
+            Force Complete Reason <span className="text-slate-400 font-normal">(required only to Force Complete)</span>
+          </label>
+          <textarea
+            rows={2}
+            value={fcReason}
+            onChange={(e) => setFcReason(e.target.value)}
+            placeholder="Reason why the remaining PO qty will not be received…"
+            className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+          />
+        </div>
 
         {error && (
           <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
