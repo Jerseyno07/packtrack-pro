@@ -197,7 +197,7 @@ function parseUploadedFile(file) {
   }
   return rows.map((row) => {
     const out = {};
-    for (const [k, v] of Object.entries(row)) out[k.trim().toLowerCase().replace(/\s+/g, '_')] = typeof v === 'string' ? v.trim() : v;
+    for (const [k, v] of Object.entries(row)) out[k.trim().toLowerCase().replace(/\s+/g, '_')] = typeof v === 'string' ? (v.trim() || undefined) : v;
     return out;
   });
 }
@@ -320,6 +320,10 @@ app.get('/api/v1/indents', authenticate, asyncHandler(async (req, res) => {
 // MODULE 2: PO UPLOAD — CSV/Excel, free-text vendor name, for PM Store inward
 // Expected columns: po_no, vendor_name, sku_code, pm_store_code, po_qty,
 //                   unit_price, po_date, expected_delivery (optional)
+//
+// A po_no may repeat across multiple rows — one row per material — to
+// represent a single PO covering several packaging materials. Uniqueness
+// is enforced on (po_no, material_id), not po_no alone.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const poRowSchema = z.object({
@@ -356,6 +360,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
 
       const errors = [];
       let validCount = 0;
+      const seenPoMaterialKeys = new Set();
 
       for (let i = 0; i < rawRows.length; i++) {
         const rowNum = i + 2;
@@ -388,10 +393,14 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
           if (expDelivery === undefined) { errors.push({ row: rowNum, error: `Invalid expected_delivery '${d.expected_delivery}'` }); continue; }
         }
 
-        // Duplicate po_no within the same file or against existing data -> reported as a row error, not a hard crash,
-        // so one bad row doesn't void the whole batch.
-        const dupCheck = await client.query('SELECT id FROM purchase_orders WHERE po_no = $1', [d.po_no]);
-        if (dupCheck.rows.length) { errors.push({ row: rowNum, error: `PO number '${d.po_no}' already exists` }); continue; }
+        // Duplicate (po_no, material) within the same file or against existing data -> reported as a row
+        // error, not a hard crash, so one bad row doesn't void the whole batch. Different materials are
+        // allowed to share the same po_no (one PO, multiple packaging materials).
+        const dupKey = `${d.po_no}::${mat.id}`;
+        if (seenPoMaterialKeys.has(dupKey)) { errors.push({ row: rowNum, error: `PO '${d.po_no}' already has a line for material '${d.sku_code}' earlier in this file` }); continue; }
+        const dupCheck = await client.query('SELECT id FROM purchase_orders WHERE po_no = $1 AND material_id = $2', [d.po_no, mat.id]);
+        if (dupCheck.rows.length) { errors.push({ row: rowNum, error: `PO '${d.po_no}' already has a line for material '${d.sku_code}'` }); continue; }
+        seenPoMaterialKeys.add(dupKey);
 
         await client.query(
           `INSERT INTO purchase_orders (po_no, batch_id, row_number_in_file, vendor_name, material_id, pm_store_warehouse_id, po_qty, unit_price, po_date, expected_delivery)
@@ -456,9 +465,10 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
     const po = poRes.rows[0];
     if (['CLOSED', 'CANCELLED', 'FORCE_COMPLETED'].includes(po.status)) throw new ApiError(409, 'PO_NOT_OPEN', `PO ${po.po_no} is ${po.status}, cannot post GRN`);
 
+    // Partial inward is allowed — vendors often ship a PO line across multiple deliveries.
+    // Only over-receipt is blocked. A PO that stays short forever is closed via Force Complete instead.
     const remaining = Number(po.po_qty) - Number(po.received_qty_cache);
     if (d.grn_qty > remaining) throw new ApiError(422, 'GRN_EXCEEDS_PO', `GRN qty ${d.grn_qty} exceeds remaining PO qty ${remaining}`, { remaining });
-    if (d.grn_qty < remaining) throw new ApiError(422, 'PARTIAL_GRN_NOT_ALLOWED', `GRN qty (${d.grn_qty}) is less than remaining PO qty (${remaining}). Receive the full quantity or use Force Complete to close the PO with a shortage.`, { remaining });
 
     const grnRef = genRef('GRN');
     const grnIns = await client.query(
@@ -809,6 +819,36 @@ app.post('/api/v1/admin/purchase-orders/:id/cancel', authenticate, requireRole('
     await writeAudit(client, { userId: req.user.id, action: 'ADMIN_PO_CANCELLED', entityTable: 'purchase_orders', entityId: po.id, detail: { reason: reason.trim() } });
     await client.query('COMMIT');
     res.json({ ok: true, id: po.id, status: 'CANCELLED' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// ── Purchase Orders (super-admin: reverse an accidental Force Complete) ────
+// Recomputes the correct status from received_qty_cache (mirrors the logic in
+// fn_sync_po_received_qty) rather than blindly resetting to OPEN, so a PO that
+// had already received partial stock before being force-completed lands back
+// in PARTIALLY_RECEIVED, not OPEN.
+app.post('/api/v1/admin/purchase-orders/:id/reverse-force-complete', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+  if (!reason?.trim()) throw new ApiError(400, 'REASON_REQUIRED', 'reason is required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM purchase_orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `PO ${req.params.id} not found`);
+    const po = r.rows[0];
+    if (po.status !== 'FORCE_COMPLETED') throw new ApiError(409, 'NOT_FORCE_COMPLETED', `PO is ${po.status}, not FORCE_COMPLETED — nothing to reverse`);
+
+    const received = Number(po.received_qty_cache);
+    const restoredStatus = received >= Number(po.po_qty) ? 'CLOSED' : received > 0 ? 'PARTIALLY_RECEIVED' : 'OPEN';
+
+    await snapshotAndLog(client, { adminUserId: req.user.id, entityTable: 'purchase_orders', entityId: po.id, action: 'REVERSE_FORCE_COMPLETE', reason: reason.trim(), previousState: po });
+    await client.query(
+      `UPDATE purchase_orders SET status=$1, force_completed_by=NULL, force_completed_at=NULL, force_complete_reason=NULL, updated_at=now() WHERE id=$2`,
+      [restoredStatus, po.id]
+    );
+    await writeAudit(client, { userId: req.user.id, action: 'ADMIN_PO_FORCE_COMPLETE_REVERSED', entityTable: 'purchase_orders', entityId: po.id, detail: { reason: reason.trim(), restoredStatus } });
+    await client.query('COMMIT');
+    res.json({ ok: true, id: po.id, status: restoredStatus });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
