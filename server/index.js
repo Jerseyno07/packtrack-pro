@@ -424,7 +424,11 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
 app.get('/api/v1/purchase-orders', authenticate, asyncHandler(async (req, res) => {
   const { status, warehouse_id, material_id } = req.query;
   const conditions = []; const params = [];
-  if (status) { params.push(status); conditions.push(`po.status = $${params.length}`); }
+  if (status) {
+    const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+    const placeholders = statuses.map((s) => { params.push(s); return `$${params.length}`; }).join(',');
+    conditions.push(`po.status IN (${placeholders})`);
+  }
   if (warehouse_id) { params.push(warehouse_id); conditions.push(`po.pm_store_warehouse_id = $${params.length}`); }
   if (material_id) { params.push(material_id); conditions.push(`po.material_id = $${params.length}`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
