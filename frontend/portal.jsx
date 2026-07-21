@@ -169,13 +169,13 @@ function IndentUploadSection({ token }) {
       </div>
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
-        <div><strong>Expected columns:</strong> facility_code, sku_code, requested_qty, remarks (optional)</div>
+        <div><strong>Expected columns:</strong> facility_code, sku_code, requested_qty (non-roll), no_of_rolls (roll materials), remarks (optional)</div>
         <button
           onClick={() => downloadCSV('indent_sample.csv', [
-            ['facility_code', 'sku_code', 'requested_qty', 'remarks'],
-            ['CC-BLR', 'LDPE-06', 500, 'Weekly stock'],
-            ['CC-BLR', 'NTRLL-01', 40, ''],
-            ['FC-BLR', 'WXRB-01', 20, 'Urgent'],
+            ['facility_code', 'sku_code', 'requested_qty', 'no_of_rolls', 'remarks'],
+            ['CC-BLR', 'LDPE-06', 500, '', 'Weekly stock'],
+            ['CC-BLR', 'NTRLL-01', '', 40, ''],
+            ['FC-BLR', 'WXRB-01', '', 20, 'Urgent'],
           ])}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
         >
@@ -270,13 +270,13 @@ function POUploadSection({ token }) {
       </div>
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
-        <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty, unit_price, po_date, expected_delivery (optional)</div>
+        <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty (non-roll), no_of_rolls + length_per_roll (roll materials), unit_price, po_date, expected_delivery (optional)</div>
         <button
           onClick={() => downloadCSV('purchase_orders_sample.csv', [
-            ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'unit_price', 'po_date', 'expected_delivery'],
-            ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'CS-001', 2000, 2.50, '2026-07-01', '2026-07-10'],
-            ['PO-2026-0002', 'Karnataka Packaging Co', 'NTRLL-01', 'CS-001', 150, 180.00, '2026-07-01', '2026-07-08'],
-            ['PO-2026-0003', 'Tamil Nadu Ribbons Ltd', 'WXRB-01', 'CS-001', 50, 95.00, '2026-07-02', ''],
+            ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'no_of_rolls', 'length_per_roll', 'unit_price', 'po_date', 'expected_delivery'],
+            ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'CS-001', 2000, '', '', 2.50, '2026-07-01', '2026-07-10'],
+            ['PO-2026-0002', 'Karnataka Packaging Co', 'NTRLL-01', 'CS-001', '', 10, 200, 180.00, '2026-07-01', '2026-07-08'],
+            ['PO-2026-0003', 'Tamil Nadu Ribbons Ltd', 'WXRB-01', 'CS-001', '', 5, 150, 95.00, '2026-07-02', ''],
           ])}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
         >
