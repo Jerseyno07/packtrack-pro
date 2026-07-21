@@ -433,6 +433,7 @@ function AdminPanel({ token }) {
   const [error, setError] = useState('');
 
   const [tab, setTab] = useState('pos');
+  const [poFilter, setPoFilter] = useState('active');
 
   const [auditRows, setAuditRows] = useState([]);
   const [auditPage, setAuditPage] = useState(1);
@@ -626,7 +627,8 @@ function AdminPanel({ token }) {
     </div>
   );
 
-  const pos = overview?.purchase_orders ?? [];
+  const allPos = overview?.purchase_orders ?? [];
+  const pos = poFilter === 'active' ? allPos.filter(p => !TERMINAL_PO.includes(p.status)) : allPos;
   const issues = overview?.stock_issues ?? [];
   const stock = overview?.current_stock ?? [];
   const lowStock = overview?.low_stock_alerts ?? [];
@@ -653,6 +655,15 @@ function AdminPanel({ token }) {
       </div>
 
       {tab === 'pos' && (
+        <div className="space-y-3">
+        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+          {[['active', 'Active'], ['all', 'All']].map(([val, label]) => (
+            <button key={val} onClick={() => setPoFilter(val)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${poFilter === val ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+              {label}{val === 'active' ? ` (${allPos.filter(p => !TERMINAL_PO.includes(p.status)).length})` : ` (${allPos.length})`}
+            </button>
+          ))}
+        </div>
         <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
           <table className="w-full text-sm min-w-[700px]">
             <thead className="bg-slate-50 text-slate-500 text-xs">
@@ -690,6 +701,7 @@ function AdminPanel({ token }) {
               ))}
             </tbody>
           </table>
+        </div>
         </div>
       )}
 
