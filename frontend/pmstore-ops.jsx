@@ -245,9 +245,16 @@ function GRNScreen({ api }) {
             {openPOs.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No open POs found.</div>}
             {openPOs.map((po) => {
               const remaining = Number(po.remaining_qty ?? po.po_qty);
+              const isPartial = po.status === 'PARTIALLY_RECEIVED';
+              const cardCls = isPartial
+                ? 'w-full bg-amber-50 rounded-xl border border-amber-200 p-4 flex items-center gap-3 text-left hover:border-amber-400 transition-colors'
+                : 'w-full bg-green-50 rounded-xl border border-green-200 p-4 flex items-center gap-3 text-left hover:border-green-400 transition-colors';
+              const iconCls = isPartial
+                ? 'w-10 h-10 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center flex-shrink-0'
+                : 'w-10 h-10 rounded-lg bg-green-100 text-green-600 flex items-center justify-center flex-shrink-0';
               return (
-                <button key={po.id} onClick={() => selectPO(po)} className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 transition-colors">
-                  <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0"><Truck size={18} /></div>
+                <button key={po.id} onClick={() => selectPO(po)} className={cardCls}>
+                  <div className={iconCls}><Truck size={18} /></div>
                   <div className="flex-1">
                     <div className="font-semibold text-sm text-slate-900">{po.po_no} <span className="text-slate-400">· {po.vendor_name}</span></div>
                     <div className="text-xs text-slate-500">{po.material_code} — {po.material_name}</div>
