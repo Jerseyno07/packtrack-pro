@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus } from 'lucide-react';
 import AuditScreen from './AuditScreen.jsx';
+import TourOverlay from './TourOverlay.jsx';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -241,7 +242,7 @@ function GRNScreen({ api }) {
         </div>
         {fetchError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{fetchError}</div>}
         {loading ? <div className="text-center text-sm text-slate-400 py-8">Loading open POs…</div> : (
-          <div className="space-y-2">
+          <div data-tour="grn-po-list" className="space-y-2">
             {openPOs.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No open POs found.</div>}
             {openPOs.map((po) => {
               const remaining = Number(po.remaining_qty ?? po.po_qty);
@@ -524,7 +525,7 @@ function IssueScreen({ api }) {
         </div>
         {fetchError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{fetchError}</div>}
         {loading ? <div className="text-center text-sm text-slate-400 py-8">Loading pending indents…</div> : (
-          <div className="space-y-2">
+          <div data-tour="indent-list" className="space-y-2">
             {pendingIndents.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No pending indents found.</div>}
             {pendingIndents.map((ind) => (
               <button key={ind.id} onClick={() => selectIndent(ind)} className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 transition-colors">
@@ -673,12 +674,37 @@ export default function PMStoreOps() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState('grn');
+  const [showTour, setShowTour] = useState(false);
+
+  function finishTour() {
+    setShowTour(false);
+    if (user) localStorage.setItem(`packtrack_tour_done_${user.role}`, '1');
+  }
 
   if (!token) {
-    return <LoginScreen onLogin={(t, u) => { setToken(t); setUser(u); }} />;
+    return <LoginScreen onLogin={(t, u) => {
+      setToken(t); setUser(u);
+      if (!localStorage.getItem(`packtrack_tour_done_${u.role}`)) setShowTour(true);
+    }} />;
   }
 
   const client = makeApi(token);
+
+  const tourSteps = [
+    { target: 'pmstore-tabs', title: 'Welcome to PM Store Ops', body: 'Four sections: Post GRN (inward from vendors), Issue Against Indent (dispatch to FC/CC), Store Stock (current on-hand), and Audit (movement history).' },
+    { target: 'grn-po-list', title: 'Post GRN — Open POs', body: 'Green cards are POs not yet inwarded; amber are partially inwarded with remaining qty shown on the right. Tap a card to start a GRN.', onEnter: () => setTab('grn') },
+    { target: null, title: 'Entering Inward Quantity', body: 'After tapping a PO card, enter the quantity received in this shipment. Partial quantities are fine — the PO stays open for the next delivery.' },
+    { target: null, title: 'Invoice Number', body: 'Enter the vendor\'s invoice number. Used for reconciliation and audit trail. Optional but recommended.' },
+    { target: null, title: 'Attach Invoice Image', body: 'Attach the vendor\'s physical invoice as JPG, PNG, or PDF. Gives a paper trail for every delivery and is useful during audits.' },
+    { target: null, title: 'Post GRN Button', body: 'Submits the inward entry. Updates the stock ledger and transitions the PO status to Partially Received or Closed depending on how much was received.' },
+    { target: null, title: 'Force Complete Reason', body: 'Only needed if you want to close this PO short. Enter the reason — e.g. "Vendor confirmed no balance stock" — before the Force Complete button activates.' },
+    { target: null, title: 'Force Complete', body: 'Closes the PO with whatever qty was received so far. No further GRNs are allowed. An admin can reverse this from the admin portal if done by mistake.' },
+    { target: 'indent-list', title: 'Issue Against Indent — Pending Indents', body: 'Each card is an approved material request from an FC or CC facility waiting to be fulfilled. Shows facility, material, and pending qty.', onEnter: () => setTab('issue') },
+    { target: null, title: 'Dispatch Details', body: 'Qty defaults to the indent\'s pending amount — adjust only for partial dispatches. Vehicle No is the transport vehicle carrying the goods (optional).' },
+    { target: null, title: 'Confirm Issue', body: 'Records the dispatch, deducts from PM Store stock, and notifies the receiving FC/CC exec to acknowledge receipt in their app.' },
+    { target: null, title: 'Store Stock', body: 'The Store Stock tab shows current on-hand quantities at this PM Store. Check here before issuing against an indent to confirm sufficient stock is available.', onEnter: () => setTab('stock') },
+    { target: 'tour-btn-pmstore', title: "You're all set!", body: 'Hit the ? button at the bottom-right any time to replay this tour.' },
+  ];
 
   return (
     <div className="min-h-screen bg-slate-50 p-6">
@@ -693,7 +719,7 @@ export default function PMStoreOps() {
             <LogOut size={18} />
           </button>
         </div>
-        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-5 flex-wrap">
+        <div data-tour="pmstore-tabs" className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-5 flex-wrap">
           <button onClick={() => setTab('grn')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Post GRN</button>
           <button onClick={() => setTab('issue')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue Against Indent</button>
           <button onClick={() => setTab('stock')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Store Stock</button>
@@ -704,6 +730,15 @@ export default function PMStoreOps() {
         {tab === 'stock' && <StoreStockView token={token} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'audit' && <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />}
       </div>
+
+      <button
+        data-tour="tour-btn-pmstore"
+        onClick={() => setShowTour(true)}
+        className="fixed bottom-6 right-6 w-11 h-11 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center text-lg font-bold hover:bg-blue-700 z-50"
+        title="Open guided tour"
+      >?</button>
+
+      {showTour && <TourOverlay steps={tourSteps} onDone={finishTour} />}
     </div>
   );
 }

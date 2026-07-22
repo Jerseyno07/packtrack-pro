@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Truck, Package, CheckCircle2, AlertTriangle, Clock, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap } from 'lucide-react';
 import AuditScreen from './AuditScreen.jsx';
+import TourOverlay from './TourOverlay.jsx';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -412,10 +413,30 @@ export default function ReceiptApp() {
   const [selected, setSelected] = useState(null);
   const [successInfo, setSuccessInfo] = useState(null);
   const [fetchError, setFetchError] = useState('');
+  const [showTour, setShowTour] = useState(false);
+
+  function finishTour() {
+    setShowTour(false);
+    if (user) localStorage.setItem(`packtrack_tour_done_${user.role}`, '1');
+  }
+
+  const tourSteps = [
+    { target: 'receipt-tabs', title: 'Welcome to the Receipt App', body: 'Three tabs: Receive (acknowledge incoming shipments), My Stock (current on-hand quantities), and Audit (full movement history).' },
+    { target: 'pending-banner', title: 'Pending Shipments', body: 'This counter shows how many PM Store dispatches are waiting for your acknowledgement. Tap any shipment card below to open the receipt form.', onEnter: () => setTab('receive') },
+    { target: 'pending-list', title: 'Shipment Cards', body: 'Each card is a dispatch from the PM Store. It shows the material, dispatched quantity, and source warehouse. Tap a card to open the receipt form.' },
+    { target: null, title: 'Going Back', body: 'After opening a shipment, use the back arrow at the top to return to the pending list without making any changes.' },
+    { target: null, title: 'Received Quantity', body: 'Enter the actual quantity you received. If it matches the dispatched qty exactly, Confirm Receipt activates. If it\'s less, Force Complete appears instead.' },
+    { target: null, title: 'Confirm Receipt', body: 'Active only when received qty matches dispatched qty exactly. Closes the shipment and credits your facility\'s on-hand stock.' },
+    { target: null, title: 'Short-Received?', body: 'If you received less than dispatched (damaged goods, short delivery), enter the reason here. The Force Complete button then becomes available.' },
+    { target: null, title: 'Force Complete', body: 'Closes the shipment with the qty you actually received. The shortfall is recorded in the audit log. Contact the PM Store to raise a discrepancy claim if needed.' },
+    { target: 'receipt-refresh', title: 'Refresh', body: 'Pulls the latest pending shipments from the server. Tap this if you\'re expecting a new shipment that hasn\'t appeared yet.' },
+    { target: 'tour-btn-receipt', title: "You're all set!", body: 'Hit the ? button at the bottom-right any time to replay this tour.' },
+  ];
 
   function handleLogin(t, u) {
     setToken(t);
     setUser(u);
+    if (!localStorage.getItem(`packtrack_tour_done_${u.role}`)) setShowTour(true);
   }
 
   const refresh = useCallback(async () => {
@@ -453,7 +474,7 @@ export default function ReceiptApp() {
             <div className="text-xs text-slate-500">{user?.name || user?.email}</div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={refresh} className="p-2 text-slate-400 active:text-slate-600">
+            <button data-tour="receipt-refresh" onClick={refresh} className="p-2 text-slate-400 active:text-slate-600">
               <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
             </button>
             <button onClick={() => { setToken(null); setUser(null); setIssues([]); }} className="p-2 text-slate-400 active:text-slate-600">
@@ -464,7 +485,7 @@ export default function ReceiptApp() {
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
+      <div data-tour="receipt-tabs" className="flex gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
         <button onClick={() => setTab('receive')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
         <button onClick={() => setTab('stock')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>My Stock</button>
         <button onClick={() => setTab('audit')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
@@ -486,7 +507,7 @@ export default function ReceiptApp() {
           />
         ) : (
           <>
-            <div className="bg-blue-600 rounded-xl p-4 text-white flex items-center justify-between">
+            <div data-tour="pending-banner" className="bg-blue-600 rounded-xl p-4 text-white flex items-center justify-between">
               <div>
                 <div className="text-xs text-blue-100 mb-0.5">Pending receipt</div>
                 <div className="text-2xl font-bold">{issues.length} shipment{issues.length === 1 ? '' : 's'}</div>
@@ -509,7 +530,7 @@ export default function ReceiptApp() {
                 <div className="text-sm text-slate-500">All caught up — nothing pending receipt.</div>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div data-tour="pending-list" className="space-y-2">
                 {issues.map((issue) => (
                   <IssueListItem key={issue.id} issue={issue} onSelect={setSelected} />
                 ))}
@@ -518,6 +539,15 @@ export default function ReceiptApp() {
           </>
         )}
       </div>
+
+      <button
+        data-tour="tour-btn-receipt"
+        onClick={() => setShowTour(true)}
+        className="fixed bottom-6 right-6 w-11 h-11 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center text-lg font-bold hover:bg-blue-700 z-50"
+        title="Open guided tour"
+      >?</button>
+
+      {showTour && <TourOverlay steps={tourSteps} onDone={finishTour} />}
     </div>
   );
 }
