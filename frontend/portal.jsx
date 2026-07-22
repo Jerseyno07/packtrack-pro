@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap, Users } from 'lucide-react';
+import TourOverlay from './TourOverlay.jsx';
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
@@ -271,7 +272,7 @@ function POUploadSection({ token }) {
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
         <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty (non-roll), no_of_rolls + length_per_roll (roll materials), unit_price, po_date, expected_delivery (optional)</div>
-        <button
+        <button data-tour="po-sample-csv"
           onClick={() => downloadCSV('purchase_orders_sample.csv', [
             ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'no_of_rolls', 'length_per_roll', 'unit_price', 'po_date', 'expected_delivery'],
             ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'CS-001', 2000, '', '', 2.50, '2026-07-01', '2026-07-10'],
@@ -303,7 +304,7 @@ function POUploadSection({ token }) {
 
         {error && <div className="text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
 
-        <button onClick={handleUpload} disabled={uploading} className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-60">
+        <button data-tour="po-upload-btn" onClick={handleUpload} disabled={uploading} className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-60">
           <Upload size={16} /> {uploading ? 'Uploading...' : 'Upload POs'}
         </button>
       </div>
@@ -427,13 +428,15 @@ function DashboardSection() {
 const TERMINAL_PO = ['CANCELLED', 'CLOSED', 'FORCE_COMPLETED'];
 const TERMINAL_ISSUE = ['CANCELLED', 'RECEIVED', 'FORCE_COMPLETED'];
 
-function AdminPanel({ token }) {
+function AdminPanel({ token, tabOverride }) {
   const [overview, setOverview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const [tab, setTab] = useState('pos');
   const [poFilter, setPoFilter] = useState('active');
+
+  useEffect(() => { if (tabOverride) setTab(tabOverride); }, [tabOverride]);
 
   const [auditRows, setAuditRows] = useState([]);
   const [auditPage, setAuditPage] = useState(1);
@@ -681,12 +684,12 @@ function AdminPanel({ token }) {
           <h2 className="text-lg font-bold text-slate-900">Admin Panel</h2>
           <p className="text-sm text-slate-500">{pos.length} POs · {issues.length} issues · {lowStock.length} low-stock alerts</p>
         </div>
-        <button onClick={fetchOverview} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700">
+        <button data-tour="admin-refresh" onClick={fetchOverview} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700">
           <RefreshCw size={15} /> Refresh
         </button>
       </div>
 
-      <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit flex-wrap">
+      <div data-tour="admin-tabs" className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit flex-wrap">
         {TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${tab === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
@@ -697,7 +700,7 @@ function AdminPanel({ token }) {
 
       {tab === 'pos' && (
         <div className="space-y-3">
-        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+        <div data-tour="po-filter" className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
           {[['active', 'Active'], ['all', 'All']].map(([val, label]) => (
             <button key={val} onClick={() => setPoFilter(val)}
               className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${poFilter === val ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
@@ -705,7 +708,7 @@ function AdminPanel({ token }) {
             </button>
           ))}
         </div>
-        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <div data-tour="po-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
           <table className="w-full text-sm min-w-[700px]">
             <thead className="bg-slate-50 text-slate-500 text-xs">
               <tr>
@@ -747,7 +750,7 @@ function AdminPanel({ token }) {
       )}
 
       {tab === 'issues' && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <div data-tour="issues-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
           <table className="w-full text-sm min-w-[700px]">
             <thead className="bg-slate-50 text-slate-500 text-xs">
               <tr>
@@ -842,7 +845,7 @@ function AdminPanel({ token }) {
               </tbody>
             </table>
           </div>
-          <div className="flex items-center gap-2">
+          <div data-tour="audit-pagination" className="flex items-center gap-2">
             <button disabled={auditPage <= 1 || auditLoading} onClick={() => fetchAuditLog(auditPage - 1)}
               className="px-3 py-1.5 text-sm bg-white border border-slate-200 rounded-lg disabled:opacity-40">← Prev</button>
             <span className="text-sm text-slate-500">Page {auditPage}</span>
@@ -853,7 +856,7 @@ function AdminPanel({ token }) {
       )}
 
       {tab === 'sku' && (
-        <div className="space-y-4 max-w-xl">
+        <div data-tour="sku-section" className="space-y-4 max-w-xl">
           <div>
             <h3 className="font-semibold text-slate-800 mb-1">Upload SKU Packaging Master</h3>
             <p className="text-xs text-slate-500 mb-3">Use your existing master CSV — required columns: <code>FSN ID</code>, <code>SKU Name</code>, <code>Packing Material</code>. Optional: <code>Sec. packing (…)</code> columns for secondary/tertiary materials.</p>
@@ -863,13 +866,13 @@ function AdminPanel({ token }) {
                 {skuFile ? skuFile.name : 'Choose CSV / Excel file'}
                 <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { setSkuFile(e.target.files?.[0] ?? null); setSkuResult(null); setSkuError(''); }} />
               </label>
-              <button onClick={uploadSkuMaster} disabled={skuUploading || !skuFile}
+              <button data-tour="sku-upload-btn" onClick={uploadSkuMaster} disabled={skuUploading || !skuFile}
                 className="px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-1.5">
                 {skuUploading ? <RefreshCw size={14} className="animate-spin" /> : <Upload size={14} />}
                 {skuUploading ? 'Uploading…' : 'Upload'}
               </button>
             </div>
-            <button onClick={() => downloadCSV('sku_master_sample.csv', [
+            <button data-tour="sku-sample" onClick={() => downloadCSV('sku_master_sample.csv', [
               ['FSN ID','SKU Name','Packing Type','Packing Material','Sec. packing (Cling wrap)','Sec. packing (Foam Roll)','Sec. packing (Butter Paper)','Sec. packing (Foam Net)'],
               ['VEGFFHGDAHJVZQEN','Beans (cluster)','Bag','LDPE Cover 6 Kg','','','',''],
               ['VEGHZA5FHUVZRZ7C','Fresh Yam','Net','Net Roll','1','','',''],
@@ -894,7 +897,7 @@ function AdminPanel({ token }) {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-slate-800">Consumption Runs</h3>
-            <button onClick={triggerRunNow} disabled={runNowLoading}
+            <button data-tour="run-now" onClick={triggerRunNow} disabled={runNowLoading}
               className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg font-medium flex items-center gap-1.5 disabled:opacity-50">
               {runNowLoading ? <RefreshCw size={14} className="animate-spin" /> : <Zap size={14} />}
               Run Now
@@ -945,7 +948,7 @@ function AdminPanel({ token }) {
               <p className="text-xs text-slate-500 mt-0.5">Set per-facility low-stock thresholds for each packaging material.</p>
             </div>
             <div className="flex items-center gap-3">
-              <select value={mslFilter} onChange={(e) => setMslFilter(e.target.value)}
+              <select data-tour="msl-filter" value={mslFilter} onChange={(e) => setMslFilter(e.target.value)}
                 className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 text-slate-700">
                 <option value="ALL">All Facility Types</option>
                 <option value="PM_STORE">PM Store</option>
@@ -1045,7 +1048,7 @@ function AdminPanel({ token }) {
           {usersLoading ? (
             <div className="py-12 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
           ) : (
-            <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <div data-tour="users-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
               <table className="w-full text-sm min-w-[500px]">
                 <thead className="bg-slate-50 text-slate-500 text-xs">
                   <tr>
@@ -1171,11 +1174,20 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [section, setSection] = useState('dashboard');
+  const [showTour, setShowTour] = useState(false);
+  const [adminTabForTour, setAdminTabForTour] = useState(null);
+
+  function finishTour() {
+    setShowTour(false);
+    setAdminTabForTour(null);
+    if (user) localStorage.setItem(`packtrack_tour_done_${user.role}`, '1');
+  }
 
   if (!user) return (
     <LoginScreen onLogin={(t, u) => {
       setToken(t); setUser(u);
       setSection(['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP'].includes(u.role) ? 'indent' : u.role === 'ADMIN' ? 'admin' : 'dashboard');
+      if (!localStorage.getItem(`packtrack_tour_done_${u.role}`)) setShowTour(true);
     }} />
   );
 
@@ -1193,7 +1205,7 @@ export default function App() {
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center"><Package size={16} className="text-white" /></div>
           <span className="font-bold text-white">PackTrack</span>
         </div>
-        <div className="flex-1 p-2 space-y-1">
+        <div data-tour="admin-nav" className="flex-1 p-2 space-y-1">
           {NAV.map((n) => (
             <button key={n.id} onClick={() => setSection(n.id)} className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${section === n.id ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <n.icon size={16} /> {n.label}
@@ -1218,8 +1230,41 @@ export default function App() {
         {section === 'dashboard' && <DashboardSection />}
         {section === 'indent' && <IndentUploadSection token={token} />}
         {section === 'po' && <POUploadSection token={token} />}
-        {section === 'admin' && <AdminPanel token={token} />}
+        {section === 'admin' && <AdminPanel token={token} tabOverride={adminTabForTour} />}
       </div>
+
+      <button
+        data-tour="tour-btn-portal"
+        onClick={() => setShowTour(true)}
+        className="fixed bottom-6 right-6 w-11 h-11 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center text-lg font-bold hover:bg-blue-700 z-50"
+        title="Open guided tour"
+      >?</button>
+
+      {showTour && (
+        <TourOverlay
+          onDone={finishTour}
+          steps={[
+            { target: null, title: 'Welcome to PackTrack Admin', body: 'This tour walks you through every section and button in the portal. Use Next/Prev to navigate or Skip to dismiss at any time.' },
+            { target: 'admin-nav', title: 'Sidebar Navigation', body: 'Switch between sections using this sidebar. As admin you have access to PM Store Dashboard, Upload Indent, Upload Purchase Orders, and the Admin Panel.', onEnter: () => setSection('admin') },
+            { target: 'po-sample-csv', title: 'Download Sample CSV', body: 'Always download the sample before uploading POs. Roll materials use no_of_rolls and length_per_roll; other materials use po_qty. Blank cells for unused columns are fine.', onEnter: () => { setSection('po'); setAdminTabForTour(null); } },
+            { target: 'po-upload-btn', title: 'Upload Purchase Orders', body: 'After filling the CSV, upload it here. A single po_no can span multiple rows — one row per material under the same PO number.' },
+            { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 8 tabs: Purchase Orders, Stock Issues, Current Stock, Audit Log, SKU Master, Consumption Runs, Min Stock Levels, and Users.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
+            { target: 'admin-refresh', title: 'Refresh', body: 'Re-fetches all data from the server without a full page reload. Use this after making changes in another session.' },
+            { target: 'po-filter', title: 'Active / All Toggle', body: 'Active shows only open and partially received POs. Switch to All to include closed, cancelled, and force-completed POs too.', onEnter: () => setAdminTabForTour('pos') },
+            { target: 'po-table', title: 'Purchase Orders Table', body: 'Each row is a PO line. The Cancel button withdraws an active PO; Reverse Force Complete (visible on force-completed POs) undoes an accidental close — both require a written reason.' },
+            { target: 'issues-table', title: 'Stock Issues', body: 'Every dispatch from the PM Store to an FC or CC facility appears here. The Cancel button removes a pending dispatch before it is received at the destination.', onEnter: () => setAdminTabForTour('issues') },
+            { target: 'audit-pagination', title: 'Audit Log', body: 'Every system action is recorded here — GRNs, force completes, password resets, cancellations. Use Prev and Next to page through 50 records at a time.', onEnter: () => setAdminTabForTour('audit') },
+            { target: 'sku-section', title: 'SKU Packaging Master', body: 'Maps each FSN (Ninjacart product code) to its packaging materials. The daily consumption scraper uses this mapping to deduct PM stock when units are packed at FC/CC.', onEnter: () => setAdminTabForTour('sku') },
+            { target: 'sku-sample', title: 'Download SKU Sample', body: 'Download the sample to see required columns: FSN ID, SKU Name, Packing Material, plus optional secondary/tertiary columns for multi-material SKUs.' },
+            { target: 'sku-upload-btn', title: 'Upload SKU Master', body: 'Upload your filled SKU master CSV here. Existing FSN rows are updated; new ones are inserted. Re-upload whenever the packaging mapping changes.' },
+            { target: 'run-now', title: 'Run Consumption Scraper', body: 'Triggers the daily scraper immediately without waiting for the 5am schedule. Use after uploading a new SKU master or if yesterday\'s run failed.', onEnter: () => setAdminTabForTour('consumption') },
+            { target: 'msl-filter', title: 'Min Stock Levels — Filter', body: 'Narrows the threshold grid to PM Store, FC, or CC facilities so you can focus edits on one type at a time.', onEnter: () => setAdminTabForTour('msl') },
+            { target: null, title: 'Min Stock Levels — Save', body: 'Edit any threshold cell inline — it highlights amber. A Save button appears top-right once edits exist. Hit it to commit all changes at once.' },
+            { target: 'users-table', title: 'User Accounts', body: 'Lists every login account with role and status. Hit Reset Password on any row to set a new password — minimum 8 characters, confirmation required. The action is logged in the audit trail.', onEnter: () => setAdminTabForTour('users') },
+            { target: 'tour-btn-portal', title: "You're all set!", body: 'Hit this ? button at the bottom-right any time to replay the tour.' },
+          ]}
+        />
+      )}
     </div>
   );
 }
