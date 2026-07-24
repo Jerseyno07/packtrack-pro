@@ -8,7 +8,23 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
+const { parse: parseCsv } = require('csv-parse');
+const { Readable } = require('stream');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Fetch Redash result as a streaming CSV to avoid loading large JSON payloads into memory.
+async function fetchRedashCsvRows(url, hdrs) {
+  const res = await fetch(url, { headers: hdrs });
+  if (!res.ok) throw new Error(`Redash CSV fetch failed: ${res.status} ${url}`);
+  return new Promise((resolve, reject) => {
+    const rows = [];
+    const parser = parseCsv({ columns: true, skip_empty_lines: true, cast: false });
+    parser.on('readable', () => { let r; while ((r = parser.read()) !== null) rows.push(r); });
+    parser.on('error', reject);
+    parser.on('end', () => resolve(rows));
+    Readable.fromWeb(res.body).pipe(parser);
+  });
+}
 
 async function getCurrentStock(client, warehouseId, materialCode) {
   const r = await client.query(
@@ -42,7 +58,10 @@ async function executeRedashQuery(qid, params) {
   if (!triggerRes.ok) throw new Error(`Redash trigger error ${triggerRes.status} for query ${qid}`);
   const triggerData = await triggerRes.json();
 
-  if (triggerData.query_result) return triggerData.query_result.data?.rows ?? [];
+  // Immediate cached result — fetch as CSV to avoid large JSON in memory
+  if (triggerData.query_result) {
+    return fetchRedashCsvRows(`${base}/api/query_results/${triggerData.query_result.id}.csv`, hdrs);
+  }
 
   const jobId = triggerData.job?.id;
   if (!jobId) throw new Error(`Redash returned neither job nor query_result for query ${qid}`);
@@ -52,9 +71,7 @@ async function executeRedashQuery(qid, params) {
     const jobRes = await fetch(`${base}/api/jobs/${jobId}`, { headers: hdrs });
     const job = (await jobRes.json()).job;
     if (job.status === 3) {
-      const resultRes = await fetch(`${base}/api/query_results/${job.query_result_id}`, { headers: hdrs });
-      const rd = await resultRes.json();
-      return rd?.query_result?.data?.rows ?? [];
+      return fetchRedashCsvRows(`${base}/api/query_results/${job.query_result_id}.csv`, hdrs);
     }
     if (job.status === 4) throw new Error(`Redash job failed for query ${qid}: ${job.error}`);
   }
@@ -236,7 +253,7 @@ async function runConsumption(options = {}) {
     );
     console.log(`[consumption] Run ${runId} COMPLETED — deducted:${deducted} skipped:${skipped} errors:${errored}`);
   } catch (e) {
-    await pool.query(`UPDATE consumption_runs SET status='FAILED', completed_at=now() WHERE id=$1`, [runId]);
+    await pool.query(`UPDATE consumption_runs SET status='FAILED', completed_at=now(), last_error=$2 WHERE id=$1`, [runId, e.message]);
     console.error('[consumption] Run FAILED:', e.message);
     throw e;
   }
