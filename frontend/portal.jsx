@@ -553,7 +553,7 @@ function AdminPanel({ token, tabOverride }) {
     try {
       const res = await fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs });
       const data = await res.json();
-      setFacilityWarehouses((data.warehouses ?? []).filter((w) => w.warehouse_type !== 'PM_STORE'));
+      setFacilityWarehouses((data.data ?? []).filter((w) => w.warehouse_type !== 'PM_STORE'));
     } catch { /* silent */ }
   }
 
