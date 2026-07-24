@@ -1346,6 +1346,13 @@ app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN')
   setImmediate(() => runConsumption({ facilityCodes }).catch((e) => console.error('[consumption] manual run error:', e.message)));
 }));
 
+app.get('/api/v1/admin/consumption/env-check', authenticate, requireRole('ADMIN'), (req, res) => {
+  const vars = ['CONSUMPTION_DASHBOARD_URL', 'CONSUMPTION_DASHBOARD_API_KEY', 'CONSUMPTION_QUERY_ID', 'CONSUMPTION_CC_QUERY_ID'];
+  const result = {};
+  for (const k of vars) result[k] = process.env[k] ? `SET (${process.env[k].slice(0, 8)}…)` : 'MISSING';
+  res.json(result);
+});
+
 app.get('/api/v1/admin/consumption/runs', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const r = await pool.query(
     `SELECT cr.*, COUNT(crl.id) AS total_lines
