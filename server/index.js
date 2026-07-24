@@ -1299,8 +1299,15 @@ app.get('/api/v1/audits', authenticate, asyncHandler(async (req, res) => {
 
 app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { runConsumption } = require('./cron/consumptionScraper');
-  res.json({ ok: true, message: 'Consumption run started in background' });
-  setImmediate(() => runConsumption().catch((e) => console.error('[consumption] manual run error:', e.message)));
+  const { warehouseId } = req.body ?? {};
+  let facilityCode = null;
+  if (warehouseId) {
+    const wh = await pool.query('SELECT code FROM warehouses WHERE id = $1 AND is_active', [warehouseId]);
+    if (!wh.rows.length) throw new ApiError(404, 'NOT_FOUND', 'Warehouse not found');
+    facilityCode = wh.rows[0].code;
+  }
+  res.json({ ok: true, message: 'Consumption run started in background', facilityCode });
+  setImmediate(() => runConsumption({ facilityCode }).catch((e) => console.error('[consumption] manual run error:', e.message)));
 }));
 
 app.get('/api/v1/admin/consumption/runs', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
