@@ -1015,19 +1015,26 @@ function AdminPanel({ token, tabOverride }) {
                 {consumptionLoading && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
                 {!consumptionLoading && consumptionRuns.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No runs yet</td></tr>}
                 {consumptionRuns.map((r, i) => (
-                  <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{r.run_date?.slice(0,10)}</td>
-                    <td className="px-4 py-2.5 text-slate-600 text-xs font-mono">{r.facility_filter ?? <span className="text-slate-400">All</span>}</td>
-                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.scraped_from?.slice(0,10)} → {r.scraped_to?.slice(0,10)}</td>
-                    <td className="px-4 py-2.5 text-center">
-                      <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : 'amber'}>{r.status}</Badge>
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{r.total_sku_facility_rows}</td>
-                    <td className="px-4 py-2.5 text-right text-green-700 font-medium">{r.deducted_lines}</td>
-                    <td className="px-4 py-2.5 text-right text-amber-600">{r.skipped_lines}</td>
-                    <td className="px-4 py-2.5 text-right text-red-600">{r.error_lines}</td>
-                    <td className="px-4 py-2.5 text-slate-400 text-xs">{r.completed_at ? new Date(r.completed_at).toLocaleString() : '—'}</td>
-                  </tr>
+                  <React.Fragment key={i}>
+                    <tr className="border-t border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-800">{r.run_date?.slice(0,10)}</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-xs font-mono">{r.facility_filter ?? <span className="text-slate-400">All</span>}</td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs">{r.scraped_from?.slice(0,10)} → {r.scraped_to?.slice(0,10)}</td>
+                      <td className="px-4 py-2.5 text-center">
+                        <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : 'amber'}>{r.status}</Badge>
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{r.total_sku_facility_rows}</td>
+                      <td className="px-4 py-2.5 text-right text-green-700 font-medium">{r.deducted_lines}</td>
+                      <td className="px-4 py-2.5 text-right text-amber-600">{r.skipped_lines}</td>
+                      <td className="px-4 py-2.5 text-right text-red-600">{r.error_lines}</td>
+                      <td className="px-4 py-2.5 text-slate-400 text-xs">{r.completed_at ? new Date(r.completed_at).toLocaleString() : '—'}</td>
+                    </tr>
+                    {r.last_error && (
+                      <tr className="bg-red-50 border-t border-red-100">
+                        <td colSpan={9} className="px-4 py-1.5 text-xs text-red-700 font-mono">{r.last_error}</td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
