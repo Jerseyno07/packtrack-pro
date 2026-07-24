@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
 import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap, Users } from 'lucide-react';
 import TourOverlay from './TourOverlay.jsx';
 
@@ -1015,7 +1015,7 @@ function AdminPanel({ token, tabOverride }) {
                 {consumptionLoading && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
                 {!consumptionLoading && consumptionRuns.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No runs yet</td></tr>}
                 {consumptionRuns.map((r, i) => (
-                  <React.Fragment key={i}>
+                  <Fragment key={i}>
                     <tr className="border-t border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-2.5 font-medium text-slate-800">{r.run_date?.slice(0,10)}</td>
                       <td className="px-4 py-2.5 text-slate-600 text-xs font-mono">{r.facility_filter ?? <span className="text-slate-400">All</span>}</td>
@@ -1034,7 +1034,7 @@ function AdminPanel({ token, tabOverride }) {
                         <td colSpan={9} className="px-4 py-1.5 text-xs text-red-700 font-mono">{r.last_error}</td>
                       </tr>
                     )}
-                  </React.Fragment>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
