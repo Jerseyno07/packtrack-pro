@@ -170,13 +170,13 @@ function IndentUploadSection({ token }) {
       </div>
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
-        <div><strong>Expected columns:</strong> facility_code, sku_code, requested_qty (non-roll), no_of_rolls (roll materials), remarks (optional)</div>
+        <div><strong>Expected columns:</strong> facility_code, sku_code, requested_qty (non-roll), no_of_rolls + length_per_roll (roll materials), remarks (optional)</div>
         <button
           onClick={() => downloadCSV('indent_sample.csv', [
-            ['facility_code', 'sku_code', 'requested_qty', 'no_of_rolls', 'remarks'],
-            ['CC-BLR', 'LDPE-06', 500, '', 'Weekly stock'],
-            ['CC-BLR', 'NTRLL-01', '', 40, ''],
-            ['FC-BLR', 'WXRB-01', '', 20, 'Urgent'],
+            ['facility_code', 'sku_code', 'requested_qty', 'no_of_rolls', 'length_per_roll', 'remarks'],
+            ['CC-BLR', 'LDPE-06', 500, '', '', 'Weekly stock'],
+            ['CC-BLR', 'NTRLL-01', '', 40, 200, ''],
+            ['FC-BLR', 'WXRB-01', '', 20, 150, 'Urgent'],
           ])}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
         >

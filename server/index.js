@@ -252,6 +252,7 @@ const indentRowSchema = z.object({
   sku_code: z.string().min(1),
   requested_qty: z.coerce.number().positive().optional(),
   no_of_rolls: z.coerce.number().positive().optional(),
+  length_per_roll: z.coerce.number().positive().optional(),
   remarks: z.string().optional(),
 });
 
@@ -288,17 +289,18 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         const row = rawRows[i];
         const parsed = indentRowSchema.safeParse(row);
         if (!parsed.success) { errors.push({ row: rowNum, error: parsed.error.issues.map((e) => e.message).join('; ') }); continue; }
-        const { facility_code, sku_code, requested_qty, no_of_rolls, remarks } = parsed.data;
+        const { facility_code, sku_code, requested_qty, no_of_rolls, length_per_roll, remarks } = parsed.data;
         const warehouseId = whMap.get(facility_code);
         const mat = matMap.get(sku_code);
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown facility_code '${facility_code}'` }); continue; }
         if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${sku_code}'` }); continue; }
 
-        // Roll materials use no_of_rolls; non-roll use requested_qty
+        // Roll materials: qty in meters = no_of_rolls × length_per_roll (mirrors PO upload)
+        // Non-roll materials: use requested_qty directly
         let finalQty;
         if (mat.unit === 'Roll') {
-          if (!no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${sku_code}' requires no_of_rolls column` }); continue; }
-          finalQty = no_of_rolls;
+          if (!no_of_rolls || !length_per_roll) { errors.push({ row: rowNum, error: `Roll material '${sku_code}' requires no_of_rolls and length_per_roll columns` }); continue; }
+          finalQty = no_of_rolls * length_per_roll;
         } else {
           if (!requested_qty) { errors.push({ row: rowNum, error: `Non-roll material '${sku_code}' requires requested_qty column` }); continue; }
           finalQty = requested_qty;
