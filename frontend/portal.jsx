@@ -310,17 +310,30 @@ function POUploadSection({ token }) {
       </div>
 
       {result && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <div className="flex items-center gap-2 mb-3">
+        <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+          <div className="flex items-center gap-2">
             {result.error_rows === 0 ? <CheckCircle2 size={18} className="text-green-500" /> : <AlertTriangle size={18} className="text-amber-500" />}
             <span className="font-semibold text-slate-900">{result.batch_ref}</span>
-            <Badge tone={result.error_rows === 0 ? 'green' : 'amber'}>{result.status}</Badge>
+            <Badge tone={result.error_rows === 0 ? 'green' : result.valid_rows === 0 ? 'red' : 'amber'}>{result.status}</Badge>
           </div>
           <div className="grid grid-cols-3 gap-3 text-sm">
             <div><div className="text-slate-400 text-xs">Total Rows</div><div className="font-bold text-slate-900">{result.total_rows}</div></div>
             <div><div className="text-slate-400 text-xs">Valid</div><div className="font-bold text-green-600">{result.valid_rows}</div></div>
             <div><div className="text-slate-400 text-xs">Errors</div><div className="font-bold text-red-600">{result.error_rows}</div></div>
           </div>
+          {result.errors?.length > 0 && (
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1.5">Row errors</div>
+              <div className="space-y-1 max-h-60 overflow-y-auto">
+                {result.errors.map((e, i) => (
+                  <div key={i} className="flex gap-2 text-xs bg-red-50 rounded-lg px-3 py-1.5">
+                    <span className="font-medium text-red-700 whitespace-nowrap">Row {e.row}</span>
+                    <span className="text-red-600">{e.error}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
