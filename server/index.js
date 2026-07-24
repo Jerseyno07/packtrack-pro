@@ -34,7 +34,15 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 // Public health endpoint — no auth required, used by Railway healthcheck
-app.get('/health', (req, res) => res.json({ ok: true }));
+app.get('/health', (req, res) => res.json({
+  ok: true,
+  consumption_env: {
+    CONSUMPTION_DASHBOARD_URL: process.env.CONSUMPTION_DASHBOARD_URL ? 'SET' : 'MISSING',
+    CONSUMPTION_DASHBOARD_API_KEY: process.env.CONSUMPTION_DASHBOARD_API_KEY ? 'SET' : 'MISSING',
+    CONSUMPTION_QUERY_ID: process.env.CONSUMPTION_QUERY_ID ? 'SET' : 'MISSING',
+    CONSUMPTION_CC_QUERY_ID: process.env.CONSUMPTION_CC_QUERY_ID ? 'SET' : 'MISSING',
+  },
+}));
 
 // ─────────────────────────────────────────────────────────────────────────
 // Helpers
