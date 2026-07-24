@@ -92,9 +92,10 @@ async function scrapePackagedQty(fromDate, toDate) {
   return out;
 }
 
-// options.facilityCode — if set, only process rows for that warehouse code
+// options.facilityCodes — array of warehouse codes; if set, only process rows for those facilities
 async function runConsumption(options = {}) {
-  const { facilityCode = null } = options;
+  const { facilityCodes = null } = options;
+  const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
   const today = new Date();
   const runDate = today.toISOString().slice(0, 10);
 
@@ -120,15 +121,16 @@ async function runConsumption(options = {}) {
 
   const runRes = await pool.query(
     `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter) VALUES ($1,$2,$3,'RUNNING',$4) RETURNING id`,
-    [runDate, scraped_from, scraped_to, facilityCode]
+    [runDate, scraped_from, scraped_to, facilityFilter]
   );
   const runId = runRes.rows[0].id;
 
   try {
     let rows = await scrapePackagedQty(scraped_from, scraped_to);
-    if (facilityCode) {
-      rows = rows.filter((r) => r.facility_id === facilityCode);
-      console.log(`[consumption] Filtered to facility ${facilityCode}: ${rows.length} rows`);
+    if (facilityCodes?.length) {
+      const codeSet = new Set(facilityCodes);
+      rows = rows.filter((r) => codeSet.has(r.facility_id));
+      console.log(`[consumption] Filtered to [${facilityCodes.join(', ')}]: ${rows.length} rows`);
     }
     console.log(`[consumption] Scraped ${rows.length} rows for ${scraped_from}..${scraped_to}`);
 

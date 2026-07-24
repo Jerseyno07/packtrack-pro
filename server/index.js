@@ -1335,15 +1335,15 @@ app.get('/api/v1/audits', authenticate, asyncHandler(async (req, res) => {
 
 app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { runConsumption } = require('./cron/consumptionScraper');
-  const { warehouseId } = req.body ?? {};
-  let facilityCode = null;
-  if (warehouseId) {
-    const wh = await pool.query('SELECT code FROM warehouses WHERE id = $1 AND is_active', [warehouseId]);
-    if (!wh.rows.length) throw new ApiError(404, 'NOT_FOUND', 'Warehouse not found');
-    facilityCode = wh.rows[0].code;
+  const { warehouseIds } = req.body ?? {};
+  let facilityCodes = null;
+  if (warehouseIds?.length) {
+    const whs = await pool.query('SELECT code FROM warehouses WHERE id = ANY($1) AND is_active', [warehouseIds]);
+    if (!whs.rows.length) throw new ApiError(404, 'NOT_FOUND', 'No matching warehouses found');
+    facilityCodes = whs.rows.map((r) => r.code);
   }
-  res.json({ ok: true, message: 'Consumption run started in background', facilityCode });
-  setImmediate(() => runConsumption({ facilityCode }).catch((e) => console.error('[consumption] manual run error:', e.message)));
+  res.json({ ok: true, message: 'Consumption run started in background', facilityCodes });
+  setImmediate(() => runConsumption({ facilityCodes }).catch((e) => console.error('[consumption] manual run error:', e.message)));
 }));
 
 app.get('/api/v1/admin/consumption/runs', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
