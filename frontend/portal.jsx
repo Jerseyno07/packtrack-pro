@@ -470,7 +470,8 @@ function AdminPanel({ token, tabOverride }) {
   const [consumptionLoading, setConsumptionLoading] = useState(false);
   const [runNowLoading, setRunNowLoading] = useState(false);
   const [facilityWarehouses, setFacilityWarehouses] = useState([]);
-  const [selectedFacilityId, setSelectedFacilityId] = useState('');
+  const [selectedFacilityIds, setSelectedFacilityIds] = useState(new Set());
+  const [facilityDropdownOpen, setFacilityDropdownOpen] = useState(false);
 
   const [mslWarehouses, setMslWarehouses] = useState([]);
   const [mslMaterials, setMslMaterials] = useState([]);
@@ -557,14 +558,30 @@ function AdminPanel({ token, tabOverride }) {
   }
 
   async function triggerRunNow() {
-    if (!selectedFacilityId) return;
+    if (!selectedFacilityIds.size) return;
     setRunNowLoading(true);
     try {
-      const body = selectedFacilityId === 'ALL' ? {} : { warehouseId: Number(selectedFacilityId) };
-      await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs, body: JSON.stringify(body) });
+      const warehouseIds = [...selectedFacilityIds].map(Number);
+      await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs, body: JSON.stringify({ warehouseIds }) });
       setTimeout(() => fetchConsumptionRuns(), 2000);
     } catch { /* silent */ }
     finally { setRunNowLoading(false); }
+  }
+
+  function toggleFacility(id) {
+    setSelectedFacilityIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllFacilities() {
+    if (selectedFacilityIds.size === facilityWarehouses.length) {
+      setSelectedFacilityIds(new Set());
+    } else {
+      setSelectedFacilityIds(new Set(facilityWarehouses.map((w) => w.id)));
+    }
   }
 
   async function fetchMinStockLevels() {
@@ -923,26 +940,56 @@ function AdminPanel({ token, tabOverride }) {
           <div className="flex items-center justify-between gap-3">
             <h3 className="font-semibold text-slate-800">Consumption Runs</h3>
             <div className="flex items-center gap-2">
-              <select
-                value={selectedFacilityId}
-                onChange={(e) => setSelectedFacilityId(e.target.value)}
-                className="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">— Select facility —</option>
-                <option value="ALL">All Facilities</option>
-                {['FC', 'CC'].map((type) => {
-                  const whs = facilityWarehouses.filter((w) => w.warehouse_type === type);
-                  if (!whs.length) return null;
-                  return (
-                    <optgroup key={type} label={type}>
-                      {whs.map((w) => (
-                        <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
-                      ))}
-                    </optgroup>
-                  );
-                })}
-              </select>
-              <button data-tour="run-now" onClick={triggerRunNow} disabled={runNowLoading || !selectedFacilityId}
+              {/* Multi-select facility picker */}
+              <div className="relative">
+                <button
+                  onClick={() => setFacilityDropdownOpen((o) => !o)}
+                  className="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 bg-white flex items-center gap-1.5 hover:border-slate-300 min-w-[180px] justify-between"
+                >
+                  <span className={selectedFacilityIds.size === 0 ? 'text-slate-400' : ''}>
+                    {selectedFacilityIds.size === 0
+                      ? '— Select facilities —'
+                      : selectedFacilityIds.size === facilityWarehouses.length
+                      ? 'All facilities'
+                      : `${selectedFacilityIds.size} selected`}
+                  </span>
+                  <ChevronRight size={13} className={`text-slate-400 transition-transform ${facilityDropdownOpen ? 'rotate-90' : ''}`} />
+                </button>
+                {facilityDropdownOpen && (
+                  <div className="absolute right-0 top-full mt-1 w-72 bg-white border border-slate-200 rounded-xl shadow-lg z-20 max-h-80 overflow-y-auto">
+                    {/* Select all toggle */}
+                    <label className="flex items-center gap-2.5 px-3 py-2 border-b border-slate-100 cursor-pointer hover:bg-slate-50">
+                      <input type="checkbox"
+                        checked={selectedFacilityIds.size === facilityWarehouses.length && facilityWarehouses.length > 0}
+                        onChange={toggleAllFacilities}
+                        className="rounded"
+                      />
+                      <span className="text-xs font-semibold text-slate-600">Select all ({facilityWarehouses.length})</span>
+                    </label>
+                    {['FC', 'CC'].map((type) => {
+                      const whs = facilityWarehouses.filter((w) => w.warehouse_type === type);
+                      if (!whs.length) return null;
+                      return (
+                        <div key={type}>
+                          <div className="px-3 py-1.5 text-xs font-bold text-slate-400 uppercase tracking-wide bg-slate-50">{type}</div>
+                          {whs.map((w) => (
+                            <label key={w.id} className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-blue-50">
+                              <input type="checkbox"
+                                checked={selectedFacilityIds.has(w.id)}
+                                onChange={() => toggleFacility(w.id)}
+                                className="rounded"
+                              />
+                              <span className="text-xs text-slate-700"><span className="font-mono font-medium">{w.code}</span> — {w.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <button data-tour="run-now" onClick={() => { triggerRunNow(); setFacilityDropdownOpen(false); }}
+                disabled={runNowLoading || selectedFacilityIds.size === 0}
                 className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg font-medium flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                 {runNowLoading ? <RefreshCw size={14} className="animate-spin" /> : <Zap size={14} />}
                 Run Now
