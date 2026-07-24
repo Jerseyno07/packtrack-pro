@@ -607,33 +607,35 @@ function StoreStockView({ token, warehouseId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true); setError('');
-      try {
-        if (!token || !warehouseId) {
-          setStock([
-            { material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', unit: 'Pcs', on_hand_qty: '1211.000', weighted_avg_cost: '2.50', is_low_stock: false, min_qty: '500' },
-            { material_code: 'NTRLL-01', material_name: 'Net Roll', unit: 'Roll', on_hand_qty: '950.000', weighted_avg_cost: '12.00', is_low_stock: false, min_qty: '200' },
-            { material_code: 'WXRB-01', material_name: 'Wax Ribbon', unit: 'Roll', on_hand_qty: '0.000', weighted_avg_cost: '0.00', is_low_stock: true, min_qty: '50' },
-          ]);
-          return;
-        }
-        const res = await fetch(`${BASE_URL}/api/v1/stock/current?warehouse_id=${warehouseId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
-        setStock(data.data ?? []);
-      } catch (e) { setError(e.message); }
-      finally { setLoading(false); }
-    }
-    load();
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      if (!token || !warehouseId) {
+        setStock([
+          { material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', unit: 'Pcs', on_hand_qty: '1211.000', weighted_avg_cost: '2.50', is_low_stock: false, min_qty: '500' },
+          { material_code: 'NTRLL-01', material_name: 'Net Roll', unit: 'Roll', on_hand_qty: '950.000', weighted_avg_cost: '12.00', is_low_stock: false, min_qty: '200' },
+          { material_code: 'WXRB-01', material_name: 'Wax Ribbon', unit: 'Roll', on_hand_qty: '0.000', weighted_avg_cost: '0.00', is_low_stock: true, min_qty: '50' },
+        ]);
+        return;
+      }
+      const res = await fetch(`${BASE_URL}/api/v1/stock/current?warehouse_id=${warehouseId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+      setStock(data.data ?? []);
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
   }, [token, warehouseId]);
+
+  useEffect(() => { load(); }, [load]);
 
   return (
     <div className="space-y-3 max-w-2xl">
-      <h2 className="text-lg font-bold text-slate-900">Store Stock</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold text-slate-900">Store Stock</h2>
+        <button onClick={load} className="p-2 text-slate-400 hover:text-slate-600"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+      </div>
       {error && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}</div>}
       {loading ? <div className="text-center text-sm text-slate-400 py-10">Loading…</div> : (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
