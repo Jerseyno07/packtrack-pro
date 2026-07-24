@@ -98,10 +98,16 @@ app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
   await pool.query('INSERT INTO sessions (token, user_id, expires_at) VALUES ($1,$2,$3)', [token, user.id, expiresAt]);
   await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
 
-  const whRes = await pool.query(
+  let whRes = await pool.query(
     'SELECT warehouse_id FROM user_warehouses WHERE user_id = $1 ORDER BY warehouse_id',
     [user.id]
   );
+  // Admins have no user_warehouses rows — default to all active PM Store warehouses
+  if (!whRes.rows.length) {
+    whRes = await pool.query(
+      "SELECT id AS warehouse_id FROM warehouses WHERE is_active AND warehouse_type = 'PM_STORE' ORDER BY id"
+    );
+  }
   const warehouse_ids = whRes.rows.map((r) => Number(r.warehouse_id));
 
   res.json({
