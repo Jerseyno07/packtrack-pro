@@ -204,8 +204,16 @@ function parseUploadedFile(file) {
 
 function toIsoDateOrNull(val) {
   if (!val) return null;
-  const d = new Date(val);
-  return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10); // undefined = invalid (caller checks)
+  if (val instanceof Date) return isNaN(val.getTime()) ? undefined : val.toISOString().slice(0, 10);
+  const s = String(val).trim();
+  // DD/MM/YYYY or DD-MM-YYYY (Indian date format)
+  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmy) {
+    const d = new Date(`${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`);
+    return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
