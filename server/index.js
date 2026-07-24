@@ -98,10 +98,16 @@ app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
   await pool.query('INSERT INTO sessions (token, user_id, expires_at) VALUES ($1,$2,$3)', [token, user.id, expiresAt]);
   await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
 
+  const whRes = await pool.query(
+    'SELECT warehouse_id FROM user_warehouses WHERE user_id = $1 ORDER BY warehouse_id',
+    [user.id]
+  );
+  const warehouse_ids = whRes.rows.map((r) => Number(r.warehouse_id));
+
   res.json({
-    token, // client stores this and sends as `Authorization: Bearer <token>`
+    token,
     expires_at: expiresAt,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, warehouse_ids },
   });
 }));
 
