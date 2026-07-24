@@ -456,6 +456,8 @@ function AdminPanel({ token, tabOverride }) {
   const [consumptionRuns, setConsumptionRuns] = useState([]);
   const [consumptionLoading, setConsumptionLoading] = useState(false);
   const [runNowLoading, setRunNowLoading] = useState(false);
+  const [facilityWarehouses, setFacilityWarehouses] = useState([]);
+  const [selectedFacilityId, setSelectedFacilityId] = useState('');
 
   const [mslWarehouses, setMslWarehouses] = useState([]);
   const [mslMaterials, setMslMaterials] = useState([]);
@@ -533,10 +535,20 @@ function AdminPanel({ token, tabOverride }) {
     finally { setSkuUploading(false); }
   }
 
+  async function fetchFacilityWarehouses() {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs });
+      const data = await res.json();
+      setFacilityWarehouses((data.warehouses ?? []).filter((w) => w.warehouse_type !== 'PM_STORE'));
+    } catch { /* silent */ }
+  }
+
   async function triggerRunNow() {
+    if (!selectedFacilityId) return;
     setRunNowLoading(true);
     try {
-      await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs });
+      const body = selectedFacilityId === 'ALL' ? {} : { warehouseId: Number(selectedFacilityId) };
+      await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs, body: JSON.stringify(body) });
       setTimeout(() => fetchConsumptionRuns(), 2000);
     } catch { /* silent */ }
     finally { setRunNowLoading(false); }
@@ -610,7 +622,7 @@ function AdminPanel({ token, tabOverride }) {
 
   useEffect(() => { fetchOverview(); }, [fetchOverview]);
   useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
-  useEffect(() => { if (tab === 'consumption') fetchConsumptionRuns(); }, [tab, fetchConsumptionRuns]);
+  useEffect(() => { if (tab === 'consumption') { fetchConsumptionRuns(); fetchFacilityWarehouses(); } }, [tab, fetchConsumptionRuns]);
   useEffect(() => { if (tab === 'msl') fetchMinStockLevels(); }, [tab]);
   useEffect(() => { if (tab === 'users') fetchUsers(); }, [tab, fetchUsers]);
 
@@ -895,19 +907,41 @@ function AdminPanel({ token, tabOverride }) {
 
       {tab === 'consumption' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h3 className="font-semibold text-slate-800">Consumption Runs</h3>
-            <button data-tour="run-now" onClick={triggerRunNow} disabled={runNowLoading}
-              className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg font-medium flex items-center gap-1.5 disabled:opacity-50">
-              {runNowLoading ? <RefreshCw size={14} className="animate-spin" /> : <Zap size={14} />}
-              Run Now
-            </button>
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedFacilityId}
+                onChange={(e) => setSelectedFacilityId(e.target.value)}
+                className="text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— Select facility —</option>
+                <option value="ALL">All Facilities</option>
+                {['FC', 'CC'].map((type) => {
+                  const whs = facilityWarehouses.filter((w) => w.warehouse_type === type);
+                  if (!whs.length) return null;
+                  return (
+                    <optgroup key={type} label={type}>
+                      {whs.map((w) => (
+                        <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+              <button data-tour="run-now" onClick={triggerRunNow} disabled={runNowLoading || !selectedFacilityId}
+                className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg font-medium flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                {runNowLoading ? <RefreshCw size={14} className="animate-spin" /> : <Zap size={14} />}
+                Run Now
+              </button>
+            </div>
           </div>
           <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-            <table className="w-full text-sm min-w-[640px]">
+            <table className="w-full text-sm min-w-[700px]">
               <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
                 <tr>
                   <th className="px-4 py-2.5 text-left">Run Date</th>
+                  <th className="px-4 py-2.5 text-left">Facility</th>
                   <th className="px-4 py-2.5 text-left">Scraped Range</th>
                   <th className="px-4 py-2.5 text-center">Status</th>
                   <th className="px-4 py-2.5 text-right">Total Rows</th>
@@ -918,11 +952,12 @@ function AdminPanel({ token, tabOverride }) {
                 </tr>
               </thead>
               <tbody>
-                {consumptionLoading && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
-                {!consumptionLoading && consumptionRuns.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">No runs yet</td></tr>}
+                {consumptionLoading && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
+                {!consumptionLoading && consumptionRuns.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No runs yet</td></tr>}
                 {consumptionRuns.map((r, i) => (
                   <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-2.5 font-medium text-slate-800">{r.run_date?.slice(0,10)}</td>
+                    <td className="px-4 py-2.5 text-slate-600 text-xs font-mono">{r.facility_filter ?? <span className="text-slate-400">All</span>}</td>
                     <td className="px-4 py-2.5 text-slate-500 text-xs">{r.scraped_from?.slice(0,10)} → {r.scraped_to?.slice(0,10)}</td>
                     <td className="px-4 py-2.5 text-center">
                       <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : 'amber'}>{r.status}</Badge>

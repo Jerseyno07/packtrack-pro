@@ -92,7 +92,9 @@ async function scrapePackagedQty(fromDate, toDate) {
   return out;
 }
 
-async function runConsumption() {
+// options.facilityCode — if set, only process rows for that warehouse code
+async function runConsumption(options = {}) {
+  const { facilityCode = null } = options;
   const today = new Date();
   const runDate = today.toISOString().slice(0, 10);
 
@@ -117,13 +119,17 @@ async function runConsumption() {
   }
 
   const runRes = await pool.query(
-    `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status) VALUES ($1,$2,$3,'RUNNING') RETURNING id`,
-    [runDate, scraped_from, scraped_to]
+    `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter) VALUES ($1,$2,$3,'RUNNING',$4) RETURNING id`,
+    [runDate, scraped_from, scraped_to, facilityCode]
   );
   const runId = runRes.rows[0].id;
 
   try {
-    const rows = await scrapePackagedQty(scraped_from, scraped_to);
+    let rows = await scrapePackagedQty(scraped_from, scraped_to);
+    if (facilityCode) {
+      rows = rows.filter((r) => r.facility_id === facilityCode);
+      console.log(`[consumption] Filtered to facility ${facilityCode}: ${rows.length} rows`);
+    }
     console.log(`[consumption] Scraped ${rows.length} rows for ${scraped_from}..${scraped_to}`);
 
     const skuMap = new Map(
@@ -226,18 +232,7 @@ async function runConsumption() {
   }
 }
 
-// Schedule 5am daily
-if (require.main === module || !module.parent) {
-  try {
-    const cron = require('node-cron');
-    cron.schedule('0 5 * * *', () => {
-      console.log('[consumption] cron triggered');
-      runConsumption().catch((e) => console.error('[consumption] cron error:', e.message));
-    });
-    console.log('[consumption] cron scheduled — 0 5 * * *');
-  } catch (e) {
-    console.warn('[consumption] node-cron not available, skipping schedule:', e.message);
-  }
-}
+// Cron scheduling removed — manual runs only via admin portal.
+// To re-enable: schedule `runConsumption()` here with node-cron.
 
 module.exports = { runConsumption };
