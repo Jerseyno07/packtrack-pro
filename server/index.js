@@ -205,13 +205,27 @@ function parseUploadedFile(file) {
 function toIsoDateOrNull(val) {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? undefined : val.toISOString().slice(0, 10);
-  const s = String(val).trim();
-  // DD/MM/YYYY or DD-MM-YYYY (Indian date format)
-  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-  if (dmy) {
-    const d = new Date(`${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`);
+  // Strip time component if present (e.g. "24/07/2026 10:30:00")
+  const s = String(val).trim().split(/[\sT]/)[0];
+  // DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY (Indian formats)
+  const dmy4 = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  if (dmy4) {
+    const d = new Date(`${dmy4[3]}-${dmy4[2].padStart(2, '0')}-${dmy4[1].padStart(2, '0')}`);
     return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
   }
+  // DD/MM/YY, DD-MM-YY, DD.MM.YY (2-digit year → 2000s)
+  const dmy2 = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2})$/);
+  if (dmy2) {
+    const d = new Date(`${2000 + parseInt(dmy2[3], 10)}-${dmy2[2].padStart(2, '0')}-${dmy2[1].padStart(2, '0')}`);
+    return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+  }
+  // YYYY/MM/DD
+  const ymd = s.match(/^(\d{4})[\/\.](\d{1,2})[\/\.](\d{1,2})$/);
+  if (ymd) {
+    const d = new Date(`${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}`);
+    return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+  }
+  // ISO YYYY-MM-DD and other formats native Date handles
   const d = new Date(s);
   return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
 }
