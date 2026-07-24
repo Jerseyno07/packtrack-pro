@@ -3,7 +3,7 @@ import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, Ar
 import AuditScreen from './AuditScreen.jsx';
 import TourOverlay from './TourOverlay.jsx';
 
-const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
+const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 
 function makeApi(token) {
   async function req(method, path, body) {
