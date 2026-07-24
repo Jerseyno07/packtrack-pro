@@ -119,6 +119,14 @@ async function runConsumption(options = {}) {
     return;
   }
 
+  // Clear any prior FAILED run for this date+facility so retries are not blocked by the unique index
+  await pool.query(
+    `DELETE FROM consumption_runs
+     WHERE run_date = $1 AND status = 'FAILED'
+     AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)`,
+    [runDate, facilityFilter]
+  );
+
   const runRes = await pool.query(
     `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter) VALUES ($1,$2,$3,'RUNNING',$4) RETURNING id`,
     [runDate, scraped_from, scraped_to, facilityFilter]
