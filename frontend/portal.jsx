@@ -531,7 +531,11 @@ function AdminPanel({ token, tabOverride }) {
       const res = await fetch(`${BASE_URL}/api/v1/admin/consumption/runs`, { headers: hdrs });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || 'Failed');
-      setConsumptionRuns(data.data ?? []);
+      const runs = data.data ?? [];
+      setConsumptionRuns(runs);
+      // Auto-open modal if a PENDING_REVIEW or RUNNING run exists (handles page refresh case)
+      const active = runs.find((r) => r.status === 'PENDING_REVIEW' || r.status === 'RUNNING');
+      if (active) setProgressOpen(true);
     } catch { /* silent */ }
     finally { setConsumptionLoading(false); }
   }, [token]);
