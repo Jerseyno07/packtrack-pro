@@ -26,17 +26,6 @@ async function fetchRedashCsvRows(url, hdrs) {
   });
 }
 
-async function getCurrentStock(client, warehouseId, materialCode) {
-  const r = await client.query(
-    `SELECT COALESCE(SUM(qty_delta), 0) AS qty
-     FROM stock_ledger sl
-     JOIN materials m ON m.id = sl.material_id
-     WHERE sl.warehouse_id = $1 AND m.code = $2`,
-    [warehouseId, materialCode]
-  );
-  return Number(r.rows[0].qty);
-}
-
 // FC query (CONSUMPTION_QUERY_ID):
 //   FacilityId → warehouses.code, FSN → sku_code, Billedlot → qty
 //   Parameters: from, to
@@ -214,44 +203,30 @@ async function runConsumption(options = {}) {
           ? row.packaged_qty * Number(mat.meters_per_unit)
           : row.packaged_qty;
 
-        const onHand = await getCurrentStock(pool, warehouseId, code);
-        const lineStatus = onHand - deductQty < 0 ? 'STOCK_BELOW_ZERO' : 'DEDUCTED';
-
-        const client = await pool.connect();
+        // Store as PENDING — no ledger entry yet. User must Accept the run to commit to stock.
         try {
-          await client.query('BEGIN');
-          const ledgerRes = await client.query(
-            `INSERT INTO stock_ledger (warehouse_id, material_id, movement_type, qty_delta, unit_cost, ref_table, ref_id, movement_date)
-             VALUES ($1,$2,'CONSUMPTION',$3,0,'consumption_run_lines',0,$4) RETURNING id`,
-            [warehouseId, mat.id, -deductQty, scraped_to]
+          await pool.query(
+            `INSERT INTO consumption_run_lines (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PENDING')`,
+            [runId, row.facility_id, warehouseId, row.sku_code, tier, code, row.packaged_qty, deductQty]
           );
-          const ledgerId = ledgerRes.rows[0].id;
-          await client.query(`UPDATE stock_ledger SET ref_id=$1 WHERE id=$1`, [ledgerId]);
-
-          await client.query(
-            `INSERT INTO consumption_run_lines (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status, ledger_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-            [runId, row.facility_id, warehouseId, row.sku_code, tier, code, row.packaged_qty, deductQty, lineStatus, ledgerId]
-          );
-          await client.query('COMMIT');
           deducted++;
         } catch (e) {
-          await client.query('ROLLBACK');
           await pool.query(
             `INSERT INTO consumption_run_lines (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, status, error_detail)
              VALUES ($1,$2,$3,$4,$5,$6,$7,'SKIPPED',$8)`,
             [runId, row.facility_id, warehouseId, row.sku_code, tier, code, row.packaged_qty, e.message]
           );
           errored++;
-        } finally { client.release(); }
+        }
       }
     }
 
     await pool.query(
-      `UPDATE consumption_runs SET status='COMPLETED', total_sku_facility_rows=$1, deducted_lines=$2, skipped_lines=$3, error_lines=$4, completed_at=now() WHERE id=$5`,
+      `UPDATE consumption_runs SET status='PENDING_REVIEW', total_sku_facility_rows=$1, deducted_lines=$2, skipped_lines=$3, error_lines=$4, completed_at=now() WHERE id=$5`,
       [rows.length, deducted, skipped, errored, runId]
     );
-    console.log(`[consumption] Run ${runId} COMPLETED — deducted:${deducted} skipped:${skipped} errors:${errored}`);
+    console.log(`[consumption] Run ${runId} PENDING_REVIEW — pending:${deducted} skipped:${skipped} errors:${errored}`);
   } catch (e) {
     await pool.query(`UPDATE consumption_runs SET status='FAILED', completed_at=now(), last_error=$2 WHERE id=$1`, [runId, e.message]);
     console.error('[consumption] Run FAILED:', e.message);
