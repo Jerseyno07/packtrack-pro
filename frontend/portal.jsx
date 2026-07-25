@@ -531,11 +531,7 @@ function AdminPanel({ token, tabOverride }) {
       const res = await fetch(`${BASE_URL}/api/v1/admin/consumption/runs`, { headers: hdrs });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || 'Failed');
-      const runs = data.data ?? [];
-      setConsumptionRuns(runs);
-      // Auto-open modal if a PENDING_REVIEW or RUNNING run exists (handles page refresh case)
-      const active = runs.find((r) => r.status === 'PENDING_REVIEW' || r.status === 'RUNNING');
-      if (active) setProgressOpen(true);
+      setConsumptionRuns(data.data ?? []);
     } catch { /* silent */ }
     finally { setConsumptionLoading(false); }
   }, [token]);
@@ -576,6 +572,13 @@ function AdminPanel({ token, tabOverride }) {
       setProgressOpen(true);
     } catch { /* silent */ }
     finally { setRunNowLoading(false); }
+  }
+
+  function openReview(runId) {
+    setAcceptError('');
+    setRunSummary(null);
+    setProgressOpen(true);
+    fetchRunSummary(runId);
   }
 
   async function fetchRunSummary(runId) {
@@ -1085,7 +1088,13 @@ function AdminPanel({ token, tabOverride }) {
                       <td className="px-4 py-2.5 text-slate-600 text-xs font-mono">{r.facility_filter ?? <span className="text-slate-400">All</span>}</td>
                       <td className="px-4 py-2.5 text-slate-500 text-xs">{r.scraped_from?.slice(0,10)} → {r.scraped_to?.slice(0,10)}</td>
                       <td className="px-4 py-2.5 text-center">
-                        <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : r.status === 'PENDING_REVIEW' ? 'blue' : r.status === 'CANCELLED' ? 'gray' : 'amber'}>{r.status.replace(/_/g, ' ')}</Badge>
+                        {r.status === 'PENDING_REVIEW' ? (
+                          <button onClick={() => openReview(r.id)} className="underline decoration-dotted cursor-pointer">
+                            <Badge tone="blue">PENDING REVIEW</Badge>
+                          </button>
+                        ) : (
+                          <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : r.status === 'CANCELLED' ? 'gray' : 'amber'}>{r.status.replace(/_/g, ' ')}</Badge>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 text-right text-slate-600">{r.total_sku_facility_rows}</td>
                       <td className="px-4 py-2.5 text-right text-green-700 font-medium">{r.deducted_lines}</td>
@@ -1174,17 +1183,18 @@ function AdminPanel({ token, tabOverride }) {
                         </thead>
                         <tbody>
                           {runSummary.data?.map((row, i) => {
+                            const committed = row.already_committed;
                             const after = Number(row.current_stock) - Number(row.total_deducted);
                             return (
-                              <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                              <tr key={i} className={`border-t border-slate-100 ${committed ? 'bg-green-50/50' : 'hover:bg-slate-50'}`}>
                                 <td className="px-4 py-2.5">
                                   <div className="font-medium text-slate-800">{row.material_name}</div>
                                   <div className="text-xs text-slate-400 font-mono">{row.material_code}</div>
                                 </td>
                                 <td className="px-4 py-2.5 text-right text-slate-700">{Number(row.total_deducted).toLocaleString()} {row.unit}</td>
                                 <td className="px-4 py-2.5 text-right text-slate-500">{Number(row.current_stock).toLocaleString()}</td>
-                                <td className={`px-4 py-2.5 text-right font-semibold ${after < 0 ? 'text-red-600' : 'text-green-700'}`}>
-                                  {after.toLocaleString()}
+                                <td className={`px-4 py-2.5 text-right font-semibold ${committed ? 'text-green-600' : after < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+                                  {committed ? <span className="text-xs font-normal text-green-600 flex items-center justify-end gap-1"><CheckCircle2 size={12} />Done</span> : after.toLocaleString()}
                                 </td>
                               </tr>
                             );

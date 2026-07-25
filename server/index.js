@@ -1370,6 +1370,7 @@ app.get('/api/v1/admin/consumption/runs/:id/summary', authenticate, requireRole(
         crl.material_code, m.name AS material_name, m.unit,
         SUM(crl.qty_deducted) AS total_deducted,
         COUNT(*) AS line_count,
+        BOOL_OR(crl.status IN ('DEDUCTED', 'STOCK_BELOW_ZERO')) AS already_committed,
         COALESCE((
           SELECT SUM(sl.qty_delta)
           FROM stock_ledger sl
@@ -1378,7 +1379,7 @@ app.get('/api/v1/admin/consumption/runs/:id/summary', authenticate, requireRole(
         ), 0) AS current_stock
       FROM consumption_run_lines crl
       JOIN materials m ON m.code = crl.material_code
-      WHERE crl.run_id = $1 AND crl.status = 'PENDING'
+      WHERE crl.run_id = $1 AND crl.status IN ('PENDING', 'DEDUCTED', 'STOCK_BELOW_ZERO')
       GROUP BY crl.material_code, m.name, m.unit, crl.warehouse_id
       ORDER BY total_deducted DESC
     `, [runId]),
