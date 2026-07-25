@@ -476,6 +476,7 @@ function AdminPanel({ token, tabOverride }) {
   const [runSummary, setRunSummary] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [acceptLoading, setAcceptLoading] = useState(false);
+  const [acceptError, setAcceptError] = useState('');
 
   const [mslWarehouses, setMslWarehouses] = useState([]);
   const [mslMaterials, setMslMaterials] = useState([]);
@@ -585,13 +586,19 @@ function AdminPanel({ token, tabOverride }) {
 
   async function acceptRun(runId) {
     setAcceptLoading(true);
+    setAcceptError('');
     try {
-      await fetch(`${BASE_URL}/api/v1/admin/consumption/runs/${runId}/accept`, { method: 'POST', headers: hdrs });
+      const res = await fetch(`${BASE_URL}/api/v1/admin/consumption/runs/${runId}/accept`, { method: 'POST', headers: hdrs });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || `Server error ${res.status}`);
+      }
       setProgressOpen(false);
       setRunSummary(null);
       fetchConsumptionRuns();
-    } catch { /* silent */ }
-    finally { setAcceptLoading(false); }
+    } catch (e) {
+      setAcceptError(e.message);
+    } finally { setAcceptLoading(false); }
   }
 
   async function cancelRun(runId) {
@@ -1196,21 +1203,28 @@ function AdminPanel({ token, tabOverride }) {
 
               {/* Footer — only show when PENDING_REVIEW */}
               {!isRunning && activeRun && (
-                <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50">
-                  <button
-                    onClick={() => cancelRun(activeRun.id)}
-                    className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-white transition-colors"
-                  >
-                    Discard Run
-                  </button>
-                  <button
-                    onClick={() => acceptRun(activeRun.id)}
-                    disabled={acceptLoading || !runSummary}
-                    className="px-5 py-2 text-sm bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors disabled:opacity-50 flex items-center gap-2"
-                  >
-                    {acceptLoading ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                    Accept & Commit to Stock
-                  </button>
+                <div className="flex flex-col gap-2 px-6 py-4 border-t border-slate-100 bg-slate-50">
+                  {acceptError && (
+                    <div className="flex items-center gap-2 text-red-700 bg-red-50 rounded-lg px-3 py-2 text-xs font-mono">
+                      <AlertTriangle size={13} />{acceptError}
+                    </div>
+                  )}
+                  <div className="flex items-center justify-end gap-3">
+                    <button
+                      onClick={() => cancelRun(activeRun.id)}
+                      className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-white transition-colors"
+                    >
+                      Discard Run
+                    </button>
+                    <button
+                      onClick={() => acceptRun(activeRun.id)}
+                      disabled={acceptLoading || !runSummary}
+                      className="px-5 py-2 text-sm bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                    >
+                      {acceptLoading ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                      Accept & Commit to Stock
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
