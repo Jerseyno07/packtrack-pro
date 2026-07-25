@@ -472,6 +472,10 @@ function AdminPanel({ token, tabOverride }) {
   const [facilityWarehouses, setFacilityWarehouses] = useState([]);
   const [selectedFacilityIds, setSelectedFacilityIds] = useState(new Set());
   const [facilityDropdownOpen, setFacilityDropdownOpen] = useState(false);
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [runSummary, setRunSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [acceptLoading, setAcceptLoading] = useState(false);
 
   const [mslWarehouses, setMslWarehouses] = useState([]);
   const [mslMaterials, setMslMaterials] = useState([]);
@@ -563,9 +567,40 @@ function AdminPanel({ token, tabOverride }) {
     try {
       const warehouseIds = [...selectedFacilityIds].map(Number);
       await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs, body: JSON.stringify({ warehouseIds }) });
-      setTimeout(() => fetchConsumptionRuns(), 2000);
+      setRunSummary(null);
+      setProgressOpen(true);
     } catch { /* silent */ }
     finally { setRunNowLoading(false); }
+  }
+
+  async function fetchRunSummary(runId) {
+    setSummaryLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/consumption/runs/${runId}/summary`, { headers: hdrs });
+      const data = await res.json();
+      setRunSummary(data);
+    } catch { /* silent */ }
+    finally { setSummaryLoading(false); }
+  }
+
+  async function acceptRun(runId) {
+    setAcceptLoading(true);
+    try {
+      await fetch(`${BASE_URL}/api/v1/admin/consumption/runs/${runId}/accept`, { method: 'POST', headers: hdrs });
+      setProgressOpen(false);
+      setRunSummary(null);
+      fetchConsumptionRuns();
+    } catch { /* silent */ }
+    finally { setAcceptLoading(false); }
+  }
+
+  async function cancelRun(runId) {
+    try {
+      await fetch(`${BASE_URL}/api/v1/admin/consumption/runs/${runId}/cancel`, { method: 'POST', headers: hdrs });
+      setProgressOpen(false);
+      setRunSummary(null);
+      fetchConsumptionRuns();
+    } catch { /* silent */ }
   }
 
   function toggleFacility(id) {
@@ -653,6 +688,24 @@ function AdminPanel({ token, tabOverride }) {
   useEffect(() => { fetchOverview(); }, [fetchOverview]);
   useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
   useEffect(() => { if (tab === 'consumption') { fetchConsumptionRuns(); fetchFacilityWarehouses(); } }, [tab, fetchConsumptionRuns]);
+
+  // Poll while progress modal is open; when run reaches PENDING_REVIEW, fetch summary
+  useEffect(() => {
+    if (!progressOpen) return;
+    const iv = setInterval(async () => {
+      await fetchConsumptionRuns();
+    }, 3000);
+    return () => clearInterval(iv);
+  }, [progressOpen, fetchConsumptionRuns]);
+
+  // When runs list updates and we have an active progress modal, check for PENDING_REVIEW
+  useEffect(() => {
+    if (!progressOpen) return;
+    const active = consumptionRuns.find((r) => r.status === 'PENDING_REVIEW' || r.status === 'RUNNING');
+    if (active?.status === 'PENDING_REVIEW' && !runSummary && !summaryLoading) {
+      fetchRunSummary(active.id);
+    }
+  }, [consumptionRuns, progressOpen, runSummary, summaryLoading]);
   useEffect(() => { if (tab === 'msl') fetchMinStockLevels(); }, [tab]);
   useEffect(() => { if (tab === 'users') fetchUsers(); }, [tab, fetchUsers]);
 
@@ -1021,7 +1074,7 @@ function AdminPanel({ token, tabOverride }) {
                       <td className="px-4 py-2.5 text-slate-600 text-xs font-mono">{r.facility_filter ?? <span className="text-slate-400">All</span>}</td>
                       <td className="px-4 py-2.5 text-slate-500 text-xs">{r.scraped_from?.slice(0,10)} → {r.scraped_to?.slice(0,10)}</td>
                       <td className="px-4 py-2.5 text-center">
-                        <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : 'amber'}>{r.status}</Badge>
+                        <Badge tone={r.status === 'COMPLETED' ? 'green' : r.status === 'FAILED' ? 'red' : r.status === 'PENDING_REVIEW' ? 'blue' : r.status === 'CANCELLED' ? 'gray' : 'amber'}>{r.status.replace(/_/g, ' ')}</Badge>
                       </td>
                       <td className="px-4 py-2.5 text-right text-slate-600">{r.total_sku_facility_rows}</td>
                       <td className="px-4 py-2.5 text-right text-green-700 font-medium">{r.deducted_lines}</td>
@@ -1041,6 +1094,129 @@ function AdminPanel({ token, tabOverride }) {
           </div>
         </div>
       )}
+
+      {/* Consumption run progress / review modal */}
+      {progressOpen && (() => {
+        const activeRun = consumptionRuns.find((r) => r.status === 'PENDING_REVIEW' || r.status === 'RUNNING');
+        const isRunning = !activeRun || activeRun.status === 'RUNNING';
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+                <h2 className="font-semibold text-slate-800 text-lg">
+                  {isRunning ? 'Consumption Run in Progress' : 'Review Consumption Run'}
+                </h2>
+                {!isRunning && (
+                  <button onClick={() => { setProgressOpen(false); setRunSummary(null); }} className="text-slate-400 hover:text-slate-600">
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+
+              {/* Body */}
+              <div className="px-6 py-6">
+                {isRunning ? (
+                  <div className="flex flex-col items-center gap-4 py-8">
+                    <RefreshCw size={32} className="animate-spin text-blue-500" />
+                    <p className="text-slate-600 text-sm">Scraping Redash and computing deductions…</p>
+                    {activeRun && (
+                      <p className="text-xs text-slate-400 font-mono">
+                        {activeRun.scraped_from?.slice(0, 10)} → {activeRun.scraped_to?.slice(0, 10)}
+                        {activeRun.deducted_lines ? ` · ${activeRun.deducted_lines} lines so far` : ''}
+                      </p>
+                    )}
+                  </div>
+                ) : summaryLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <RefreshCw size={20} className="animate-spin text-slate-400" />
+                  </div>
+                ) : runSummary ? (
+                  <div className="space-y-4">
+                    {/* Counts row */}
+                    <div className="flex gap-4 text-sm">
+                      <span className="bg-green-50 text-green-700 px-3 py-1 rounded-lg font-medium">
+                        {runSummary.counts?.pending ?? 0} pending lines
+                      </span>
+                      {Number(runSummary.counts?.unmapped) > 0 && (
+                        <span className="bg-amber-50 text-amber-700 px-3 py-1 rounded-lg font-medium">
+                          {runSummary.counts.unmapped} unmapped SKUs
+                        </span>
+                      )}
+                      {Number(runSummary.counts?.skipped) > 0 && (
+                        <span className="bg-red-50 text-red-700 px-3 py-1 rounded-lg font-medium">
+                          {runSummary.counts.skipped} skipped
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Material deduction table */}
+                    <div className="overflow-auto max-h-80 rounded-xl border border-slate-200">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-50 sticky top-0">
+                          <tr>
+                            <th className="px-4 py-2.5 text-left font-medium text-slate-600 text-xs">Material</th>
+                            <th className="px-4 py-2.5 text-right font-medium text-slate-600 text-xs">To Deduct</th>
+                            <th className="px-4 py-2.5 text-right font-medium text-slate-600 text-xs">Current Stock</th>
+                            <th className="px-4 py-2.5 text-right font-medium text-slate-600 text-xs">After</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {runSummary.data?.map((row, i) => {
+                            const after = Number(row.current_stock) - Number(row.total_deducted);
+                            return (
+                              <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                                <td className="px-4 py-2.5">
+                                  <div className="font-medium text-slate-800">{row.material_name}</div>
+                                  <div className="text-xs text-slate-400 font-mono">{row.material_code}</div>
+                                </td>
+                                <td className="px-4 py-2.5 text-right text-slate-700">{Number(row.total_deducted).toLocaleString()} {row.unit}</td>
+                                <td className="px-4 py-2.5 text-right text-slate-500">{Number(row.current_stock).toLocaleString()}</td>
+                                <td className={`px-4 py-2.5 text-right font-semibold ${after < 0 ? 'text-red-600' : 'text-green-700'}`}>
+                                  {after.toLocaleString()}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {runSummary.data?.some((r) => Number(r.current_stock) - Number(r.total_deducted) < 0) && (
+                      <div className="flex items-center gap-2 text-amber-700 bg-amber-50 rounded-lg px-3 py-2 text-xs">
+                        <AlertTriangle size={14} />
+                        Some materials will go below zero. You can still accept — lines will be marked STOCK_BELOW_ZERO.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-slate-400 text-sm text-center py-8">No summary available.</p>
+                )}
+              </div>
+
+              {/* Footer — only show when PENDING_REVIEW */}
+              {!isRunning && activeRun && (
+                <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50">
+                  <button
+                    onClick={() => cancelRun(activeRun.id)}
+                    className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-white transition-colors"
+                  >
+                    Discard Run
+                  </button>
+                  <button
+                    onClick={() => acceptRun(activeRun.id)}
+                    disabled={acceptLoading || !runSummary}
+                    className="px-5 py-2 text-sm bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {acceptLoading ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                    Accept & Commit to Stock
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {tab === 'msl' && (
         <div className="space-y-4">

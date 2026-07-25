@@ -1361,6 +1361,104 @@ app.get('/api/v1/admin/consumption/env-check', authenticate, requireRole('ADMIN'
   res.json(result);
 });
 
+// GET /api/v1/admin/consumption/runs/:id/summary — material-wise breakdown for a PENDING_REVIEW run
+app.get('/api/v1/admin/consumption/runs/:id/summary', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const runId = Number(req.params.id);
+  const [summary, counts] = await Promise.all([
+    pool.query(`
+      SELECT
+        crl.material_code, m.name AS material_name, m.unit,
+        SUM(crl.qty_deducted) AS total_deducted,
+        COUNT(*) AS line_count,
+        COALESCE((
+          SELECT SUM(sl.qty_delta)
+          FROM stock_ledger sl
+          JOIN materials mt ON mt.id = sl.material_id
+          WHERE sl.warehouse_id = crl.warehouse_id AND mt.code = crl.material_code
+        ), 0) AS current_stock
+      FROM consumption_run_lines crl
+      JOIN materials m ON m.code = crl.material_code
+      WHERE crl.run_id = $1 AND crl.status = 'PENDING'
+      GROUP BY crl.material_code, m.name, m.unit, crl.warehouse_id
+      ORDER BY total_deducted DESC
+    `, [runId]),
+    pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'PENDING') AS pending,
+        COUNT(*) FILTER (WHERE status = 'UNMAPPED_SKU') AS unmapped,
+        COUNT(*) FILTER (WHERE status = 'SKIPPED') AS skipped
+      FROM consumption_run_lines WHERE run_id = $1
+    `, [runId]),
+  ]);
+  res.json({ data: summary.rows, counts: counts.rows[0] });
+}));
+
+// POST /api/v1/admin/consumption/runs/:id/accept — commit pending lines to stock ledger
+app.post('/api/v1/admin/consumption/runs/:id/accept', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const runId = Number(req.params.id);
+  const runRes = await pool.query('SELECT * FROM consumption_runs WHERE id = $1', [runId]);
+  if (!runRes.rows.length) throw new ApiError(404, 'NOT_FOUND', 'Run not found');
+  const run = runRes.rows[0];
+  if (run.status !== 'PENDING_REVIEW') throw new ApiError(400, 'BAD_REQUEST', `Run status is ${run.status}, expected PENDING_REVIEW`);
+
+  // Group pending lines by warehouse + material for efficient batch ledger entries
+  const groups = await pool.query(`
+    SELECT crl.warehouse_id, crl.material_code, m.id AS material_id,
+           SUM(crl.qty_deducted) AS total_qty, ARRAY_AGG(crl.id) AS line_ids
+    FROM consumption_run_lines crl
+    JOIN materials m ON m.code = crl.material_code
+    WHERE crl.run_id = $1 AND crl.status = 'PENDING'
+    GROUP BY crl.warehouse_id, crl.material_code, m.id
+  `, [runId]);
+
+  let committed = 0;
+  const movementDate = new Date(run.scraped_to).toISOString().slice(0, 10);
+
+  for (const g of groups.rows) {
+    const totalQty = Number(g.total_qty);
+    const stockRes = await pool.query(
+      `SELECT COALESCE(SUM(qty_delta), 0) AS qty FROM stock_ledger WHERE warehouse_id = $1 AND material_id = $2`,
+      [g.warehouse_id, g.material_id]
+    );
+    const onHand = Number(stockRes.rows[0].qty);
+    const lineStatus = onHand - totalQty < 0 ? 'STOCK_BELOW_ZERO' : 'DEDUCTED';
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const ledger = await client.query(
+        `INSERT INTO stock_ledger (warehouse_id, material_id, movement_type, qty_delta, unit_cost, ref_table, ref_id, movement_date)
+         VALUES ($1,$2,'CONSUMPTION',$3,0,'consumption_runs',$4,$5) RETURNING id`,
+        [g.warehouse_id, g.material_id, -totalQty, runId, movementDate]
+      );
+      const ledgerId = ledger.rows[0].id;
+      await client.query(
+        `UPDATE consumption_run_lines SET status = $1, ledger_id = $2 WHERE id = ANY($3)`,
+        [lineStatus, ledgerId, g.line_ids]
+      );
+      await client.query('COMMIT');
+      committed += g.line_ids.length;
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally { client.release(); }
+  }
+
+  await pool.query(
+    `UPDATE consumption_runs SET status = 'COMPLETED', deducted_lines = $1, completed_at = now() WHERE id = $2`,
+    [committed, runId]
+  );
+  res.json({ ok: true, committed });
+}));
+
+// POST /api/v1/admin/consumption/runs/:id/cancel — discard pending run
+app.post('/api/v1/admin/consumption/runs/:id/cancel', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const runId = Number(req.params.id);
+  await pool.query('DELETE FROM consumption_run_lines WHERE run_id = $1', [runId]);
+  await pool.query(`UPDATE consumption_runs SET status = 'CANCELLED', completed_at = now() WHERE id = $1`, [runId]);
+  res.json({ ok: true });
+}));
+
 app.get('/api/v1/admin/consumption/runs', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const r = await pool.query(
     `SELECT cr.*, COUNT(crl.id) AS total_lines
