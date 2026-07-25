@@ -478,6 +478,14 @@ function AdminPanel({ token, tabOverride }) {
   const [acceptLoading, setAcceptLoading] = useState(false);
   const [acceptError, setAcceptError] = useState('');
 
+  const today = new Date().toISOString().slice(0, 10);
+  const [chFrom, setChFrom] = useState(new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10));
+  const [chTo, setChTo] = useState(today);
+  const [chWarehouse, setChWarehouse] = useState('');
+  const [chRows, setChRows] = useState([]);
+  const [chLoading, setChLoading] = useState(false);
+  const [chWarehouses, setChWarehouses] = useState([]);
+
   const [mslWarehouses, setMslWarehouses] = useState([]);
   const [mslMaterials, setMslMaterials] = useState([]);
   const [mslLevels, setMslLevels] = useState({});
@@ -633,6 +641,18 @@ function AdminPanel({ token, tabOverride }) {
     }
   }
 
+  async function fetchConsumptionHistory() {
+    setChLoading(true);
+    try {
+      const params = new URLSearchParams({ from: chFrom, to: chTo });
+      if (chWarehouse) params.set('warehouse_id', chWarehouse);
+      const res = await fetch(`${BASE_URL}/api/v1/consumption/history?${params}`, { headers: hdrs });
+      const data = await res.json();
+      setChRows(data.data ?? []);
+    } catch { /* silent */ }
+    finally { setChLoading(false); }
+  }
+
   async function fetchMinStockLevels() {
     setMslLoading(true); setMslError('');
     try {
@@ -721,6 +741,17 @@ function AdminPanel({ token, tabOverride }) {
     }
   }, [consumptionRuns, progressOpen, runSummary, summaryLoading]);
   useEffect(() => { if (tab === 'msl') fetchMinStockLevels(); }, [tab]);
+  useEffect(() => {
+    if (tab !== 'cons-history') return;
+    fetchConsumptionHistory();
+    // Load warehouse list for filter dropdown (reuse facilityWarehouses if already loaded)
+    if (chWarehouses.length === 0) {
+      fetch(`${BASE_URL}/api/v1/admin/warehouses`, { headers: hdrs })
+        .then((r) => r.json())
+        .then((d) => setChWarehouses(d.data ?? []))
+        .catch(() => {});
+    }
+  }, [tab]);
   useEffect(() => { if (tab === 'users') fetchUsers(); }, [tab, fetchUsers]);
 
   async function submitReverse() {
@@ -760,6 +791,7 @@ function AdminPanel({ token, tabOverride }) {
     { id: 'audit', label: 'Audit Log' },
     { id: 'sku', label: 'SKU Master' },
     { id: 'consumption', label: 'Consumption Runs' },
+    { id: 'cons-history', label: 'Consumption History' },
     { id: 'msl', label: 'Min Stock Levels' },
     { id: 'users', label: 'Users' },
   ];
@@ -1245,6 +1277,81 @@ function AdminPanel({ token, tabOverride }) {
           </div>
         );
       })()}
+
+      {tab === 'cons-history' && (
+        <div className="space-y-4">
+          <div>
+            <h3 className="font-semibold text-slate-800">Consumption History</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Daily packaging material consumed per facility.</p>
+          </div>
+
+          {/* Filters */}
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">From</label>
+              <input type="date" value={chFrom} onChange={(e) => setChFrom(e.target.value)}
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-800" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">To</label>
+              <input type="date" value={chTo} onChange={(e) => setChTo(e.target.value)}
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-800" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">Facility</label>
+              <select value={chWarehouse} onChange={(e) => setChWarehouse(e.target.value)}
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700">
+                <option value="">All Facilities</option>
+                {chWarehouses.filter((w) => w.warehouse_type !== 'PM_STORE').map((w) => (
+                  <option key={w.id} value={w.id}>{w.name} ({w.code})</option>
+                ))}
+              </select>
+            </div>
+            <button onClick={fetchConsumptionHistory} disabled={chLoading}
+              className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5">
+              {chLoading ? <RefreshCw size={13} className="animate-spin" /> : null}
+              {chLoading ? 'Loading…' : 'Apply'}
+            </button>
+          </div>
+
+          {/* Results table */}
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-4 py-2.5 text-left font-medium text-slate-600 text-xs">Date</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-slate-600 text-xs">Facility</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-slate-600 text-xs">Material</th>
+                  <th className="px-4 py-2.5 text-right font-medium text-slate-600 text-xs">Consumed</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-slate-600 text-xs">Unit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chLoading && (
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                    <RefreshCw size={14} className="animate-spin inline mr-1" />Loading…
+                  </td></tr>
+                )}
+                {!chLoading && chRows.length === 0 && (
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No data for this period.</td></tr>
+                )}
+                {!chLoading && chRows.map((r, i) => (
+                  <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-2.5 text-slate-600 text-xs">{r.consumption_date?.slice(0, 10)}</td>
+                    <td className="px-4 py-2.5 text-slate-800 font-medium">{r.warehouse_name} <span className="text-xs text-slate-400 font-normal font-mono">{r.warehouse_code}</span></td>
+                    <td className="px-4 py-2.5">
+                      <div className="text-slate-800">{r.material_name}</div>
+                      <div className="text-xs text-slate-400 font-mono">{r.material_code}</div>
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-bold text-slate-900">{Number(r.qty_consumed).toLocaleString()}</td>
+                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.unit}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {tab === 'msl' && (
         <div className="space-y-4">

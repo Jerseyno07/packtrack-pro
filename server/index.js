@@ -1460,6 +1460,45 @@ app.post('/api/v1/admin/consumption/runs/:id/cancel', authenticate, requireRole(
   res.json({ ok: true });
 }));
 
+// GET /api/v1/consumption/history — per-facility, per-material daily consumption
+// ADMIN sees all; other roles see only their assigned warehouses
+app.get('/api/v1/consumption/history', authenticate, asyncHandler(async (req, res) => {
+  const { from, to, warehouse_id } = req.query;
+  const isAdmin = req.user.role === 'ADMIN';
+  const allowedIds = isAdmin ? null : req.user.warehouse_ids.map(Number);
+  const filterWh = warehouse_id ? Number(warehouse_id) : null;
+
+  if (!isAdmin && filterWh && !allowedIds.includes(filterWh)) {
+    throw new ApiError(403, 'FORBIDDEN', 'No access to this warehouse');
+  }
+
+  const rows = await pool.query(`
+    SELECT
+      cr.scraped_to::date          AS consumption_date,
+      w.id                          AS warehouse_id,
+      w.name                        AS warehouse_name,
+      w.code                        AS warehouse_code,
+      crl.material_code,
+      m.name                        AS material_name,
+      m.unit,
+      SUM(crl.qty_deducted)         AS qty_consumed
+    FROM consumption_run_lines crl
+    JOIN consumption_runs cr ON cr.id = crl.run_id
+    JOIN warehouses w          ON w.id = crl.warehouse_id
+    JOIN materials m           ON m.code = crl.material_code
+    WHERE crl.status IN ('DEDUCTED', 'STOCK_BELOW_ZERO')
+      AND cr.status = 'COMPLETED'
+      AND ($1::date IS NULL OR cr.scraped_to::date >= $1::date)
+      AND ($2::date IS NULL OR cr.scraped_to::date <= $2::date)
+      AND ($3::int  IS NULL OR w.id = $3::int)
+      AND ($4::int[] IS NULL OR w.id = ANY($4::int[]))
+    GROUP BY cr.scraped_to::date, w.id, w.name, w.code, crl.material_code, m.name, m.unit
+    ORDER BY cr.scraped_to::date DESC, w.name, crl.material_code
+  `, [from || null, to || null, filterWh, allowedIds]);
+
+  res.json({ data: rows.rows });
+}));
+
 app.get('/api/v1/admin/consumption/runs', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const r = await pool.query(
     `SELECT cr.*, COUNT(crl.id) AS total_lines

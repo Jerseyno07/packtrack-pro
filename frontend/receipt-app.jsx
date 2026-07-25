@@ -338,6 +338,99 @@ function SuccessScreen({ receiptInfo, onDone }) {
   );
 }
 
+function ConsumptionHistory({ token, warehouseIds }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const sevenDaysAgo = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const [from, setFrom] = useState(sevenDaysAgo);
+  const [to, setTo] = useState(today);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function load() {
+    setLoading(true); setError('');
+    try {
+      const params = new URLSearchParams({ from, to });
+      const res = await fetch(`${BASE_URL}/api/v1/consumption/history?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || `Error ${res.status}`);
+      setRows(data.data ?? []);
+    } catch (e) {
+      setError(e.message);
+    } finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  // Group rows by date for display
+  const byDate = rows.reduce((acc, r) => {
+    const d = r.consumption_date?.slice(0, 10);
+    if (!acc[d]) acc[d] = [];
+    acc[d].push(r);
+    return acc;
+  }, {});
+
+  return (
+    <div className="space-y-4">
+      {/* Date filter */}
+      <div className="flex gap-2 items-end">
+        <div className="flex-1">
+          <label className="text-xs text-slate-500 mb-1 block">From</label>
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800" />
+        </div>
+        <div className="flex-1">
+          <label className="text-xs text-slate-500 mb-1 block">To</label>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800" />
+        </div>
+        <button onClick={load} disabled={loading}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+          {loading ? '…' : 'Go'}
+        </button>
+      </div>
+
+      {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+
+      {!loading && rows.length === 0 && (
+        <div className="text-center text-slate-400 text-sm py-10">No consumption data for this period.</div>
+      )}
+
+      {Object.entries(byDate).map(([date, dateRows]) => (
+        <div key={date} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            {new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-t border-slate-100">
+                <th className="px-4 py-2 text-left text-xs text-slate-500 font-medium">Material</th>
+                <th className="px-4 py-2 text-right text-xs text-slate-500 font-medium">Consumed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dateRows.map((r, i) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="px-4 py-2.5">
+                    <div className="font-medium text-slate-800">{r.material_name}</div>
+                    <div className="text-xs text-slate-400 font-mono">{r.material_code}</div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-bold text-slate-900">
+                    {Number(r.qty_consumed).toLocaleString()}
+                    <span className="text-xs font-normal text-slate-400 ml-1">{r.unit}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StockView({ token, warehouseId }) {
   const [stock, setStock] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -488,12 +581,15 @@ export default function ReceiptApp() {
       <div data-tour="receipt-tabs" className="flex gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
         <button onClick={() => setTab('receive')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
         <button onClick={() => setTab('stock')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>My Stock</button>
+        <button onClick={() => setTab('consumption')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'consumption' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Consumption</button>
         <button onClick={() => setTab('audit')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
       </div>
 
       <div className="p-4 space-y-3">
         {tab === 'audit' ? (
           <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />
+        ) : tab === 'consumption' ? (
+          <ConsumptionHistory token={token} warehouseIds={user?.warehouse_ids} />
         ) : tab === 'stock' ? (
           <StockView token={token} warehouseId={user?.warehouse_ids?.[0]} />
         ) : successInfo ? (
