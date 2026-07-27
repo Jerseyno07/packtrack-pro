@@ -73,7 +73,7 @@ async function writeAudit(client, { userId, action, entityTable, entityId, detai
 async function postLedgerEntry(client, { warehouseId, materialId, movementType, qtyDelta, unitCost, refTable, refId, movementDate }) {
   await client.query(
     `INSERT INTO stock_ledger (warehouse_id, material_id, movement_type, qty_delta, unit_cost, ref_table, ref_id, movement_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (ref_table, ref_id, movement_type) DO NOTHING`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (warehouse_id, material_id, ref_table, ref_id, movement_type) DO NOTHING`,
     [warehouseId, materialId, movementType, qtyDelta, unitCost, refTable, refId, movementDate]
   );
 }
