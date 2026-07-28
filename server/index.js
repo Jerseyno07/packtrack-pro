@@ -1573,10 +1573,6 @@ app.get('*', (req, res, next) => {
   existsSync(index) ? res.sendFile(index) : next();
 });
 
-app.get('/api/v1/admin/test-error', authenticate, requireRole('ADMIN'), (req, res, next) => {
-  next(new Error('Test error — Slack webhook verification'));
-});
-
 app.use((req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: `No route for ${req.method} ${req.path}` } }));
 app.use((err, req, res, next) => {
   if (err instanceof ApiError) return res.status(err.status).json({ error: { code: err.code, message: err.message, details: err.details } });
