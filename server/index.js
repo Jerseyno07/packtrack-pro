@@ -1573,7 +1573,7 @@ app.get('*', (req, res, next) => {
   existsSync(index) ? res.sendFile(index) : next();
 });
 
-app.get('/api/v1/admin/test-error', requireAuth, requireAdmin, (req, res, next) => {
+app.get('/api/v1/admin/test-error', authenticate, requireRole('ADMIN'), (req, res, next) => {
   next(new Error('Test error — Slack webhook verification'));
 });
 
