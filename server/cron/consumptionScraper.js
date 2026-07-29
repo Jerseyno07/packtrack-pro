@@ -155,7 +155,7 @@ async function runConsumption(options = {}) {
       (await pool.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id])
     );
     const matMap = new Map(
-      (await pool.query('SELECT id, code, meters_per_unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r])
+      (await pool.query('SELECT id, code, meters_per_unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r])
     );
 
     let deducted = 0, skipped = 0, errored = 0;
@@ -219,6 +219,58 @@ async function runConsumption(options = {}) {
           );
           errored++;
         }
+      }
+    }
+
+    // MRP sticker pass: every unit packed consumes 1 barcode label + 1 wax ribbon print.
+    // Group total packaged_qty per (facility, warehouse), then add PENDING lines for
+    // the appropriate barcode roll and for WXRB-BLK.
+    const waxMat   = matMap.get('WXRB-BLK');
+    const bcrSmall = matMap.get('BCRL-SML');
+    const bcrBig   = matMap.get('BCRL-BIG');
+
+    const facilityTotals = new Map();
+    for (const row of rows) {
+      const warehouseId = whMap.get(row.facility_id);
+      if (!warehouseId) continue;
+      const key = `${row.facility_id}::${warehouseId}`;
+      if (!facilityTotals.has(key)) facilityTotals.set(key, { facility_id: row.facility_id, warehouseId, total: 0 });
+      facilityTotals.get(key).total += row.packaged_qty;
+    }
+
+    for (const { facility_id, warehouseId, total } of facilityTotals.values()) {
+      if (total <= 0) continue;
+
+      // Pick barcode roll: prefer BCRL-SML if it has stock, else BCRL-BIG
+      const stockRes = await pool.query(
+        `SELECT m.code, COALESCE(SUM(sl.qty_delta), 0) AS balance
+         FROM materials m
+         LEFT JOIN stock_ledger sl ON sl.material_id = m.id AND sl.warehouse_id = $1
+         WHERE m.code IN ('BCRL-SML', 'BCRL-BIG')
+         GROUP BY m.code`,
+        [warehouseId]
+      );
+      const stockMap = new Map(stockRes.rows.map((r) => [r.code, Number(r.balance)]));
+      const bcrMat = (stockMap.get('BCRL-SML') > 0) ? bcrSmall : bcrBig;
+
+      if (bcrMat) {
+        await pool.query(
+          `INSERT INTO consumption_run_lines
+           (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status)
+           VALUES ($1,$2,$3,'__MRP__','MRP_BARCODE',$4,$5,$5,'PENDING')`,
+          [runId, facility_id, warehouseId, bcrMat.code, total]
+        );
+        deducted++;
+      }
+
+      if (waxMat) {
+        await pool.query(
+          `INSERT INTO consumption_run_lines
+           (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status)
+           VALUES ($1,$2,$3,'__MRP__','MRP_WAX_RIBBON',$4,$5,$5,'PENDING')`,
+          [runId, facility_id, warehouseId, waxMat.code, total]
+        );
+        deducted++;
       }
     }
 

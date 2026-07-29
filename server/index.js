@@ -304,7 +304,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
       const batchId = batchIns.rows[0].id;
 
       const whMap = new Map((await client.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id]));
-      const matMap = new Map((await client.query('SELECT id, code, unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
+      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
 
       const errors = [];
       let validCount = 0;
@@ -320,10 +320,14 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown facility_code '${facility_code}'` }); continue; }
         if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${sku_code}'` }); continue; }
 
-        // Roll materials: qty in meters = no_of_rolls × length_per_roll (mirrors PO upload)
+        // Sticker rolls (barcode/wax ribbon): qty = no_of_rolls × stickers_per_roll (no length needed)
+        // Regular roll materials: qty in meters = no_of_rolls × length_per_roll
         // Non-roll materials: use requested_qty directly
         let finalQty;
-        if (mat.unit === 'Roll') {
+        if (mat.stickers_per_roll) {
+          if (!no_of_rolls) { errors.push({ row: rowNum, error: `"No. of Rolls" is required for sticker roll material '${sku_code}'` }); continue; }
+          finalQty = no_of_rolls * mat.stickers_per_roll;
+        } else if (mat.unit === 'Roll') {
           if (!no_of_rolls || !length_per_roll) { errors.push({ row: rowNum, error: `Roll material '${sku_code}' requires no_of_rolls and length_per_roll columns` }); continue; }
           finalQty = no_of_rolls * length_per_roll;
         } else {
@@ -416,7 +420,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
       );
       const batchId = batchIns.rows[0].id;
 
-      const matMap = new Map((await client.query('SELECT id, code, unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
+      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
       const whMap = new Map((await client.query("SELECT id, code FROM warehouses WHERE is_active AND warehouse_type='PM_STORE'")).rows.map((r) => [r.code, r.id]));
 
       const errors = [];
@@ -435,10 +439,14 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${d.sku_code}'` }); continue; }
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown or non-PM-Store pm_store_code '${d.pm_store_code}'` }); continue; }
 
-        // Roll materials: qty in meters = no_of_rolls × length_per_roll
+        // Sticker rolls (barcode/wax ribbon): qty = no_of_rolls × stickers_per_roll (no length needed)
+        // Regular roll materials: qty in meters = no_of_rolls × length_per_roll
         // Non-roll materials: use po_qty directly
         let finalQty;
-        if (mat.unit === 'Roll') {
+        if (mat.stickers_per_roll) {
+          if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `"No. of Rolls" is required for sticker roll material '${d.sku_code}'` }); continue; }
+          finalQty = d.no_of_rolls * mat.stickers_per_roll;
+        } else if (mat.unit === 'Roll') {
           if (!d.no_of_rolls || !d.length_per_roll) { errors.push({ row: rowNum, error: `Roll material '${d.sku_code}' requires no_of_rolls and length_per_roll columns` }); continue; }
           finalQty = d.no_of_rolls * d.length_per_roll;
         } else {
