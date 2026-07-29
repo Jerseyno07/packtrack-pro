@@ -1374,6 +1374,32 @@ function AdminPanel({ token, tabOverride }) {
               {chLoading ? <RefreshCw size={13} className="animate-spin" /> : null}
               {chLoading ? 'Loading…' : 'Apply'}
             </button>
+            {chRows.length > 0 && (
+              <button
+                onClick={() => {
+                  const header = ['Date', 'Facility', 'Facility Code', 'Material', 'SKU', 'Consumed', 'Unit'];
+                  const rows = chRows.map((r) => [
+                    r.consumption_date?.slice(0, 10),
+                    r.warehouse_name,
+                    r.warehouse_code,
+                    r.material_name,
+                    r.material_code,
+                    r.qty_consumed,
+                    r.unit,
+                  ]);
+                  const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+                  const blob = new Blob([csv], { type: 'text/csv' });
+                  const a = document.createElement('a');
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `consumption-history-${chFrom}-to-${chTo}.csv`;
+                  a.click();
+                  URL.revokeObjectURL(a.href);
+                }}
+                className="px-4 py-1.5 bg-green-50 text-green-700 border border-green-200 rounded-lg text-sm font-medium hover:bg-green-100 flex items-center gap-1.5"
+              >
+                ↓ Export CSV
+              </button>
+            )}
           </div>
 
           {/* Results table */}
