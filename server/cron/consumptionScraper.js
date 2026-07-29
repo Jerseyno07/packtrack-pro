@@ -241,7 +241,9 @@ async function runConsumption(options = {}) {
     for (const { facility_id, warehouseId, total } of facilityTotals.values()) {
       if (total <= 0) continue;
 
-      // Pick barcode roll: prefer BCRL-SML if it has stock, else BCRL-BIG
+      // Split barcode deduction across BCRL-SML and BCRL-BIG based on current stock.
+      // Deduct from BCRL-SML first up to its balance, remainder from BCRL-BIG.
+      // If neither has stock, fall back to a BCRL-SML line (shows STOCK_BELOW_ZERO in review).
       const stockRes = await pool.query(
         `SELECT m.code, COALESCE(SUM(sl.qty_delta), 0) AS balance
          FROM materials m
@@ -251,14 +253,35 @@ async function runConsumption(options = {}) {
         [warehouseId]
       );
       const stockMap = new Map(stockRes.rows.map((r) => [r.code, Number(r.balance)]));
-      const bcrMat = (stockMap.get('BCRL-SML') > 0) ? bcrSmall : bcrBig;
+      const smlBalance = Math.max(0, stockMap.get('BCRL-SML') || 0);
+      const smlDeduct  = Math.min(total, smlBalance);
+      const bigDeduct  = total - smlDeduct;
 
-      if (bcrMat) {
+      if (smlDeduct > 0 && bcrSmall) {
+        await pool.query(
+          `INSERT INTO consumption_run_lines
+           (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status)
+           VALUES ($1,$2,$3,'__MRP__','MRP_BARCODE',$4,$5,$6,'PENDING')`,
+          [runId, facility_id, warehouseId, bcrSmall.code, total, smlDeduct]
+        );
+        deducted++;
+      }
+      if (bigDeduct > 0 && bcrBig) {
+        await pool.query(
+          `INSERT INTO consumption_run_lines
+           (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status)
+           VALUES ($1,$2,$3,'__MRP__','MRP_BARCODE',$4,$5,$6,'PENDING')`,
+          [runId, facility_id, warehouseId, bcrBig.code, total, bigDeduct]
+        );
+        deducted++;
+      }
+      // Neither in stock — create a BCRL-SML line so it surfaces in the review modal
+      if (smlDeduct === 0 && bigDeduct === 0 && bcrSmall) {
         await pool.query(
           `INSERT INTO consumption_run_lines
            (run_id, facility_id, warehouse_id, sku_code, packaging_tier, material_code, packaged_qty, qty_deducted, status)
            VALUES ($1,$2,$3,'__MRP__','MRP_BARCODE',$4,$5,$5,'PENDING')`,
-          [runId, facility_id, warehouseId, bcrMat.code, total]
+          [runId, facility_id, warehouseId, bcrSmall.code, total]
         );
         deducted++;
       }
