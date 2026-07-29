@@ -749,7 +749,7 @@ function AdminPanel({ token, tabOverride }) {
     fetchConsumptionHistory();
     // Load warehouse list for filter dropdown (reuse facilityWarehouses if already loaded)
     if (chWarehouses.length === 0) {
-      fetch(`${BASE_URL}/api/v1/admin/warehouses`, { headers: hdrs })
+      fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs })
         .then((r) => r.json())
         .then((d) => setChWarehouses(d.data ?? []))
         .catch(() => {});
