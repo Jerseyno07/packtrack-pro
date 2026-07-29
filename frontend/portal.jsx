@@ -940,9 +940,29 @@ function AdminPanel({ token, tabOverride }) {
           }
           return true;
         });
+        const exportCsv = () => {
+          const exportDate = new Date().toISOString().slice(0, 10);
+          const header = ['Date', 'Warehouse', 'SKU', 'Material', 'On Hand', 'Avg Cost (INR)'];
+          const rows = filteredStock.map((s) => [
+            exportDate,
+            s.warehouse_name,
+            s.material_code,
+            s.material_name,
+            s.on_hand_qty,
+            Number(s.weighted_avg_cost ?? 0).toFixed(2),
+          ]);
+          const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+          const blob = new Blob([csv], { type: 'text/csv' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `current-stock-${exportDate}.csv`;
+          a.click();
+          URL.revokeObjectURL(a.href);
+        };
+
         return (
           <div className="space-y-3">
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3 items-center">
               <select
                 value={stockFacilityFilter}
                 onChange={(e) => setStockFacilityFilter(e.target.value)}
@@ -961,6 +981,12 @@ function AdminPanel({ token, tabOverride }) {
               {(stockFacilityFilter || stockSkuFilter) && (
                 <button onClick={() => { setStockFacilityFilter(''); setStockSkuFilter(''); }} className="text-sm text-slate-400 hover:text-slate-600">Clear</button>
               )}
+              <button
+                onClick={exportCsv}
+                className="ml-auto flex items-center gap-1.5 px-3 py-2 text-sm bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100"
+              >
+                ↓ Export CSV
+              </button>
             </div>
             <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
               <table className="w-full text-sm min-w-[500px]">
