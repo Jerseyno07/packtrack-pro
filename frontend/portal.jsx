@@ -457,6 +457,9 @@ function AdminPanel({ token, tabOverride }) {
   const [auditLoading, setAuditLoading] = useState(false);
 
   const [reverseModal, setReverseModal] = useState(null); // { type, id, ref }
+
+  const [stockFacilityFilter, setStockFacilityFilter] = useState('');
+  const [stockSkuFilter, setStockSkuFilter] = useState('');
   const [reverseReason, setReverseReason] = useState('');
   const [reverseSubmitting, setReverseSubmitting] = useState(false);
   const [reverseError, setReverseError] = useState('');
@@ -927,36 +930,69 @@ function AdminPanel({ token, tabOverride }) {
         </div>
       )}
 
-      {tab === 'stock' && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-          <table className="w-full text-sm min-w-[500px]">
-            <thead className="bg-slate-50 text-slate-500 text-xs">
-              <tr>
-                <th className="text-left px-4 py-2.5">Warehouse</th>
-                <th className="text-left px-4 py-2.5">SKU</th>
-                <th className="text-left px-4 py-2.5">Material</th>
-                <th className="text-right px-4 py-2.5">On Hand</th>
-                <th className="text-right px-4 py-2.5">Avg Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stock.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No stock on record</td></tr>}
-              {stock.map((s, i) => {
-                const isLow = lowStock.some((l) => l.warehouse_id === s.warehouse_id && l.material_id === s.material_id);
-                return (
-                  <tr key={i} className={`border-t border-slate-100 ${isLow ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
-                    <td className="px-4 py-3 font-medium text-slate-800">{s.warehouse_name}</td>
-                    <td className="px-4 py-3 text-slate-600">{s.material_code}</td>
-                    <td className="px-4 py-3 text-slate-500">{s.material_name}</td>
-                    <td className={`px-4 py-3 text-right font-bold ${isLow ? 'text-red-600' : 'text-slate-800'}`}>{s.on_hand_qty}{isLow && ' ⚠'}</td>
-                    <td className="px-4 py-3 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
+      {tab === 'stock' && (() => {
+        const facilityOptions = [...new Map(stock.map((s) => [s.warehouse_id, s.warehouse_name])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+        const filteredStock = stock.filter((s) => {
+          if (stockFacilityFilter && String(s.warehouse_id) !== stockFacilityFilter) return false;
+          if (stockSkuFilter) {
+            const q = stockSkuFilter.toLowerCase();
+            if (!s.material_code.toLowerCase().includes(q) && !s.material_name.toLowerCase().includes(q)) return false;
+          }
+          return true;
+        });
+        return (
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-3">
+              <select
+                value={stockFacilityFilter}
+                onChange={(e) => setStockFacilityFilter(e.target.value)}
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All Facilities</option>
+                {facilityOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </select>
+              <input
+                type="text"
+                placeholder="Search SKU or material…"
+                value={stockSkuFilter}
+                onChange={(e) => setStockSkuFilter(e.target.value)}
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[200px]"
+              />
+              {(stockFacilityFilter || stockSkuFilter) && (
+                <button onClick={() => { setStockFacilityFilter(''); setStockSkuFilter(''); }} className="text-sm text-slate-400 hover:text-slate-600">Clear</button>
+              )}
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+              <table className="w-full text-sm min-w-[500px]">
+                <thead className="bg-slate-50 text-slate-500 text-xs">
+                  <tr>
+                    <th className="text-left px-4 py-2.5">Warehouse</th>
+                    <th className="text-left px-4 py-2.5">SKU</th>
+                    <th className="text-left px-4 py-2.5">Material</th>
+                    <th className="text-right px-4 py-2.5">On Hand</th>
+                    <th className="text-right px-4 py-2.5">Avg Cost</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+                </thead>
+                <tbody>
+                  {filteredStock.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No matching stock records</td></tr>}
+                  {filteredStock.map((s, i) => {
+                    const isLow = lowStock.some((l) => l.warehouse_id === s.warehouse_id && l.material_id === s.material_id);
+                    return (
+                      <tr key={i} className={`border-t border-slate-100 ${isLow ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                        <td className="px-4 py-3 font-medium text-slate-800">{s.warehouse_name}</td>
+                        <td className="px-4 py-3 text-slate-600">{s.material_code}</td>
+                        <td className="px-4 py-3 text-slate-500">{s.material_name}</td>
+                        <td className={`px-4 py-3 text-right font-bold ${isLow ? 'text-red-600' : 'text-slate-800'}`}>{s.on_hand_qty}{isLow && ' ⚠'}</td>
+                        <td className="px-4 py-3 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {tab === 'audit' && (
         <div className="space-y-3">
