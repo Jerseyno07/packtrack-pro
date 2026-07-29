@@ -207,6 +207,23 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
 // Shared CSV/Excel parsing helper
 // ─────────────────────────────────────────────────────────────────────────
 
+const COLUMN_LABELS = {
+  po_no: 'PO Number', vendor_name: 'Vendor Name', sku_code: 'SKU Code',
+  pm_store_code: 'PM Store Code', po_qty: 'PO Qty', no_of_rolls: 'No. of Rolls',
+  length_per_roll: 'Length per Roll (m)', unit_price: 'Unit Price',
+  po_date: 'PO Date', expected_delivery: 'Expected Delivery',
+  facility_code: 'Facility Code', requested_qty: 'Requested Qty', remarks: 'Remarks',
+};
+
+function formatZodErrors(issues) {
+  return issues.map((e) => {
+    const col = e.path[0];
+    const label = col ? (COLUMN_LABELS[col] || col) : null;
+    const msg = e.message === 'Required' ? 'is required' : e.message.toLowerCase();
+    return label ? `"${label}" ${msg}` : msg;
+  }).join('; ');
+}
+
 function parseUploadedFile(file) {
   let rows;
   if (file.originalname.toLowerCase().endsWith('.csv')) {
@@ -296,7 +313,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         const rowNum = i + 2;
         const row = rawRows[i];
         const parsed = indentRowSchema.safeParse(row);
-        if (!parsed.success) { errors.push({ row: rowNum, error: parsed.error.issues.map((e) => e.message).join('; ') }); continue; }
+        if (!parsed.success) { errors.push({ row: rowNum, error: formatZodErrors(parsed.error.issues) }); continue; }
         const { facility_code, sku_code, requested_qty, no_of_rolls, length_per_roll, remarks } = parsed.data;
         const warehouseId = whMap.get(facility_code);
         const mat = matMap.get(sku_code);
@@ -410,7 +427,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         const rowNum = i + 2;
         const row = rawRows[i];
         const parsed = poRowSchema.safeParse(row);
-        if (!parsed.success) { errors.push({ row: rowNum, error: parsed.error.issues.map((e) => e.message).join('; ') }); continue; }
+        if (!parsed.success) { errors.push({ row: rowNum, error: formatZodErrors(parsed.error.issues) }); continue; }
         const d = parsed.data;
 
         const mat = matMap.get(d.sku_code);
