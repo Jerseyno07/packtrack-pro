@@ -1376,7 +1376,25 @@ app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN')
     facilityCodes = whs.rows.map((r) => r.code);
   }
   res.json({ ok: true, message: 'Consumption run started in background', facilityCodes });
-  setImmediate(() => runConsumption({ facilityCodes }).catch((e) => console.error('[consumption] manual run error:', e.message)));
+  setImmediate(async () => {
+    try {
+      await runConsumption({ facilityCodes });
+    } catch (e) {
+      console.error('[consumption] manual run error:', e.message, e.stack);
+      // If runConsumption threw before creating its own DB row (e.g. unique constraint on INSERT),
+      // insert a FAILED sentinel so the portal shows the error instead of "Starting up…" forever.
+      try {
+        const runDate = new Date().toISOString().slice(0, 10);
+        const fFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
+        await pool.query(
+          `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter, progress_pct, progress_msg, last_error, completed_at)
+           VALUES ($1,$1,$1,'FAILED',$2,0,'Failed to start',$3,now())
+           ON CONFLICT DO NOTHING`,
+          [runDate, fFilter, e.message]
+        );
+      } catch { /* best-effort */ }
+    }
+  });
 }));
 
 app.get('/api/v1/admin/consumption/env-check', authenticate, requireRole('ADMIN'), (req, res) => {
