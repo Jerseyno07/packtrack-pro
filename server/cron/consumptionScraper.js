@@ -105,25 +105,11 @@ async function runConsumption(options = {}) {
   const today = new Date();
   const runDate = today.toISOString().slice(0, 10);
 
-  const lastRun = await pool.query('SELECT run_date FROM consumption_runs WHERE status=\'COMPLETED\' ORDER BY run_date DESC LIMIT 1');
-  let scraped_from, scraped_to;
-  if (lastRun.rows.length) {
-    const last = new Date(lastRun.rows[0].run_date);
-    last.setDate(last.getDate() + 1);
-    scraped_from = last.toISOString().slice(0, 10);
-  } else {
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    scraped_from = yesterday.toISOString().slice(0, 10);
-  }
+  // Always scrape only the previous day — one run per day covers yesterday's data
   const yest = new Date(today);
   yest.setDate(yest.getDate() - 1);
-  scraped_to = yest.toISOString().slice(0, 10);
-
-  if (scraped_from > scraped_to) {
-    console.log('[consumption] Already up to date — nothing to scrape');
-    return;
-  }
+  const scraped_from = yest.toISOString().slice(0, 10);
+  const scraped_to   = yest.toISOString().slice(0, 10);
 
   // Clear any prior FAILED run for this date+facility so retries are not blocked by the unique index
   await pool.query(
