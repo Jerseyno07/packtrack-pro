@@ -1433,7 +1433,7 @@ app.get('/api/v1/admin/consumption/runs/:id/summary', authenticate, requireRole(
   const [summary, counts] = await Promise.all([
     pool.query(`
       SELECT
-        crl.material_code, m.name AS material_name, m.unit,
+        crl.material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll,
         SUM(crl.qty_deducted) AS total_deducted,
         COUNT(*) AS line_count,
         BOOL_OR(crl.status IN ('DEDUCTED', 'STOCK_BELOW_ZERO')) AS already_committed,
