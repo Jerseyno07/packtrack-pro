@@ -472,6 +472,7 @@ function AdminPanel({ token, tabOverride }) {
   const [consumptionRuns, setConsumptionRuns] = useState([]);
   const [consumptionLoading, setConsumptionLoading] = useState(false);
   const [runNowLoading, setRunNowLoading] = useState(false);
+  const [runNowError, setRunNowError] = useState('');
   const [facilityWarehouses, setFacilityWarehouses] = useState([]);
   const [selectedFacilityIds, setSelectedFacilityIds] = useState(new Set());
   const [facilityDropdownOpen, setFacilityDropdownOpen] = useState(false);
@@ -577,12 +578,19 @@ function AdminPanel({ token, tabOverride }) {
   async function triggerRunNow() {
     if (!selectedFacilityIds.size) return;
     setRunNowLoading(true);
+    setRunNowError('');
     try {
       const warehouseIds = [...selectedFacilityIds].map(Number);
-      await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs, body: JSON.stringify({ warehouseIds }) });
+      const res = await fetch(`${BASE_URL}/api/v1/admin/consumption/run-now`, { method: 'POST', headers: hdrs, body: JSON.stringify({ warehouseIds }) });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(`${res.status} — ${body?.error?.message || 'Server error'}`);
+      }
       setRunSummary(null);
       setProgressOpen(true);
-    } catch { /* silent */ }
+    } catch (e) {
+      setRunNowError(e.message);
+    }
     finally { setRunNowLoading(false); }
   }
 
@@ -1167,6 +1175,7 @@ function AdminPanel({ token, tabOverride }) {
                 Run Now
               </button>
             </div>
+            {runNowError && <p className="text-xs text-red-600 mt-1">{runNowError}</p>}
           </div>
           <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
             <table className="w-full text-sm min-w-[700px]">
