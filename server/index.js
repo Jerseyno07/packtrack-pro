@@ -1446,7 +1446,7 @@ app.get('/api/v1/admin/consumption/runs/:id/summary', authenticate, requireRole(
       FROM consumption_run_lines crl
       JOIN materials m ON m.code = crl.material_code
       WHERE crl.run_id = $1 AND crl.status IN ('PENDING', 'DEDUCTED', 'STOCK_BELOW_ZERO')
-      GROUP BY crl.material_code, m.name, m.unit, crl.warehouse_id
+      GROUP BY crl.material_code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll, crl.warehouse_id
       ORDER BY total_deducted DESC
     `, [runId]),
     pool.query(`
