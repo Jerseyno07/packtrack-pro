@@ -1657,6 +1657,8 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Unexpected server error' } });
 });
 
+require('./cron/slackReports');
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`PackTrack API listening on :${PORT}`));
 
