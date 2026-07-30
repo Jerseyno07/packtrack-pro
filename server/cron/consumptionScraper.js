@@ -92,12 +92,15 @@ async function scrapePackagedQty(fromDate, toDate) {
     const facilityId = String(row['FromFacilityId'] ?? '').trim();
     const qty = Number(row['AllocatedQuantity'] ?? 0);
     if (!fsn || !facilityId || qty <= 0) continue;
-    out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: qty });
+    out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: qty,
+               sku_id: row['SkuId'], weight_id: row['WeightId'] });
   }
 
-  // Deduplicate: if the exact same (facility_id, sku_code, packaged_qty) appears more than once
-  // (Redash sometimes reports the same allocation under both a new FSN and an old internal code),
-  // keep only the first occurrence.
+  // Deduplicate exact duplicate rows (same facility_id + sku_code + qty).
+  // CC rows also carry sku_id/weight_id for use in the MRP pass dedup (see runConsumption).
+  // We do NOT dedup CC rows by sku_id+weight_id here because both the old internal FSN code
+  // (250000xxx/NCOFxx) and the new code (VEGxxx/FRTxxx) need to flow through the regular
+  // packing-material loop — only the mapped one will be processed there.
   const seen = new Set();
   const deduped = [];
   for (const row of out) {
@@ -253,11 +256,21 @@ async function runConsumption(options = {}) {
     const bcrSmall = matMap.get('BCRL-SML');
     const bcrBig   = matMap.get('BCRL-BIG');
 
+    // Track (facility_id, sku_id, weight_id) to avoid counting the same physical allocation twice.
+    // The CC query reports each allocation under both a new FSN code (VEGxxx/FRTxxx) and a legacy
+    // code (250000xxx/NCOFxx). After the mapping filter below only the mapped code passes, so
+    // normally each allocation is counted once. If both codes were ever mapped, this Set catches it.
+    const mrpSeen = new Set();
     const facilityTotals = new Map();
     for (const row of rows) {
       if (!skuMap.get(row.sku_code)) continue; // only count mapped SKUs — same as regular deduction pass
       const warehouseId = whMap.get(row.facility_id);
       if (!warehouseId) continue;
+      if (row.sku_id && row.weight_id) {
+        const mrpKey = `${row.facility_id}|${row.sku_id}|${row.weight_id}`;
+        if (mrpSeen.has(mrpKey)) continue;
+        mrpSeen.add(mrpKey);
+      }
       const key = `${row.facility_id}::${warehouseId}`;
       if (!facilityTotals.has(key)) facilityTotals.set(key, { facility_id: row.facility_id, warehouseId, total: 0 });
       facilityTotals.get(key).total += row.packaged_qty;
