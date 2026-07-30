@@ -477,6 +477,7 @@ function AdminPanel({ token, tabOverride }) {
   const [facilityDropdownOpen, setFacilityDropdownOpen] = useState(false);
   const [progressOpen, setProgressOpen] = useState(false);
   const [runSummary, setRunSummary] = useState(null);
+  const [elapsedSecs, setElapsedSecs] = useState(0);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [acceptLoading, setAcceptLoading] = useState(false);
   const [acceptError, setAcceptError] = useState('');
@@ -734,6 +735,16 @@ function AdminPanel({ token, tabOverride }) {
     }, 3000);
     return () => clearInterval(iv);
   }, [progressOpen, fetchConsumptionRuns]);
+
+  // Elapsed time counter — ticks every second while a run is RUNNING
+  useEffect(() => {
+    const activeRun = consumptionRuns.find((r) => r.status === 'RUNNING');
+    if (!progressOpen || !activeRun) { setElapsedSecs(0); return; }
+    const start = activeRun.created_at ? new Date(activeRun.created_at) : new Date();
+    setElapsedSecs(Math.floor((Date.now() - start) / 1000));
+    const iv = setInterval(() => setElapsedSecs(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(iv);
+  }, [progressOpen, consumptionRuns]);
 
   // When runs list updates and we have an active progress modal, check for PENDING_REVIEW
   useEffect(() => {
@@ -1230,18 +1241,41 @@ function AdminPanel({ token, tabOverride }) {
 
               {/* Body */}
               <div className="px-6 py-6">
-                {isRunning ? (
-                  <div className="flex flex-col items-center gap-4 py-8">
-                    <RefreshCw size={32} className="animate-spin text-blue-500" />
-                    <p className="text-slate-600 text-sm">Scraping Redash and computing deductions…</p>
+                {isRunning ? (() => {
+                  const pct = activeRun?.progress_pct ?? 0;
+                  const msg = activeRun?.progress_msg || 'Starting up…';
+                  const fmt = (s) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+                  const estRemaining = (pct > 5 && elapsedSecs > 0)
+                    ? Math.max(0, Math.floor(elapsedSecs / pct * (100 - pct))) : null;
+                  return (
+                  <div className="flex flex-col gap-5 py-4">
+                    <div className="flex items-center gap-3">
+                      <RefreshCw size={16} className="animate-spin text-blue-500 shrink-0" />
+                      <span className="text-sm text-slate-700">{msg}</span>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                        <span>{pct}% complete</span>
+                        <span>
+                          {fmt(elapsedSecs)} elapsed
+                          {estRemaining !== null && ` · ~${fmt(estRemaining)} remaining`}
+                        </span>
+                      </div>
+                      <div className="w-full bg-slate-100 rounded-full h-2.5">
+                        <div
+                          className="bg-blue-500 h-2.5 rounded-full transition-all duration-700"
+                          style={{ width: `${Math.max(pct, 2)}%` }}
+                        />
+                      </div>
+                    </div>
                     {activeRun && (
                       <p className="text-xs text-slate-400 font-mono">
-                        {activeRun.scraped_from?.slice(0, 10)} → {activeRun.scraped_to?.slice(0, 10)}
-                        {activeRun.deducted_lines ? ` · ${activeRun.deducted_lines} lines so far` : ''}
+                        Date range: {activeRun.scraped_from?.slice(0, 10)} → {activeRun.scraped_to?.slice(0, 10)}
                       </p>
                     )}
                   </div>
-                ) : summaryLoading ? (
+                  );
+                })() : summaryLoading ? (
                   <div className="flex items-center justify-center py-12">
                     <RefreshCw size={20} className="animate-spin text-slate-400" />
                   </div>

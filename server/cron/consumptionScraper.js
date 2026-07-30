@@ -120,12 +120,16 @@ async function runConsumption(options = {}) {
   );
 
   const runRes = await pool.query(
-    `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter) VALUES ($1,$2,$3,'RUNNING',$4) RETURNING id`,
+    `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter, progress_pct, progress_msg) VALUES ($1,$2,$3,'RUNNING',$4,0,'Starting up…') RETURNING id`,
     [runDate, scraped_from, scraped_to, facilityFilter]
   );
   const runId = runRes.rows[0].id;
 
+  const setProgress = (pct, msg) =>
+    pool.query(`UPDATE consumption_runs SET progress_pct=$1, progress_msg=$2 WHERE id=$3`, [pct, msg, runId]).catch(() => {});
+
   try {
+    await setProgress(10, 'Fetching packaging data from Redash…');
     let rows = await scrapePackagedQty(scraped_from, scraped_to);
     if (facilityCodes?.length) {
       const codeSet = new Set(facilityCodes);
@@ -133,6 +137,7 @@ async function runConsumption(options = {}) {
       console.log(`[consumption] Filtered to [${facilityCodes.join(', ')}]: ${rows.length} rows`);
     }
     console.log(`[consumption] Scraped ${rows.length} rows for ${scraped_from}..${scraped_to}`);
+    await setProgress(40, `Data fetched — ${rows.length} rows. Loading lookup tables…`);
 
     const skuMap = new Map(
       (await pool.query('SELECT sku_code, primary_pm_code, secondary_pm_code, tertiary_pm_code FROM sku_packaging_master')).rows.map((r) => [r.sku_code, r])
@@ -144,7 +149,9 @@ async function runConsumption(options = {}) {
       (await pool.query('SELECT id, code, meters_per_unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r])
     );
 
+    await setProgress(50, `Processing ${rows.length} SKU rows…`);
     let deducted = 0, skipped = 0, errored = 0;
+    const progressStep = Math.max(1, Math.floor(rows.length / 4));
 
     for (const row of rows) {
       const sku = skuMap.get(row.sku_code);
@@ -206,7 +213,15 @@ async function runConsumption(options = {}) {
           errored++;
         }
       }
+      // Update progress every ~25% of rows
+      const idx = rows.indexOf(row);
+      if (idx > 0 && idx % progressStep === 0) {
+        const pct = 50 + Math.floor((idx / rows.length) * 35);
+        await setProgress(pct, `Processing rows… (${idx} of ${rows.length})`);
+      }
     }
+
+    await setProgress(85, `SKU rows done. Computing MRP sticker deductions…`);
 
     // MRP sticker pass: every unit packed consumes 1 barcode label + 1 wax ribbon print.
     // Group total packaged_qty per (facility, warehouse), then add PENDING lines for
@@ -283,8 +298,9 @@ async function runConsumption(options = {}) {
       }
     }
 
+    await setProgress(95, 'Finalising run…');
     await pool.query(
-      `UPDATE consumption_runs SET status='PENDING_REVIEW', total_sku_facility_rows=$1, deducted_lines=$2, skipped_lines=$3, error_lines=$4, completed_at=now() WHERE id=$5`,
+      `UPDATE consumption_runs SET status='PENDING_REVIEW', progress_pct=100, progress_msg='Complete — awaiting review', total_sku_facility_rows=$1, deducted_lines=$2, skipped_lines=$3, error_lines=$4, completed_at=now() WHERE id=$5`,
       [rows.length, deducted, skipped, errored, runId]
     );
     console.log(`[consumption] Run ${runId} PENDING_REVIEW — pending:${deducted} skipped:${skipped} errors:${errored}`);
