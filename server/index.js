@@ -1547,6 +1547,8 @@ app.get('/api/v1/consumption/history', authenticate, asyncHandler(async (req, re
       crl.material_code,
       m.name                        AS material_name,
       m.unit,
+      m.meters_per_unit,
+      m.stickers_per_roll,
       SUM(crl.qty_deducted)         AS qty_consumed
     FROM consumption_run_lines crl
     JOIN consumption_runs cr ON cr.id = crl.run_id
@@ -1558,7 +1560,7 @@ app.get('/api/v1/consumption/history', authenticate, asyncHandler(async (req, re
       AND ($2::date IS NULL OR cr.scraped_to::date <= $2::date)
       AND ($3::int  IS NULL OR w.id = $3::int)
       AND ($4::int[] IS NULL OR w.id = ANY($4::int[]))
-    GROUP BY cr.scraped_to::date, w.id, w.name, w.code, crl.material_code, m.name, m.unit
+    GROUP BY cr.scraped_to::date, w.id, w.name, w.code, crl.material_code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll
     ORDER BY cr.scraped_to::date DESC, w.name, crl.material_code
   `, [from || null, to || null, filterWh, allowedIds]);
 

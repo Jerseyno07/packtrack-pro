@@ -1428,7 +1428,7 @@ function AdminPanel({ token, tabOverride }) {
                     r.material_name,
                     r.material_code,
                     r.qty_consumed,
-                    r.unit,
+                    r.meters_per_unit ? 'm' : r.stickers_per_roll ? 'units' : r.unit,
                   ]);
                   const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
                   const blob = new Blob([csv], { type: 'text/csv' });
@@ -1475,7 +1475,7 @@ function AdminPanel({ token, tabOverride }) {
                       <div className="text-xs text-slate-400 font-mono">{r.material_code}</div>
                     </td>
                     <td className="px-4 py-2.5 text-right font-bold text-slate-900">{Number(r.qty_consumed).toLocaleString()}</td>
-                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.unit}</td>
+                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.meters_per_unit ? 'm' : r.stickers_per_roll ? 'units' : r.unit}</td>
                   </tr>
                 ))}
               </tbody>
