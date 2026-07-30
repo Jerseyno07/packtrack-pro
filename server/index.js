@@ -1375,22 +1375,37 @@ app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN')
     if (!whs.rows.length) throw new ApiError(404, 'NOT_FOUND', 'No matching warehouses found');
     facilityCodes = whs.rows.map((r) => r.code);
   }
-  res.json({ ok: true, message: 'Consumption run started in background', facilityCodes });
+  // Pre-create the RUNNING row HERE (before responding) so it exists in DB even if Railway
+  // kills the process between the HTTP response and the setImmediate callback executing.
+  const today = new Date();
+  const runDate = today.toISOString().slice(0, 10);
+  const yest = new Date(today);
+  yest.setDate(yest.getDate() - 1);
+  const scraped_date = yest.toISOString().slice(0, 10);
+  const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
+
+  await pool.query(
+    `DELETE FROM consumption_runs WHERE run_date = $1 AND status = 'FAILED'
+     AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)`,
+    [runDate, facilityFilter]
+  );
+  const runRes = await pool.query(
+    `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter, progress_pct, progress_msg)
+     VALUES ($1,$2,$2,'RUNNING',$3,0,'Starting up…') RETURNING id`,
+    [runDate, scraped_date, facilityFilter]
+  );
+  const runId = runRes.rows[0].id;
+
+  res.json({ ok: true, message: 'Consumption run started in background', facilityCodes, runId });
   setImmediate(async () => {
     try {
-      await runConsumption({ facilityCodes });
+      await runConsumption({ facilityCodes, runId });
     } catch (e) {
-      console.error('[consumption] manual run error:', e.message, e.stack);
-      // If runConsumption threw before creating its own DB row (e.g. unique constraint on INSERT),
-      // insert a FAILED sentinel so the portal shows the error instead of "Starting up…" forever.
+      console.error('[consumption] background run error:', e.message, e.stack);
       try {
-        const runDate = new Date().toISOString().slice(0, 10);
-        const fFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
         await pool.query(
-          `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter, progress_pct, progress_msg, last_error, completed_at)
-           VALUES ($1,$1,$1,'FAILED',$2,0,'Failed to start',$3,now())
-           ON CONFLICT DO NOTHING`,
-          [runDate, fFilter, e.message]
+          `UPDATE consumption_runs SET status='FAILED', last_error=$2, completed_at=now() WHERE id=$1`,
+          [runId, e.message]
         );
       } catch { /* best-effort */ }
     }

@@ -99,8 +99,10 @@ async function scrapePackagedQty(fromDate, toDate) {
 }
 
 // options.facilityCodes — array of warehouse codes; if set, only process rows for those facilities
+// options.runId: if the caller (HTTP endpoint) already pre-created the RUNNING row, pass it here
+//   to skip the DELETE+INSERT and jump straight into the scraper body.
 async function runConsumption(options = {}) {
-  const { facilityCodes = null } = options;
+  const { facilityCodes = null, runId: preRunId = null } = options;
   const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
   const today = new Date();
   const runDate = today.toISOString().slice(0, 10);
@@ -111,19 +113,24 @@ async function runConsumption(options = {}) {
   const scraped_from = yest.toISOString().slice(0, 10);
   const scraped_to   = yest.toISOString().slice(0, 10);
 
-  // Clear any prior FAILED run for this date+facility so retries are not blocked by the unique index
-  await pool.query(
-    `DELETE FROM consumption_runs
-     WHERE run_date = $1 AND status IN ('FAILED')
-     AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)`,
-    [runDate, facilityFilter]
-  );
+  let runId;
+  if (preRunId) {
+    runId = preRunId;
+  } else {
+    // Clear any prior FAILED run for this date+facility so retries are not blocked by the unique index
+    await pool.query(
+      `DELETE FROM consumption_runs
+       WHERE run_date = $1 AND status IN ('FAILED')
+       AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)`,
+      [runDate, facilityFilter]
+    );
 
-  const runRes = await pool.query(
-    `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter, progress_pct, progress_msg) VALUES ($1,$2,$3,'RUNNING',$4,0,'Starting up…') RETURNING id`,
-    [runDate, scraped_from, scraped_to, facilityFilter]
-  );
-  const runId = runRes.rows[0].id;
+    const runRes = await pool.query(
+      `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter, progress_pct, progress_msg) VALUES ($1,$2,$3,'RUNNING',$4,0,'Starting up…') RETURNING id`,
+      [runDate, scraped_from, scraped_to, facilityFilter]
+    );
+    runId = runRes.rows[0].id;
+  }
 
   const setProgress = (pct, msg) =>
     pool.query(`UPDATE consumption_runs SET progress_pct=$1, progress_msg=$2 WHERE id=$3`, [pct, msg, runId]).catch(() => {});
