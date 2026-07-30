@@ -95,7 +95,17 @@ async function scrapePackagedQty(fromDate, toDate) {
     out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: qty });
   }
 
-  return out;
+  // Deduplicate: if the exact same (facility_id, sku_code, packaged_qty) appears more than once
+  // (Redash sometimes reports the same allocation under both a new FSN and an old internal code),
+  // keep only the first occurrence.
+  const seen = new Set();
+  const deduped = [];
+  for (const row of out) {
+    const key = `${row.facility_id}|${row.sku_code}|${row.packaged_qty}`;
+    if (!seen.has(key)) { seen.add(key); deduped.push(row); }
+  }
+  console.log(`[consumption] Raw rows: ${out.length}, after dedup: ${deduped.length}`);
+  return deduped;
 }
 
 // options.facilityCodes — array of warehouse codes; if set, only process rows for those facilities
