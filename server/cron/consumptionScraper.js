@@ -245,6 +245,7 @@ async function runConsumption(options = {}) {
 
     const facilityTotals = new Map();
     for (const row of rows) {
+      if (!skuMap.get(row.sku_code)) continue; // only count mapped SKUs — same as regular deduction pass
       const warehouseId = whMap.get(row.facility_id);
       if (!warehouseId) continue;
       const key = `${row.facility_id}::${warehouseId}`;
