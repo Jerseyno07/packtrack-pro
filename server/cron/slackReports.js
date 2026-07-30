@@ -323,23 +323,24 @@ async function sendCCBalanceVsAudit() {
 }
 
 // ── Cron jobs (timezone: Asia/Kolkata / IST) ──────────────────────────────────
+// All crons currently disabled — uncomment to enable.
 
 // 00:00 IST — auto-run and auto-accept consumption for all facilities
-cron.schedule('0 0 * * *', () => {
-  console.log('[slackReports] 00:00 IST — starting nightly consumption run');
-  runAndAcceptConsumption().catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
-}, { timezone: 'Asia/Kolkata' });
+// cron.schedule('0 0 * * *', () => {
+//   console.log('[slackReports] 00:00 IST — starting nightly consumption run');
+//   runAndAcceptConsumption().catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
+// }, { timezone: 'Asia/Kolkata' });
 
 // 00:15 IST — Daily Consumption Details (give run 15 min to complete)
-cron.schedule('15 0 * * *', () => {
-  console.log('[slackReports] 00:15 IST — sending daily consumption report');
-  sendDailyConsumption().catch((e) => console.error('[slackReports] Daily consumption report failed:', e.message));
-}, { timezone: 'Asia/Kolkata' });
+// cron.schedule('15 0 * * *', () => {
+//   console.log('[slackReports] 00:15 IST — sending daily consumption report');
+//   sendDailyConsumption().catch((e) => console.error('[slackReports] Daily consumption report failed:', e.message));
+// }, { timezone: 'Asia/Kolkata' });
 
 // 17:00 IST — FC Dispatch vs CC GRN
-cron.schedule('0 17 * * *', () => {
-  console.log('[slackReports] 17:00 IST — sending FC dispatch vs CC GRN report');
-  sendFCDispatchVsCCGRN().catch((e) => console.error('[slackReports] FC vs CC report failed:', e.message));
-}, { timezone: 'Asia/Kolkata' });
+// cron.schedule('0 17 * * *', () => {
+//   console.log('[slackReports] 17:00 IST — sending FC dispatch vs CC GRN report');
+//   sendFCDispatchVsCCGRN().catch((e) => console.error('[slackReports] FC vs CC report failed:', e.message));
+// }, { timezone: 'Asia/Kolkata' });
 
 module.exports = { sendFCDispatchVsCCGRN, sendDailyConsumption, sendCCBalanceVsAudit, runAndAcceptConsumption };
