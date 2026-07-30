@@ -1384,6 +1384,14 @@ app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN')
   const scraped_date = yest.toISOString().slice(0, 10);
   const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
 
+  // Delete child lines first (FK constraint), then the failed parent run
+  await pool.query(
+    `DELETE FROM consumption_run_lines WHERE run_id IN (
+       SELECT id FROM consumption_runs WHERE run_date = $1 AND status = 'FAILED'
+       AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)
+     )`,
+    [runDate, facilityFilter]
+  );
   await pool.query(
     `DELETE FROM consumption_runs WHERE run_date = $1 AND status = 'FAILED'
      AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)`,

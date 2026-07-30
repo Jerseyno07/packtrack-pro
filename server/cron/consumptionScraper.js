@@ -117,10 +117,16 @@ async function runConsumption(options = {}) {
   if (preRunId) {
     runId = preRunId;
   } else {
-    // Clear any prior FAILED run for this date+facility so retries are not blocked by the unique index
+    // Clear any prior FAILED run (lines first to satisfy FK, then the run row)
     await pool.query(
-      `DELETE FROM consumption_runs
-       WHERE run_date = $1 AND status IN ('FAILED')
+      `DELETE FROM consumption_run_lines WHERE run_id IN (
+         SELECT id FROM consumption_runs WHERE run_date = $1 AND status = 'FAILED'
+         AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)
+       )`,
+      [runDate, facilityFilter]
+    );
+    await pool.query(
+      `DELETE FROM consumption_runs WHERE run_date = $1 AND status = 'FAILED'
        AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)`,
       [runDate, facilityFilter]
     );
