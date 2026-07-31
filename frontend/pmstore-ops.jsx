@@ -82,12 +82,12 @@ function LoginScreen({ onLogin }) {
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">Email</label>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">Password</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
           {error && (
             <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
@@ -95,7 +95,7 @@ function LoginScreen({ onLogin }) {
             </div>
           )}
           <button type="submit" disabled={loading}
-            className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
+            className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
             {loading ? <RefreshCw size={16} className="animate-spin" /> : <LogIn size={16} />}
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
@@ -119,14 +119,14 @@ function ForceCompletePanel({ onForce, submitting, error, hint }) {
           <p className="text-xs text-slate-500">{hint ?? 'Permanently closes this record with no further transactions allowed. Cannot be undone.'}</p>
           <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
             placeholder="Reason for force completing…"
-            className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none" />
+            className="w-full px-3 py-3 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none" />
           {error && (
             <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
               <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}
             </div>
           )}
           <button onClick={() => onForce(reason)} disabled={submitting || !reason.trim()}
-            className="w-full py-2.5 bg-amber-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
+            className="w-full py-4 bg-amber-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
             {submitting ? <RefreshCw size={16} className="animate-spin" /> : <Zap size={16} />}
             {submitting ? 'Processing...' : 'Force Complete'}
           </button>
@@ -288,7 +288,7 @@ function GRNScreen({ api }) {
   const canForce = fcReason.trim().length > 0 && !submitting;
 
   return (
-    <div className="space-y-4 max-w-xl">
+    <div className="space-y-4 pb-32">
       <button onClick={() => setSelectedPO(null)} className="flex items-center gap-1.5 text-sm text-slate-500 font-medium"><ArrowLeft size={15} /> Back</button>
 
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
@@ -324,7 +324,7 @@ function GRNScreen({ api }) {
             max={remaining}
             value={inwardQty}
             onChange={(e) => setInwardQty(e.target.value)}
-            className={`w-full px-3 py-2.5 border rounded-lg text-sm focus:outline-none focus:ring-2 font-medium ${
+            className={`w-full px-3 py-3 border rounded-lg text-base focus:outline-none focus:ring-2 font-medium ${
               isOver ? 'border-red-400 bg-red-50 focus:ring-red-400 text-red-700'
               : isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
               : isUnder ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
@@ -345,11 +345,11 @@ function GRNScreen({ api }) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">GRN Date</label>
-            <input type="date" value={grnDate} onChange={(e) => setGrnDate(e.target.value)} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <input type="date" value={grnDate} onChange={(e) => setGrnDate(e.target.value)} className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">Invoice Number</label>
-            <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="Optional" className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="Optional" className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
         </div>
 
@@ -378,7 +378,7 @@ function GRNScreen({ api }) {
             value={fcReason}
             onChange={(e) => setFcReason(e.target.value)}
             placeholder="Reason why the remaining PO qty will not be received…"
-            className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+            className="w-full px-3 py-3 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
           />
         </div>
 
@@ -388,32 +388,25 @@ function GRNScreen({ api }) {
           </div>
         )}
 
-        {/* Side-by-side action buttons */}
-        <div className="grid grid-cols-2 gap-3 pt-1">
-          <button
-            onClick={submitGRN}
-            disabled={!canGRN}
-            className="py-2.5 bg-blue-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {submitting && isExact ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            Post GRN
-          </button>
-          <button
-            onClick={submitForce}
-            disabled={!canForce}
-            className="py-2.5 bg-amber-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {submitting && isUnder ? <RefreshCw size={15} className="animate-spin" /> : <Zap size={15} />}
-            Force Complete
-          </button>
-        </div>
+      </div>
 
-        {!isOver && !isExact && !isUnder && (
-          <p className="text-xs text-slate-400 text-center">Enter a quantity to enable actions.</p>
-        )}
-        {isOver && (
-          <p className="text-xs text-red-500 text-center">Both actions are disabled — qty exceeds PO.</p>
-        )}
+      <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
+        <div className="max-w-lg mx-auto space-y-2">
+          {!isOver && !isExact && !isUnder && <p className="text-xs text-center text-slate-400">Enter a quantity to enable actions.</p>}
+          {isOver && <p className="text-xs text-center text-red-500">Both actions disabled — qty exceeds PO.</p>}
+          <div className="grid grid-cols-2 gap-3">
+            <button onClick={submitGRN} disabled={!canGRN}
+              className="py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-blue-700">
+              {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              Post GRN
+            </button>
+            <button onClick={submitForce} disabled={!canForce}
+              className="py-4 bg-amber-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-amber-700">
+              {submitting ? <RefreshCw size={15} className="animate-spin" /> : <Zap size={15} />}
+              Force Complete
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -553,7 +546,7 @@ function IssueScreen({ api }) {
   const variance = actualQty - expectedQty;
 
   return (
-    <div className="space-y-4 max-w-xl">
+    <div className="space-y-4">
       <button onClick={() => setSelectedIndent(null)} className="flex items-center gap-1.5 text-sm text-slate-500 font-medium"><ArrowLeft size={15} /> Back</button>
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
         <div className="pb-3 border-b border-slate-100">
@@ -586,19 +579,20 @@ function IssueScreen({ api }) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">Actual Issue Qty <span className="text-red-500">*</span></label>
-            <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">Issue Date</label>
-            <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
         </div>
         <div>
           <label className="text-xs font-medium text-slate-500 mb-1 block">Vehicle No.</label>
-          <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} placeholder="Optional" className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} placeholder="Optional" className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         {error && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}</div>}
-        <button onClick={submit} disabled={submitting} className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-60">
+        <button onClick={submit} disabled={submitting} className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60 active:bg-blue-700">
+          <CheckCircle2 size={16} />
           {submitting ? 'Dispatching...' : 'Confirm Issue'}
         </button>
       </div>
@@ -715,24 +709,30 @@ export default function PMStoreOps() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <div className="max-w-3xl mx-auto">
-        <div className="flex items-center justify-between mb-5">
+    <div className="min-h-screen bg-slate-50 max-w-lg mx-auto">
+      <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 py-3">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center"><Package size={16} className="text-white" /></div>
-            <span className="font-bold text-slate-900">PM Store Ops</span>
-            <span className="text-xs text-slate-400">· {user?.name || user?.email}</span>
+            <div>
+              <div className="font-bold text-slate-900 text-sm">PM Store Ops</div>
+              <div className="text-xs text-slate-400">{user?.name || user?.email}</div>
+            </div>
           </div>
-          <button onClick={() => { setToken(null); setUser(null); }} className="p-2 text-slate-400 hover:text-slate-600">
-            <LogOut size={18} />
+          <button onClick={() => { setToken(null); setUser(null); }} className="p-2.5 text-slate-400 active:text-slate-600">
+            <LogOut size={20} />
           </button>
         </div>
-        <div data-tour="pmstore-tabs" className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit mb-5 flex-wrap">
-          <button onClick={() => setTab('grn')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Post GRN</button>
-          <button onClick={() => setTab('issue')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue Against Indent</button>
-          <button onClick={() => setTab('stock')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Store Stock</button>
-          <button onClick={() => setTab('audit')} className={`px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
-        </div>
+      </div>
+
+      <div data-tour="pmstore-tabs" className="flex gap-1 bg-slate-100 rounded-xl p-1 mx-4 mt-3">
+        <button onClick={() => setTab('grn')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>GRN</button>
+        <button onClick={() => setTab('issue')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue</button>
+        <button onClick={() => setTab('stock')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Stock</button>
+        <button onClick={() => setTab('audit')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
+      </div>
+
+      <div className="px-4 pt-3 pb-8">
         {tab === 'grn' && <GRNScreen api={client} />}
         {tab === 'issue' && <IssueScreen api={client} />}
         {tab === 'stock' && <StoreStockView token={token} warehouseId={user?.warehouse_ids?.[0]} />}
@@ -742,7 +742,7 @@ export default function PMStoreOps() {
       <button
         data-tour="tour-btn-pmstore"
         onClick={() => setShowTour(true)}
-        className="fixed bottom-6 right-6 w-11 h-11 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center text-lg font-bold hover:bg-blue-700 z-50"
+        className="fixed bottom-24 right-4 w-12 h-12 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center text-lg font-bold hover:bg-blue-700 z-50"
         title="Open guided tour"
       >?</button>
 

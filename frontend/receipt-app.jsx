@@ -83,7 +83,7 @@ function LoginScreen({ onLogin }) {
             <input
               type="email" value={email} onChange={(e) => setEmail(e.target.value)}
               required autoComplete="username"
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               placeholder="you@example.com"
             />
           </div>
@@ -92,7 +92,7 @@ function LoginScreen({ onLogin }) {
             <input
               type="password" value={password} onChange={(e) => setPassword(e.target.value)}
               required autoComplete="current-password"
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
 
@@ -105,7 +105,7 @@ function LoginScreen({ onLogin }) {
 
           <button
             type="submit" disabled={loading}
-            className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 active:bg-blue-700 disabled:opacity-60"
+            className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 active:bg-blue-700 disabled:opacity-60"
           >
             {loading ? <RefreshCw size={16} className="animate-spin" /> : <LogIn size={16} />}
             {loading ? 'Signing in...' : 'Sign In'}
@@ -205,7 +205,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-28">
       <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-500 font-medium">
         <ArrowLeft size={16} /> Back to pending list
       </button>
@@ -293,28 +293,23 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           </div>
         )}
 
-        {/* Side-by-side action buttons */}
-        <div className="grid grid-cols-2 gap-3 pt-1">
-          <button
-            onClick={handleConfirm}
-            disabled={!canConfirm}
-            className="py-2.5 bg-blue-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed active:bg-blue-700"
-          >
+        {isOver && <p className="text-xs text-red-500 text-center">Both actions disabled — qty exceeds dispatched.</p>}
+        {!isOver && !isExact && !isUnder && <p className="text-xs text-slate-400 text-center">Enter a quantity to enable actions.</p>}
+      </div>
+
+      <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
+        <div className="max-w-md mx-auto grid grid-cols-2 gap-3">
+          <button onClick={handleConfirm} disabled={!canConfirm}
+            className="py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-blue-700">
             {submitting && isExact ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
             Confirm Receipt
           </button>
-          <button
-            onClick={handleForceComplete}
-            disabled={!canForce}
-            className="py-2.5 bg-amber-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed active:bg-amber-700"
-          >
+          <button onClick={handleForceComplete} disabled={!canForce}
+            className="py-4 bg-amber-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-amber-700">
             {submitting && isUnder ? <RefreshCw size={16} className="animate-spin" /> : <Zap size={16} />}
             Force Complete
           </button>
         </div>
-
-        {isOver && <p className="text-xs text-red-500 text-center">Both actions disabled — qty exceeds dispatched.</p>}
-        {!isOver && !isExact && !isUnder && <p className="text-xs text-slate-400 text-center">Enter a quantity to enable actions.</p>}
       </div>
     </div>
   );
@@ -579,10 +574,10 @@ export default function ReceiptApp() {
 
       {/* Tab bar */}
       <div data-tour="receipt-tabs" className="flex gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
-        <button onClick={() => setTab('receive')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
-        <button onClick={() => setTab('stock')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>My Stock</button>
-        <button onClick={() => setTab('consumption')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'consumption' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Consumption</button>
-        <button onClick={() => setTab('audit')} className={`flex-1 py-1.5 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
+        <button onClick={() => setTab('receive')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
+        <button onClick={() => setTab('stock')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>My Stock</button>
+        <button onClick={() => setTab('consumption')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'consumption' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Consumption</button>
+        <button onClick={() => setTab('audit')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
       </div>
 
       <div className="p-4 space-y-3">
@@ -639,7 +634,7 @@ export default function ReceiptApp() {
       <button
         data-tour="tour-btn-receipt"
         onClick={() => setShowTour(true)}
-        className="fixed bottom-6 right-6 w-11 h-11 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center text-lg font-bold hover:bg-blue-700 z-50"
+        className="fixed bottom-28 right-4 w-12 h-12 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center text-lg font-bold hover:bg-blue-700 z-50"
         title="Open guided tour"
       >?</button>
 
