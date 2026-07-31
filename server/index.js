@@ -607,8 +607,9 @@ app.get('/api/v1/indent-lines/:id/issue-defaults', authenticate, requireRole('PM
   const pmWhRes = await pool.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
   const pmWhId = pmWhRes.rows[0]?.id;
   const onHandQty = pmWhId ? await getOnHandQty(pool, pmWhId, line.material_id) : 0;
+  const facilityOnHandQty = await getOnHandQty(pool, line.warehouse_id, line.material_id);
   const suggestedActualQty = Math.min(expectedQty, onHandQty);
-  res.json({ expected_qty: expectedQty, on_hand_qty: onHandQty, suggested_actual_qty: suggestedActualQty });
+  res.json({ expected_qty: expectedQty, on_hand_qty: onHandQty, facility_on_hand_qty: facilityOnHandQty, suggested_actual_qty: suggestedActualQty });
 }));
 
 app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {

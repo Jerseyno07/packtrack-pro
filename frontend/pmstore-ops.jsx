@@ -561,12 +561,18 @@ function IssueScreen({ api }) {
           <div className="text-sm text-slate-500 mt-0.5">{selectedIndent.material_code} — {selectedIndent.material_name}</div>
         </div>
 
-        <div className="grid grid-cols-3 gap-3 bg-slate-50 rounded-lg p-3 text-sm">
+        <div className="grid grid-cols-2 gap-3 bg-slate-50 rounded-lg p-3 text-sm sm:grid-cols-4">
           <div><div className="text-xs text-slate-400">Expected (pending)</div><div className="font-bold text-slate-900">{expectedQty}</div></div>
           <div>
             <div className="text-xs text-slate-400">On Hand (PM Store)</div>
             <div className={`font-bold ${defaults && Number(defaults.on_hand_qty) < expectedQty ? 'text-red-600' : 'text-slate-900'}`}>
               {defaults ? defaults.on_hand_qty : '…'}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-400">On Hand ({selectedIndent.warehouse_name})</div>
+            <div className="font-bold text-slate-900">
+              {defaults ? defaults.facility_on_hand_qty : '…'}
             </div>
           </div>
           <div>
