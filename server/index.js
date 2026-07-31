@@ -1274,6 +1274,7 @@ app.post('/api/v1/audits', authenticate, requireRole('PM_STORE_EXEC', 'CC_EXEC',
       lines: z.array(z.object({
         material_id: z.coerce.number().int().positive(),
         physical_qty: z.coerce.number().nonnegative(),
+        remark: z.string().optional(),
       })).min(1),
     });
     const d = schema.parse(req.body);
@@ -1320,9 +1321,9 @@ app.post('/api/v1/audits', authenticate, requireRole('PM_STORE_EXEC', 'CC_EXEC',
         }
 
         await client.query(
-          `INSERT INTO audit_entry_lines (audit_entry_id, material_id, system_qty, physical_qty, ledger_id)
-           VALUES ($1,$2,$3,$4,$5)`,
-          [entryId, line.material_id, systemQty, line.physical_qty, ledgerId]
+          `INSERT INTO audit_entry_lines (audit_entry_id, material_id, system_qty, physical_qty, ledger_id, remark)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [entryId, line.material_id, systemQty, line.physical_qty, ledgerId, delta !== 0 ? (line.remark || null) : null]
         );
         summary.push({ material_id: line.material_id, system_qty: systemQty, physical_qty: line.physical_qty, delta });
       }
