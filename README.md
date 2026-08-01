@@ -128,7 +128,7 @@ Used by FC / CC executives to acknowledge incoming stock, view consumption histo
 
 ### Daily Consumption
 1. Admin triggers a run for a facility (or all facilities).
-2. Scraper fetches the previous day's packaged qty from Redash (FC query 53716 / CC query 53767) via streaming CSV.
+2. Scraper fetches the previous day's packaged qty from Redash (FC and CC queries, configured via env vars) via streaming CSV.
 3. Each SKU is looked up in `sku_packaging_master` → primary/secondary/tertiary PM codes.
 4. Deductions computed: `packaged_qty × meters_per_unit` for roll materials; `packaged_qty × 1` for barcode labels and wax ribbon.
 5. All deductions stored as `PENDING` lines in `consumption_run_lines`.
@@ -258,8 +258,8 @@ SLACK_REPORTS_WEBHOOK=https://hooks.slack.com/... # Daily reports to #packtrack-
 
 # Redash (required for consumption scraper)
 REDASH_API_KEY=your_redash_key
-REDASH_FC_QUERY_ID=53716
-REDASH_CC_QUERY_ID=53767
+REDASH_FC_QUERY_ID=your_fc_query_id
+REDASH_CC_QUERY_ID=your_cc_query_id
 ```
 
 ---
