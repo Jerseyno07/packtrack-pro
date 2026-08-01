@@ -292,6 +292,25 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     const rawRows = parseUploadedFile(req.file);
     if (!rawRows.length) throw new ApiError(400, 'EMPTY_FILE', 'File contains no data rows');
 
+    // Duplicate facility check — warn before inserting unless caller explicitly forces
+    if (req.body.force !== 'true') {
+      const rawFacilityCodes = [...new Set(rawRows.map((r) => String(r.facility_code ?? '')).filter(Boolean))];
+      if (rawFacilityCodes.length > 0) {
+        const dupeRes = await pool.query(
+          `SELECT w.code AS facility_code, w.name AS facility_name
+           FROM indent_lines il
+           JOIN warehouses w ON w.id = il.warehouse_id
+           WHERE il.indent_date = $1 AND w.code = ANY($2)
+           GROUP BY w.code, w.name
+           ORDER BY w.name`,
+          [indentDate, rawFacilityCodes]
+        );
+        if (dupeRes.rows.length > 0) {
+          return res.status(409).json({ requires_confirmation: true, duplicate_facilities: dupeRes.rows });
+        }
+      }
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -356,6 +375,25 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
+
+app.get('/api/v1/indents/uploaded-facilities', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
+  const { date } = req.query;
+  if (!date) throw new ApiError(400, 'DATE_REQUIRED', 'date query param (YYYY-MM-DD) is required');
+  const rows = await pool.query(
+    `SELECT w.code AS facility_code, w.name AS facility_name,
+            COUNT(il.id)::int AS line_count,
+            COUNT(DISTINCT ib.id)::int AS batch_count,
+            MIN(ib.batch_ref) AS batch_ref
+     FROM indent_lines il
+     JOIN warehouses w ON w.id = il.warehouse_id
+     JOIN indent_batches ib ON ib.id = il.batch_id
+     WHERE il.indent_date = $1
+     GROUP BY w.code, w.name
+     ORDER BY w.name`,
+    [date]
+  );
+  res.json(rows.rows);
+}));
 
 app.get('/api/v1/indents', authenticate, asyncHandler(async (req, res) => {
   const { warehouse_id, material_id, status, date_from, date_to, page = 1, page_size = 50 } = req.query;
