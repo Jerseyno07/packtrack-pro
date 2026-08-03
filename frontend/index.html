@@ -4,12 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PackTrack Pro</title>
-    <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#2563eb" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="PackTrack" />
+    <meta name="apple-mobile-web-app-title" content="PackTrack" id="pwa-title" />
     <link rel="apple-touch-icon" href="/icon.svg" />
+    <script>
+      (function () {
+        var p = location.pathname;
+        var isOps = p.startsWith('/ops');
+        var isReceipt = p.startsWith('/receipt');
+        var l = document.createElement('link');
+        l.rel = 'manifest';
+        l.href = isOps ? '/manifest-ops.json' : isReceipt ? '/manifest-receipt.json' : '/manifest.json';
+        document.head.appendChild(l);
+        var t = document.getElementById('pwa-title');
+        if (t) t.content = isOps ? 'PM Store Ops' : isReceipt ? 'Stock Receipt' : 'PackTrack Pro';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
