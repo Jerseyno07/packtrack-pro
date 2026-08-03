@@ -395,6 +395,27 @@ app.get('/api/v1/indents/uploaded-facilities', authenticate, requireRole('CC_EXE
   res.json(rows.rows);
 }));
 
+app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const result = await pool.query(`
+    SELECT il.id, il.indent_ref, il.indent_date,
+           il.requested_qty::numeric, il.issued_qty::numeric,
+           (il.requested_qty - il.issued_qty) AS pending_qty,
+           il.warehouse_id, w.name AS warehouse_name, w.code AS warehouse_code,
+           il.material_id, m.code AS material_code, m.name AS material_name, m.unit,
+           COALESCE(pm_cs.on_hand_qty, 0) AS pm_on_hand_qty,
+           COALESCE(fac_cs.on_hand_qty, 0) AS facility_on_hand_qty
+    FROM indent_lines il
+    JOIN warehouses w ON w.id = il.warehouse_id
+    JOIN materials m ON m.id = il.material_id
+    CROSS JOIN (SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1) pm_wh
+    LEFT JOIN v_current_stock pm_cs ON pm_cs.warehouse_id = pm_wh.id AND pm_cs.material_id = il.material_id
+    LEFT JOIN v_current_stock fac_cs ON fac_cs.warehouse_id = il.warehouse_id AND fac_cs.material_id = il.material_id
+    WHERE il.status IN ('PENDING', 'PARTIALLY_ISSUED')
+    ORDER BY w.name, m.name
+  `);
+  res.json(result.rows);
+}));
+
 app.get('/api/v1/indents', authenticate, asyncHandler(async (req, res) => {
   const { warehouse_id, material_id, status, date_from, date_to, page = 1, page_size = 50 } = req.query;
   const conditions = []; const params = [];
@@ -694,11 +715,91 @@ app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADM
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
+app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const batchSchema = z.object({
+    issue_date: z.string().min(1),
+    vehicle_no: z.string().optional(),
+    items: z.array(z.object({
+      indent_line_id: z.coerce.number().int().positive(),
+      issued_qty: z.coerce.number().positive(),
+    })).min(1),
+  });
+  const parsed = batchSchema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid batch issue payload', parsed.error.issues);
+  const { issue_date, vehicle_no, items } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const pmWhRes = await client.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
+    const fromWhId = pmWhRes.rows[0]?.id;
+    if (!fromWhId) throw new ApiError(422, 'NO_PM_STORE', 'No active PM Store warehouse configured');
+
+    const lineIds = items.map((i) => i.indent_line_id);
+    const linesRes = await client.query('SELECT * FROM indent_lines WHERE id = ANY($1) FOR UPDATE', [lineIds]);
+    const lineMap = new Map(linesRes.rows.map((r) => [r.id, r]));
+
+    // Validate all lines and accumulate per-material totals for stock check
+    const materialTotals = new Map();
+    const lineDataList = [];
+    for (const item of items) {
+      const line = lineMap.get(item.indent_line_id);
+      if (!line) throw new ApiError(404, 'INDENT_LINE_NOT_FOUND', `Indent line ${item.indent_line_id} not found`);
+      if (['CANCELLED', 'FORCE_COMPLETED'].includes(line.status)) throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is ${line.status}`);
+      const remaining = Number(line.requested_qty) - Number(line.issued_qty);
+      if (item.issued_qty > remaining) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${item.issued_qty} exceeds remaining qty ${remaining} for ${line.indent_ref}`);
+      materialTotals.set(line.material_id, (materialTotals.get(line.material_id) || 0) + item.issued_qty);
+      lineDataList.push({ item, line, remaining });
+    }
+
+    // Validate stock per material (cumulative across all items)
+    for (const [materialId, totalQty] of materialTotals) {
+      const onHand = await getOnHandQty(client, fromWhId, materialId);
+      if (totalQty > onHand) {
+        const matRes = await client.query('SELECT code FROM materials WHERE id = $1', [materialId]);
+        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${matRes.rows[0]?.code ?? materialId}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
+      }
+    }
+
+    // Pre-fetch average costs per material
+    const avgCosts = new Map();
+    for (const materialId of materialTotals.keys()) {
+      const costRes = await client.query(
+        `SELECT COALESCE(SUM(qty_delta*unit_cost),0) / NULLIF(SUM(CASE WHEN qty_delta>0 THEN qty_delta ELSE 0 END),0) AS avg_cost FROM stock_ledger WHERE warehouse_id=$1 AND material_id=$2`,
+        [fromWhId, materialId]
+      );
+      avgCosts.set(materialId, Number(costRes.rows[0].avg_cost || 0));
+    }
+
+    // Insert stock_issues rows and post ledger entries
+    const issueRefs = [];
+    for (const { item, line, remaining } of lineDataList) {
+      const unitCost = avgCosts.get(line.material_id);
+      const issueRef = genRef('ISS');
+      const issueIns = await client.query(
+        `INSERT INTO stock_issues (issue_ref, indent_line_id, from_warehouse_id, to_warehouse_id, material_id, issued_qty, expected_qty, unit_cost_snapshot, issue_date, dispatched_by_user_id, vehicle_no)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        [issueRef, line.id, fromWhId, line.warehouse_id, line.material_id, item.issued_qty, remaining, unitCost, issue_date, req.user.id, vehicle_no || null]
+      );
+      const issueId = issueIns.rows[0].id;
+      await postLedgerEntry(client, { warehouseId: fromWhId, materialId: line.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
+      await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, indent_line_id: line.id, qty: item.issued_qty } });
+      issueRefs.push(issueRef);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
 app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
-  const { to_warehouse_id, status } = req.query;
+  const { to_warehouse_id, status, date_from, date_to } = req.query;
   const conditions = []; const params = [];
   if (to_warehouse_id) { params.push(to_warehouse_id); conditions.push(`si.to_warehouse_id = $${params.length}`); }
   if (status) { params.push(status); conditions.push(`si.status = $${params.length}`); }
+  if (date_from) { params.push(date_from); conditions.push(`si.issue_date >= $${params.length}`); }
+  if (date_to) { params.push(date_to); conditions.push(`si.issue_date <= $${params.length}`); }
   if (['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP'].includes(req.user.role)) {
     params.push(req.user.warehouse_ids.length ? req.user.warehouse_ids : [-1]);
     conditions.push(`si.to_warehouse_id = ANY($${params.length})`);

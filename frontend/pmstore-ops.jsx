@@ -22,8 +22,8 @@ function makeApi(token) {
   return {
     login: (email, password) => req('POST', '/api/v1/auth/login', { email, password }),
     listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN,PARTIALLY_RECEIVED'),
-    listPendingIndents: () => req('GET', '/api/v1/indents?status=PENDING&page_size=200'),
-    issueDefaults: (indentLineId) => req('GET', `/api/v1/indent-lines/${indentLineId}/issue-defaults`),
+    pendingByFacility: () => req('GET', '/api/v1/indents/pending-by-facility'),
+    batchIssue: (payload) => req('POST', '/api/v1/stock-issues/batch', payload),
     postGRN: (payload) => req('POST', '/api/v1/goods-receipts', payload),
     postIssue: (payload) => req('POST', '/api/v1/stock-issues', payload),
     forcePO: (id, reason) => req('POST', `/api/v1/purchase-orders/${id}/force-complete`, { reason }),
@@ -414,190 +414,282 @@ function GRNScreen({ api }) {
 
 // ── Issue screen ─────────────────────────────────────────────────────────────
 function IssueScreen({ api }) {
-  const [pendingIndents, setPendingIndents] = useState([]);
+  const today = new Date().toISOString().slice(0, 10);
+  const [allLines, setAllLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
-  const [selectedIndent, setSelectedIndent] = useState(null);
-  const [defaults, setDefaults] = useState(null);
-  const [qty, setQty] = useState('');
-  const [issueDate, setIssueDate] = useState(new Date().toISOString().slice(0, 10));
+  const [selectedFacilityId, setSelectedFacilityId] = useState(null);
+  const [lineQtys, setLineQtys] = useState({});
+  const [issueDate, setIssueDate] = useState(today);
   const [vehicleNo, setVehicleNo] = useState('');
-  const [error, setError] = useState('');
+  const [showSummary, setShowSummary] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [success, setSuccess] = useState(null);
-  const [fcSubmitting, setFcSubmitting] = useState(false);
-  const [fcError, setFcError] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const [dispatched, setDispatched] = useState(null);
 
-  const loadIndents = useCallback(async () => {
-    setLoading(true);
-    setFetchError('');
+  const load = useCallback(async () => {
+    setLoading(true); setFetchError('');
     try {
-      const data = await api.listPendingIndents();
-      setPendingIndents(Array.isArray(data) ? data : data.data ?? data.rows ?? []);
+      const data = await api.pendingByFacility();
+      const lines = Array.isArray(data) ? data : data.data ?? [];
+      setAllLines(lines);
+      const qtys = {};
+      for (const l of lines) {
+        qtys[l.id] = String(Math.min(Number(l.pending_qty), Math.max(0, Number(l.pm_on_hand_qty))));
+      }
+      setLineQtys(qtys);
     } catch (e) {
       setFetchError(e.message || 'Failed to load pending indents');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }, [api]);
 
-  useEffect(() => { loadIndents(); }, [loadIndents]);
+  useEffect(() => { load(); }, [load]);
 
-  function pendingOf(ind) {
-    return Number(ind.pending_qty ?? (ind.requested_qty - ind.issued_qty));
+  // Group lines by facility
+  const facilities = [];
+  const facMap = new Map();
+  for (const line of allLines) {
+    if (!facMap.has(line.warehouse_id)) {
+      const fac = { warehouse_id: line.warehouse_id, warehouse_name: line.warehouse_name, warehouse_code: line.warehouse_code, lines: [] };
+      facMap.set(line.warehouse_id, fac);
+      facilities.push(fac);
+    }
+    facMap.get(line.warehouse_id).lines.push(line);
   }
 
-  async function selectIndent(ind) {
-    setSelectedIndent(ind);
-    setDefaults(null);
-    try {
-      const d = await api.issueDefaults(ind.id);
-      setDefaults(d);
-      setQty(String(d.suggested_actual_qty ?? d.expected_qty ?? pendingOf(ind)));
-    } catch {
-      setQty(String(pendingOf(ind)));
-    }
+  const selectedFacility = facMap.get(selectedFacilityId) ?? null;
+
+  function setQty(lineId, val) {
+    setLineQtys((prev) => ({ ...prev, [lineId]: val }));
   }
 
-  async function submit() {
-    setError('');
-    const q = Number(qty);
-    if (!selectedIndent) return;
-    if (!q || q <= 0) { setError('Enter a valid issue quantity.'); return; }
-    const pending = pendingOf(selectedIndent);
-    if (q > pending) { setError(`Exceeds pending indent qty (${pending}).`); return; }
-    if (defaults && q > Number(defaults.on_hand_qty)) {
-      setError(`Insufficient PM Store stock (available ${defaults.on_hand_qty}).`); return;
-    }
-    setSubmitting(true);
+  async function dispatch() {
+    const items = (selectedFacility?.lines ?? [])
+      .map((l) => ({ indent_line_id: l.id, issued_qty: Number(lineQtys[l.id] ?? 0) }))
+      .filter((i) => i.issued_qty > 0);
+    setSubmitting(true); setSubmitError('');
     try {
-      const res = await api.postIssue({
-        indent_line_id: selectedIndent.id,
-        issued_qty: q,
-        issue_date: issueDate,
-        vehicle_no: vehicleNo || undefined,
-        expected_qty: defaults?.expected_qty,
-      });
-      setSuccess(res);
+      const result = await api.batchIssue({ issue_date: issueDate, vehicle_no: vehicleNo || undefined, items });
+      setDispatched({ ...result, facility_name: selectedFacility.warehouse_name });
     } catch (e) {
-      setError(e.message || 'Failed to dispatch stock.');
+      setSubmitError(e.message || 'Dispatch failed.');
     } finally { setSubmitting(false); }
   }
 
-  async function handleForce(reason) {
-    setFcError('');
-    setFcSubmitting(true);
-    try {
-      await api.forceIndent(selectedIndent.id, reason);
-      setSuccess({ issue_ref: 'FORCE_COMPLETED', forced: true });
-    } catch (e) {
-      setFcError(e.message || 'Force complete failed.');
-    } finally { setFcSubmitting(false); }
+  function backToFacilities() {
+    setSelectedFacilityId(null);
+    setShowSummary(false);
+    setSubmitError('');
+    setVehicleNo('');
   }
 
-  if (success) {
+  function reset() {
+    setDispatched(null);
+    setSelectedFacilityId(null);
+    setShowSummary(false);
+    setVehicleNo('');
+    load();
+  }
+
+  // ── Success ──
+  if (dispatched) {
     return (
       <div className="text-center py-16">
-        {success.forced ? <Zap size={40} className="text-amber-500 mx-auto mb-3" /> : <CheckCircle2 size={40} className="text-green-500 mx-auto mb-3" />}
-        <div className="font-bold text-lg text-slate-900">{success.forced ? 'Indent Line Force Completed' : 'Stock Issued'}</div>
-        {!success.forced && <div className="text-sm text-slate-500 mt-1">{success.issue_ref}</div>}
-        <button onClick={() => { setSuccess(null); setSelectedIndent(null); setDefaults(null); setQty(''); setVehicleNo(''); loadIndents(); }}
-          className="mt-5 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
-          {success.forced ? 'Back to Indent List' : 'Issue Another'}
+        <CheckCircle2 size={44} className="text-green-500 mx-auto mb-3" />
+        <div className="font-bold text-lg text-slate-900">Dispatched to {dispatched.facility_name}</div>
+        <div className="text-sm text-slate-500 mt-1">{dispatched.count} item{dispatched.count !== 1 ? 's' : ''} issued</div>
+        <div className="mt-3 space-y-1">
+          {dispatched.issue_refs?.map((ref) => (
+            <div key={ref} className="text-xs font-mono text-slate-400">{ref}</div>
+          ))}
+        </div>
+        <button onClick={reset} className="mt-6 px-6 py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold">
+          Done — Back to Facilities
         </button>
       </div>
     );
   }
 
-  if (!selectedIndent) {
+  // ── Facility list ──
+  if (!selectedFacility) {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <div><h2 className="text-lg font-bold text-slate-900">Issue Against Indent</h2><p className="text-sm text-slate-500">Select a pending indent line to dispatch stock.</p></div>
-          <button onClick={loadIndents} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Issue Against Indent</h2>
+            <p className="text-sm text-slate-500">Select a facility to dispatch stock.</p>
+          </div>
+          <button onClick={load} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
         </div>
         {fetchError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{fetchError}</div>}
-        {loading ? <div className="text-center text-sm text-slate-400 py-8">Loading pending indents…</div> : (
+        {loading && <div className="text-center text-sm text-slate-400 py-8">Loading pending indents…</div>}
+        {!loading && facilities.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No pending indents found.</div>}
+        {!loading && (
           <div data-tour="indent-list" className="space-y-2">
-            {pendingIndents.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No pending indents found.</div>}
-            {pendingIndents.map((ind) => (
-              <button key={ind.id} onClick={() => selectIndent(ind)} className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 transition-colors">
-                <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0"><FileText size={18} /></div>
-                <div className="flex-1">
-                  <div className="font-semibold text-sm text-slate-900">{ind.indent_ref} <span className="text-slate-400">· {ind.warehouse_name}</span></div>
-                  <div className="text-xs text-slate-500">{ind.material_code} — {ind.material_name}</div>
-                </div>
-                <div className="text-right">
-                  <div className="font-bold text-amber-600">{Number(ind.requested_qty) - Number(ind.issued_qty)}</div>
-                  <div className="text-xs text-slate-400">pending of {ind.requested_qty}</div>
-                </div>
-                <ChevronRight size={16} className="text-slate-300" />
-              </button>
-            ))}
+            {facilities.map((fac) => {
+              const hasShortage = fac.lines.some((l) => Number(l.pm_on_hand_qty) < Number(l.pending_qty));
+              return (
+                <button key={fac.warehouse_id} onClick={() => setSelectedFacilityId(fac.warehouse_id)}
+                  className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 active:bg-blue-50 transition-colors">
+                  <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
+                    <Truck size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-sm text-slate-900">{fac.warehouse_name}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{fac.warehouse_code} · {fac.lines.length} item{fac.lines.length !== 1 ? 's' : ''} pending</div>
+                  </div>
+                  {hasShortage && <span className="text-xs text-red-500 font-medium flex-shrink-0">Low stock</span>}
+                  <ChevronRight size={16} className="text-slate-300 flex-shrink-0" />
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
     );
   }
 
-  const pending = pendingOf(selectedIndent);
-  const actualQty = Number(qty) || 0;
-  const expectedQty = defaults ? Number(defaults.expected_qty) : pending;
-  const variance = actualQty - expectedQty;
+  // ── Facility detail ──
+  const lines = selectedFacility.lines;
+  const summaryItems = lines
+    .map((l) => ({ ...l, actualQty: Number(lineQtys[l.id] ?? 0) }))
+    .filter((i) => i.actualQty > 0);
+  const hasAnyQty = summaryItems.length > 0;
+  const hasStockError = lines.some((l) => {
+    const q = Number(lineQtys[l.id] ?? 0);
+    return q > 0 && q > Number(l.pm_on_hand_qty);
+  });
 
   return (
-    <div className="space-y-4">
-      <button onClick={() => setSelectedIndent(null)} className="flex items-center gap-1.5 text-sm text-slate-500 font-medium"><ArrowLeft size={15} /> Back</button>
-      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-        <div className="pb-3 border-b border-slate-100">
-          <div className="font-semibold text-slate-900">{selectedIndent.indent_ref} <Badge tone="amber">{selectedIndent.warehouse_name}</Badge></div>
-          <div className="text-sm text-slate-500 mt-0.5">{selectedIndent.material_code} — {selectedIndent.material_name}</div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 bg-slate-50 rounded-lg p-3 text-sm sm:grid-cols-4">
-          <div><div className="text-xs text-slate-400">Expected (pending)</div><div className="font-bold text-slate-900">{expectedQty}</div></div>
-          <div>
-            <div className="text-xs text-slate-400">On Hand (PM Store)</div>
-            <div className={`font-bold ${defaults && Number(defaults.on_hand_qty) < expectedQty ? 'text-red-600' : 'text-slate-900'}`}>
-              {defaults ? defaults.on_hand_qty : '…'}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-400">On Hand ({selectedIndent.warehouse_name})</div>
-            <div className="font-bold text-slate-900">
-              {defaults ? defaults.facility_on_hand_qty : '…'}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-400">Variance</div>
-            <div className={`font-bold ${variance < 0 ? 'text-red-600' : variance > 0 ? 'text-amber-600' : 'text-green-600'}`}>
-              {variance === 0 ? '0 (exact)' : variance > 0 ? `+${variance}` : `${variance}`}
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">Actual Issue Qty <span className="text-red-500">*</span></label>
-            <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">Issue Date</label>
-            <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-        </div>
-        <div>
-          <label className="text-xs font-medium text-slate-500 mb-1 block">Vehicle No.</label>
-          <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} placeholder="Optional" className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        {error && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}</div>}
-        <button onClick={submit} disabled={submitting} className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60 active:bg-blue-700">
-          <CheckCircle2 size={16} />
-          {submitting ? 'Dispatching...' : 'Confirm Issue'}
+    <div className="space-y-4 pb-32">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2">
+        <button onClick={backToFacilities} className="flex items-center gap-1.5 text-sm text-slate-500 font-medium">
+          <ArrowLeft size={15} /> Facilities
         </button>
+        <span className="text-slate-300">/</span>
+        <span className="text-sm font-semibold text-slate-800 truncate">{selectedFacility.warehouse_name}</span>
       </div>
 
-      <ForceCompletePanel onForce={handleForce} submitting={fcSubmitting} error={fcError} />
+      {/* Issue date (shared for all items) */}
+      <div>
+        <label className="text-xs font-medium text-slate-500 mb-1 block">Issue Date</label>
+        <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)}
+          className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+
+      {/* Item cards */}
+      <div className="space-y-3">
+        {lines.map((l) => {
+          const qty = lineQtys[l.id] ?? '';
+          const qtyNum = Number(qty);
+          const pending = Number(l.pending_qty);
+          const pmStock = Number(l.pm_on_hand_qty);
+          const overStock = qtyNum > 0 && qtyNum > pmStock;
+          const overIndent = qtyNum > 0 && qtyNum > pending;
+          return (
+            <div key={l.id} className={`bg-white rounded-xl border p-4 space-y-3 ${overStock ? 'border-red-200' : 'border-slate-200'}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-semibold text-sm text-slate-900 leading-tight">{l.material_name}</div>
+                  <div className="text-xs text-slate-400 mt-0.5">{l.material_code} · {l.indent_ref}</div>
+                </div>
+                <span className="text-xs bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 font-medium flex-shrink-0">{pending} {l.unit} due</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 bg-slate-50 rounded-lg p-2.5 text-xs">
+                <div>
+                  <div className="text-slate-400 mb-0.5">Indent Qty</div>
+                  <div className="font-bold text-slate-900">{pending} <span className="font-normal text-slate-400">{l.unit}</span></div>
+                </div>
+                <div>
+                  <div className="text-slate-400 mb-0.5">PM Stock</div>
+                  <div className={`font-bold ${pmStock < pending ? 'text-red-600' : 'text-green-700'}`}>{pmStock} <span className="font-normal text-slate-400">{l.unit}</span></div>
+                </div>
+                <div>
+                  <div className="text-slate-400 mb-0.5">At Facility</div>
+                  <div className="font-bold text-slate-900">{Number(l.facility_on_hand_qty)} <span className="font-normal text-slate-400">{l.unit}</span></div>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Dispatch Qty</label>
+                <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(l.id, e.target.value)}
+                  className={`w-full px-3 py-3 border rounded-lg text-base focus:outline-none focus:ring-2 ${overStock ? 'border-red-300 focus:ring-red-400 bg-red-50' : 'border-slate-300 focus:ring-blue-500'}`} />
+                {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} available)</p>}
+                {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">More than indent qty — will partially over-issue</p>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Sticky dispatch bar */}
+      <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
+        <div className="max-w-lg mx-auto">
+          {hasStockError && <p className="text-xs text-red-500 text-center mb-2">Fix stock errors above before dispatching.</p>}
+          <button onClick={() => setShowSummary(true)} disabled={!hasAnyQty || hasStockError}
+            className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:bg-blue-700">
+            <Truck size={18} /> Review & Dispatch ({summaryItems.length} item{summaryItems.length !== 1 ? 's' : ''})
+          </button>
+        </div>
+      </div>
+
+      {/* Summary / confirm modal */}
+      {showSummary && (
+        <div className="fixed inset-0 z-30 bg-black/50 flex items-end">
+          <div className="w-full max-w-lg mx-auto bg-white rounded-t-2xl max-h-[85vh] flex flex-col">
+            <div className="px-5 pt-5 pb-3 border-b border-slate-100 flex-shrink-0">
+              <div className="font-bold text-lg text-slate-900">Dispatch Summary</div>
+              <div className="text-sm text-slate-500 mt-0.5 flex items-center gap-1.5"><Truck size={13} /> {selectedFacility.warehouse_name}</div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+              {summaryItems.map((item) => (
+                <div key={item.id} className="flex items-center justify-between gap-3 py-1">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-slate-900 leading-tight">{item.material_name}</div>
+                    <div className="text-xs text-slate-400 mt-0.5">{item.indent_ref}</div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="font-bold text-slate-900">{item.actualQty} <span className="text-slate-400 font-normal text-xs">{item.unit}</span></div>
+                    <div className="text-xs text-slate-400">of {Number(item.pending_qty)} pending</div>
+                  </div>
+                </div>
+              ))}
+
+              <div className="pt-3 border-t border-slate-100 space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">Vehicle No.</label>
+                  <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} placeholder="Optional"
+                    className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">Issue Date</label>
+                  <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)}
+                    className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+
+              {submitError && (
+                <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                  <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{submitError}
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 pb-6 pt-3 border-t border-slate-100 flex-shrink-0 grid grid-cols-2 gap-3">
+              <button onClick={() => { setShowSummary(false); setSubmitError(''); }} disabled={submitting}
+                className="py-4 bg-slate-100 text-slate-700 rounded-xl font-semibold text-sm">
+                Cancel
+              </button>
+              <button onClick={dispatch} disabled={submitting}
+                className="py-4 bg-blue-600 text-white rounded-xl font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60">
+                {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                {submitting ? 'Dispatching…' : 'Confirm Dispatch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

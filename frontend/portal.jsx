@@ -566,6 +566,39 @@ function AdminPanel({ token, tabOverride }) {
   const [chLoading, setChLoading] = useState(false);
   const [chWarehouses, setChWarehouses] = useState([]);
 
+  const thirtyDaysAgo = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+  const [issueRows, setIssueRows] = useState([]);
+  const [issueLoading, setIssueLoading] = useState(false);
+  const [issueFrom, setIssueFrom] = useState(thirtyDaysAgo);
+  const [issueTo, setIssueTo] = useState(today);
+  const [issueFacility, setIssueFacility] = useState('');
+  const [issueWarehouses, setIssueWarehouses] = useState([]);
+
+  const fetchIssues = useCallback(async () => {
+    setIssueLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (issueFrom) params.set('date_from', issueFrom);
+      if (issueTo) params.set('date_to', issueTo);
+      if (issueFacility) params.set('to_warehouse_id', issueFacility);
+      const res = await fetch(`${BASE_URL}/api/v1/stock-issues?${params}`, { headers: hdrs });
+      const data = await res.json();
+      setIssueRows(data.data ?? []);
+    } catch (_) {}
+    finally { setIssueLoading(false); }
+  }, [issueFrom, issueTo, issueFacility, token]);
+
+  useEffect(() => {
+    if (tab !== 'issues') return;
+    fetchIssues();
+    if (issueWarehouses.length === 0) {
+      fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs })
+        .then((r) => r.json())
+        .then((d) => setIssueWarehouses((d.data ?? d).filter((w) => w.type !== 'PM_STORE').sort((a, b) => a.name.localeCompare(b.name))))
+        .catch(() => {});
+    }
+  }, [tab]);
+
   const [mslWarehouses, setMslWarehouses] = useState([]);
   const [mslMaterials, setMslMaterials] = useState([]);
   const [mslLevels, setMslLevels] = useState({});
@@ -988,39 +1021,84 @@ function AdminPanel({ token, tabOverride }) {
       )}
 
       {tab === 'issues' && (
-        <div data-tour="issues-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-          <table className="w-full text-sm min-w-[700px]">
-            <thead className="bg-slate-50 text-slate-500 text-xs">
-              <tr>
-                <th className="text-left px-4 py-2.5">Issue Ref</th>
-                <th className="text-left px-4 py-2.5">SKU</th>
-                <th className="text-left px-4 py-2.5">From → To</th>
-                <th className="text-right px-4 py-2.5">Issued Qty</th>
-                <th className="text-left px-4 py-2.5">Date</th>
-                <th className="text-left px-4 py-2.5">Status</th>
-                <th className="px-4 py-2.5"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {issues.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No stock issues</td></tr>}
-              {issues.map((si) => (
-                <tr key={si.id} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="px-4 py-3 font-medium text-slate-800">{si.issue_ref}</td>
-                  <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
-                  <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
-                  <td className="px-4 py-3 text-right font-bold text-slate-800">{si.issued_qty}</td>
-                  <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
-                  <td className="px-4 py-3"><Badge tone={si.status === 'DISPATCHED' ? 'blue' : si.status === 'RECEIVED' ? 'green' : si.status === 'CANCELLED' ? 'red' : 'amber'}>{si.status.replace(/_/g, ' ')}</Badge></td>
-                  <td className="px-4 py-3 text-right">
-                    {!TERMINAL_ISSUE.includes(si.status) && (
-                      <button onClick={() => openCancel('stock-issues', si.id, si.issue_ref)}
-                        className="text-xs px-2 py-1 rounded-md bg-red-50 text-red-600 hover:bg-red-100 font-medium">Cancel</button>
-                    )}
-                  </td>
+        <div className="space-y-3">
+          {/* Filters */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">From</label>
+              <input type="date" value={issueFrom} onChange={(e) => setIssueFrom(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">To</label>
+              <input type="date" value={issueTo} onChange={(e) => setIssueTo(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Facility</label>
+              <select value={issueFacility} onChange={(e) => setIssueFacility(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                <option value="">All Facilities</option>
+                {issueWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name} ({w.code})</option>
+                ))}
+              </select>
+            </div>
+            <button onClick={fetchIssues} disabled={issueLoading}
+              className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-60">
+              <RefreshCw size={14} className={issueLoading ? 'animate-spin' : ''} /> Apply
+            </button>
+            <button
+              onClick={() => downloadCSV(
+                `stock-issues-${issueFrom}-to-${issueTo}.csv`,
+                [
+                  ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Issued Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
+                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.issued_qty, si.unit, si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
+                ]
+              )}
+              disabled={issueRows.length === 0}
+              className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 disabled:opacity-40">
+              <Download size={14} /> Export CSV
+            </button>
+          </div>
+
+          {/* Table */}
+          <div data-tour="issues-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm min-w-[760px]">
+              <thead className="bg-slate-50 text-slate-500 text-xs">
+                <tr>
+                  <th className="text-left px-4 py-2.5">Issue Ref</th>
+                  <th className="text-left px-4 py-2.5">SKU</th>
+                  <th className="text-left px-4 py-2.5">From → To</th>
+                  <th className="text-right px-4 py-2.5">Issued Qty</th>
+                  <th className="text-left px-4 py-2.5">Date</th>
+                  <th className="text-left px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5"></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {issueLoading && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</td></tr>}
+                {!issueLoading && issueRows.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No stock issues found for the selected filters.</td></tr>}
+                {!issueLoading && issueRows.map((si) => (
+                  <tr key={si.id} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-3 font-medium text-slate-800">{si.issue_ref}</td>
+                    <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
+                    <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
+                    <td className="px-4 py-3 text-right font-bold text-slate-800">{si.issued_qty}</td>
+                    <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
+                    <td className="px-4 py-3"><Badge tone={si.status === 'DISPATCHED' ? 'blue' : si.status === 'RECEIVED' ? 'green' : si.status === 'CANCELLED' ? 'red' : 'amber'}>{si.status.replace(/_/g, ' ')}</Badge></td>
+                    <td className="px-4 py-3 text-right">
+                      {!TERMINAL_ISSUE.includes(si.status) && (
+                        <button onClick={() => openCancel('stock-issues', si.id, si.issue_ref)}
+                          className="text-xs px-2 py-1 rounded-md bg-red-50 text-red-600 hover:bg-red-100 font-medium">Cancel</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-slate-400 text-right">{issueRows.length} record{issueRows.length !== 1 ? 's' : ''}</p>
         </div>
       )}
 
