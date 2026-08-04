@@ -69,6 +69,7 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const { canInstall, install } = useInstallPrompt();
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -129,6 +130,12 @@ function LoginScreen({ onLogin }) {
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+        {canInstall && (
+          <button onClick={install}
+            className="mt-4 w-full py-3 border border-slate-200 bg-white text-slate-600 rounded-xl font-medium flex items-center justify-center gap-2 active:bg-slate-50">
+            <MonitorSmartphone size={16} /> Add to Home Screen
+          </button>
+        )}
       </div>
     </div>
   );
@@ -513,7 +520,6 @@ function StockView({ token, warehouseId }) {
 export default function ReceiptApp() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
-  const { canInstall, install } = useInstallPrompt();
   const [tab, setTab] = useState('receive');
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -581,11 +587,6 @@ export default function ReceiptApp() {
             <div className="text-xs text-slate-500">{user?.name || user?.email}</div>
           </div>
           <div className="flex items-center gap-1">
-            {canInstall && (
-              <button onClick={install} className="flex items-center gap-1 text-xs font-medium text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-lg active:bg-blue-100">
-                <MonitorSmartphone size={13} /> Install
-              </button>
-            )}
             <button data-tour="receipt-refresh" onClick={refresh} className="p-2 text-slate-400 active:text-slate-600">
               <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
             </button>
