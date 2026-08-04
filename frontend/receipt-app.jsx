@@ -1,5 +1,23 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Truck, Package, CheckCircle2, AlertTriangle, Clock, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap } from 'lucide-react';
+import { Truck, Package, CheckCircle2, AlertTriangle, Clock, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, MonitorSmartphone } from 'lucide-react';
+
+function useInstallPrompt() {
+  const [prompt, setPrompt] = useState(window.__pwaPrompt || null);
+  useEffect(() => {
+    const onReady = () => setPrompt(window.__pwaPrompt);
+    const onInstalled = () => setPrompt(null);
+    window.addEventListener('pwaready', onReady);
+    window.addEventListener('pwainstalled', onInstalled);
+    return () => { window.removeEventListener('pwaready', onReady); window.removeEventListener('pwainstalled', onInstalled); };
+  }, []);
+  const install = async () => {
+    if (!prompt) return;
+    prompt.prompt();
+    const { outcome } = await prompt.userChoice;
+    if (outcome === 'accepted') setPrompt(null);
+  };
+  return { canInstall: !!prompt, install };
+}
 import AuditScreen from './AuditScreen.jsx';
 import TourOverlay from './TourOverlay.jsx';
 
@@ -495,6 +513,7 @@ function StockView({ token, warehouseId }) {
 export default function ReceiptApp() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
+  const { canInstall, install } = useInstallPrompt();
   const [tab, setTab] = useState('receive');
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -561,7 +580,12 @@ export default function ReceiptApp() {
             <div className="font-bold text-slate-900">Receive Stock</div>
             <div className="text-xs text-slate-500">{user?.name || user?.email}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            {canInstall && (
+              <button onClick={install} className="flex items-center gap-1 text-xs font-medium text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-lg active:bg-blue-100">
+                <MonitorSmartphone size={13} /> Install
+              </button>
+            )}
             <button data-tour="receipt-refresh" onClick={refresh} className="p-2 text-slate-400 active:text-slate-600">
               <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
             </button>
