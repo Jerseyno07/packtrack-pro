@@ -172,22 +172,23 @@ async function sendFCDispatchVsCCGRN() {
       fw.name AS fc_name, fw.code AS fc_code,
       tw.name AS cc_name, tw.code AS cc_code,
       m.code  AS material_code, m.unit, m.meters_per_unit, m.stickers_per_roll,
-      si.issue_ref,
       si.issued_qty,
       COALESCE(SUM(sr.received_qty), 0)  AS received_qty,
       COALESCE(SUM(sr.shortage_qty), 0)  AS shortage_qty,
       COALESCE(SUM(sr.damage_qty),   0)  AS damage_qty,
       si.issued_qty
-        - COALESCE(SUM(sr.received_qty + sr.shortage_qty + sr.damage_qty), 0) AS pending_qty
+        - COALESCE(SUM(sr.received_qty + sr.shortage_qty + sr.damage_qty), 0) AS pending_qty,
+      COALESCE(cs.on_hand_qty, 0) AS current_stock
     FROM stock_issues si
     JOIN warehouses fw  ON fw.id = si.from_warehouse_id
     JOIN warehouses tw  ON tw.id = si.to_warehouse_id
     JOIN materials  m   ON m.id  = si.material_id
     LEFT JOIN stock_receipts sr ON sr.stock_issue_id = si.id
+    LEFT JOIN v_current_stock cs ON cs.warehouse_id = si.to_warehouse_id AND cs.material_id = si.material_id
     WHERE si.issue_date = $1
     GROUP BY fw.name, fw.code, tw.name, tw.code,
              m.code, m.unit, m.meters_per_unit, m.stickers_per_roll,
-             si.issue_ref, si.issued_qty
+             si.issued_qty, cs.on_hand_qty
     ORDER BY tw.name, m.code
   `, [today]);
 
@@ -206,11 +207,12 @@ async function sendFCDispatchVsCCGRN() {
   let text = `📦 *FC Dispatch → CC GRN Report*  |  ${dateLabel}\n\n`;
   for (const { cc_name, cc_code, fc_name, fc_code, lines } of byCc.values()) {
     text += `*${cc_name} (${cc_code})* ← ${fc_name} (${fc_code})\n\`\`\``;
-    text += `${'MATERIAL'.padEnd(14)}${'DISPATCHED'.padEnd(14)}${'RECEIVED'.padEnd(14)}${'SHORTAGE'.padEnd(12)}PENDING\n`;
+    text += `${'MATERIAL'.padEnd(14)}${'DISPATCHED'.padEnd(14)}${'RECEIVED'.padEnd(14)}${'SHORTAGE'.padEnd(12)}${'PENDING'.padEnd(12)}CURR STOCK\n`;
     for (const r of lines) {
       const u = displayUnit(r);
       const cell = (n) => `${fmt(n)} ${u}`.padEnd(14);
-      text += `${r.material_code.padEnd(14)}${cell(r.issued_qty)}${cell(r.received_qty)}${`${fmt(r.shortage_qty)} ${u}`.padEnd(12)}${fmt(r.pending_qty)} ${u}\n`;
+      const cell12 = (n) => `${fmt(n)} ${u}`.padEnd(12);
+      text += `${r.material_code.padEnd(14)}${cell(r.issued_qty)}${cell(r.received_qty)}${cell12(r.shortage_qty)}${cell12(r.pending_qty)}${fmt(r.current_stock)} ${u}\n`;
     }
     text += '```\n';
   }
