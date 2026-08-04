@@ -6,7 +6,7 @@
 // Cron schedule (Asia/Kolkata / IST):
 //   00:00  — auto-trigger consumption run for all facilities and auto-accept
 //   00:15  — Daily Consumption Details report
-//   17:00  — FC Dispatch vs CC GRN report
+//   21:00  — FC Dispatch vs CC GRN report
 //   CC Balance vs Audit — sendCCBalanceVsAudit() is ready; cron TBD
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
@@ -338,9 +338,9 @@ cron.schedule('15 0 * * *', () => {
   sendDailyConsumption().catch((e) => console.error('[slackReports] Daily consumption report failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
-// 17:00 IST — FC Dispatch vs CC GRN
-cron.schedule('0 17 * * *', () => {
-  console.log('[slackReports] 17:00 IST — sending FC dispatch vs CC GRN report');
+// 21:00 IST — FC Dispatch vs CC GRN
+cron.schedule('0 21 * * *', () => {
+  console.log('[slackReports] 21:00 IST — sending FC dispatch vs CC GRN report');
   sendFCDispatchVsCCGRN().catch((e) => console.error('[slackReports] FC vs CC report failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
