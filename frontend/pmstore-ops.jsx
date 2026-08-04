@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone } from 'lucide-react';
 
 function useInstallPrompt() {
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const [prompt, setPrompt] = useState(window.__pwaPrompt || null);
+  const [showInstructions, setShowInstructions] = useState(false);
   useEffect(() => {
     const onReady = () => setPrompt(window.__pwaPrompt);
     const onInstalled = () => setPrompt(null);
@@ -11,12 +13,15 @@ function useInstallPrompt() {
     return () => { window.removeEventListener('pwaready', onReady); window.removeEventListener('pwainstalled', onInstalled); };
   }, []);
   const install = async () => {
-    if (!prompt) return;
-    prompt.prompt();
-    const { outcome } = await prompt.userChoice;
-    if (outcome === 'accepted') setPrompt(null);
+    if (prompt) {
+      prompt.prompt();
+      const { outcome } = await prompt.userChoice;
+      if (outcome === 'accepted') setPrompt(null);
+    } else {
+      setShowInstructions(true);
+    }
   };
-  return { canInstall: !!prompt, install };
+  return { canInstall: !isStandalone, install, showInstructions, setShowInstructions };
 }
 import AuditScreen from './AuditScreen.jsx';
 import TourOverlay from './TourOverlay.jsx';
@@ -71,7 +76,7 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const { canInstall, install } = useInstallPrompt();
+  const { canInstall, install, showInstructions, setShowInstructions } = useInstallPrompt();
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -124,6 +129,16 @@ function LoginScreen({ onLogin }) {
             className="mt-4 w-full py-3 border border-slate-200 bg-white text-slate-600 rounded-xl font-medium flex items-center justify-center gap-2 active:bg-slate-50">
             <MonitorSmartphone size={16} /> Add to Home Screen
           </button>
+        )}
+        {showInstructions && (
+          <div className="mt-4 bg-white rounded-2xl border border-slate-200 p-4 text-sm text-slate-700 space-y-2">
+            <div className="font-semibold text-slate-900 flex items-center justify-between">
+              Add to Home Screen
+              <button onClick={() => setShowInstructions(false)} className="text-slate-400 text-lg leading-none">×</button>
+            </div>
+            <p><span className="font-medium">Android:</span> Tap the three-dot menu (⋮) in Chrome → <em>Add to Home Screen</em></p>
+            <p><span className="font-medium">iPhone:</span> Tap the Share button (⎙) in Safari → <em>Add to Home Screen</em></p>
+          </div>
         )}
       </div>
     </div>
