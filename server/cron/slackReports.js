@@ -4,10 +4,13 @@
 //   DATABASE_URL           — Neon connection string (shared with index.js)
 //
 // Cron schedule (Asia/Kolkata / IST):
-//   00:00  — auto-trigger consumption run for all facilities and auto-accept
-//   00:15  — Daily Consumption Details report
+//   00:00  — auto-trigger consumption run (Bangalore facilities only) and auto-accept
+//   01:00  — Daily Consumption Details report
 //   21:00  — FC Dispatch vs CC GRN report
 //   CC Balance vs Audit — sendCCBalanceVsAudit() is ready; cron TBD
+
+// Bangalore FC (9382) + all Bangalore CCs — only these run in the nightly cron.
+const BLR_FACILITIES = ['9382', '3202', '3404', '3949', '9948', '10013', '10023', '10070', '10147', '10152'];
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
@@ -113,17 +116,20 @@ async function acceptRun(runId) {
 // ── Nightly consumption run (00:00 IST) ───────────────────────────────────────
 // Creates and auto-accepts a run for all facilities for the previous day.
 
-async function runAndAcceptConsumption() {
+async function runAndAcceptConsumption(facilityCodes = null) {
   const today = new Date();
   const runDate = today.toISOString().slice(0, 10);
   const yest = new Date(today);
   yest.setDate(yest.getDate() - 1);
   const scrapedDate = yest.toISOString().slice(0, 10);
+  const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
 
-  // If a non-failed run already exists for today, accept it if pending or skip.
+  // If a non-failed run already exists for today (matching same facility scope), accept or skip.
   const existing = await pool.query(
-    `SELECT id, status FROM consumption_runs WHERE run_date = $1 AND facility_filter IS NULL AND status NOT IN ('FAILED','CANCELLED')`,
-    [runDate]
+    `SELECT id, status FROM consumption_runs WHERE run_date = $1
+     AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)
+     AND status NOT IN ('FAILED','CANCELLED')`,
+    [runDate, facilityFilter]
   );
   if (existing.rows.length > 0) {
     const ex = existing.rows[0];
@@ -139,22 +145,24 @@ async function runAndAcceptConsumption() {
   // Clean up stale FAILED/CANCELLED rows so the INSERT doesn't hit a unique conflict.
   await pool.query(
     `DELETE FROM consumption_run_lines WHERE run_id IN (
-       SELECT id FROM consumption_runs WHERE run_date = $1 AND status IN ('FAILED','CANCELLED') AND facility_filter IS NULL
-     )`, [runDate]
+       SELECT id FROM consumption_runs WHERE run_date = $1 AND status IN ('FAILED','CANCELLED')
+       AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)
+     )`, [runDate, facilityFilter]
   );
   await pool.query(
-    `DELETE FROM consumption_runs WHERE run_date = $1 AND status IN ('FAILED','CANCELLED') AND facility_filter IS NULL`,
-    [runDate]
+    `DELETE FROM consumption_runs WHERE run_date = $1 AND status IN ('FAILED','CANCELLED')
+     AND (($2::text IS NULL AND facility_filter IS NULL) OR facility_filter = $2)`,
+    [runDate, facilityFilter]
   );
 
   const { rows: [{ id: runId }] } = await pool.query(
     `INSERT INTO consumption_runs (run_date, scraped_from, scraped_to, status, facility_filter, progress_pct, progress_msg)
-     VALUES ($1,$2,$2,'RUNNING',NULL,0,'Starting up…') RETURNING id`,
-    [runDate, scrapedDate]
+     VALUES ($1,$2,$2,'RUNNING',$3,0,'Starting up…') RETURNING id`,
+    [runDate, scrapedDate, facilityFilter]
   );
 
-  console.log(`[slackReports] Nightly consumption run ${runId} started for ${scrapedDate}`);
-  await runConsumption({ runId });
+  console.log(`[slackReports] Nightly consumption run ${runId} started for ${scrapedDate} (facilities: ${facilityFilter ?? 'all'})`);
+  await runConsumption({ runId, facilityCodes });
   const committed = await acceptRun(runId);
   console.log(`[slackReports] Run ${runId} accepted — ${committed} lines committed`);
   return runId;
@@ -326,15 +334,15 @@ async function sendCCBalanceVsAudit() {
 
 // ── Cron jobs (timezone: Asia/Kolkata / IST) ──────────────────────────────────
 
-// 00:00 IST — auto-run and auto-accept consumption for all facilities
+// 00:00 IST — auto-run and auto-accept consumption (Bangalore facilities only)
 cron.schedule('0 0 * * *', () => {
-  console.log('[slackReports] 00:00 IST — starting nightly consumption run');
-  runAndAcceptConsumption().catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
+  console.log('[slackReports] 00:00 IST — starting nightly consumption run (Bangalore only)');
+  runAndAcceptConsumption(BLR_FACILITIES).catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
-// 00:15 IST — Daily Consumption Details (give run 15 min to complete)
-cron.schedule('15 0 * * *', () => {
-  console.log('[slackReports] 00:15 IST — sending daily consumption report');
+// 01:00 IST — Daily Consumption Details (give run a full hour to complete)
+cron.schedule('0 1 * * *', () => {
+  console.log('[slackReports] 01:00 IST — sending daily consumption report');
   sendDailyConsumption().catch((e) => console.error('[slackReports] Daily consumption report failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
