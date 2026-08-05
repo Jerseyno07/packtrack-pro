@@ -1,6 +1,8 @@
 // Slack daily reports — three scheduled reports posted to #packtrack-alerts.
 // Env vars required:
-//   SLACK_REPORTS_WEBHOOK  — Incoming Webhook URL for #packtrack-alerts
+//   SLACK_REPORTS_WEBHOOK  — Incoming Webhook URL for #packtrack-alerts (text messages)
+//   SLACK_BOT_TOKEN        — xoxb-... Bot Token (for CSV file uploads)
+//   SLACK_CHANNEL_ID       — Channel ID for #packtrack-alerts (e.g. C08XXXXXXXX)
 //   DATABASE_URL           — Neon connection string (shared with index.js)
 //
 // Cron schedule (Asia/Kolkata / IST):
@@ -52,6 +54,44 @@ async function postSlack(text) {
       body: JSON.stringify({ text: chunk }),
     }).catch((e) => console.error('[slackReports] Slack POST failed:', e.message));
   }
+}
+
+// Upload a CSV string as a file attachment to the Slack channel.
+// Requires SLACK_BOT_TOKEN + SLACK_CHANNEL_ID; silently skips if either is missing.
+async function uploadCsvToSlack(csvString, filename, title) {
+  const token = process.env.SLACK_BOT_TOKEN;
+  const channelId = process.env.SLACK_CHANNEL_ID;
+  if (!token || !channelId) {
+    console.warn('[slackReports] SLACK_BOT_TOKEN or SLACK_CHANNEL_ID not set — skipping CSV upload');
+    return;
+  }
+
+  const byteLength = Buffer.byteLength(csvString, 'utf8');
+
+  // Step 1: request an upload URL from Slack
+  const urlRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename, length: byteLength }),
+  });
+  const urlData = await urlRes.json();
+  if (!urlData.ok) throw new Error(`Slack getUploadURL failed: ${urlData.error}`);
+
+  // Step 2: PUT the file content to the pre-signed upload URL
+  await fetch(urlData.upload_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/csv' },
+    body: csvString,
+  });
+
+  // Step 3: complete the upload and share to channel
+  const completeRes = await fetch('https://slack.com/api/files.completeUploadExternal', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: [{ id: urlData.file_id, title }], channel_id: channelId }),
+  });
+  const completeData = await completeRes.json();
+  if (!completeData.ok) throw new Error(`Slack completeUpload failed: ${completeData.error}`);
 }
 
 function istDateLabel(d = new Date()) {
@@ -213,6 +253,8 @@ async function sendFCDispatchVsCCGRN() {
   }
 
   let text = `📦 *FC Dispatch → CC GRN Report*  |  ${dateLabel}\n\n`;
+  let csv = 'FC,CC,Material,Unit,Dispatched,Received,Shortage,Pending,Current Stock\n';
+
   for (const { cc_name, cc_code, fc_name, fc_code, lines } of byCc.values()) {
     text += `*${cc_name} (${cc_code})* ← ${fc_name} (${fc_code})\n\`\`\``;
     text += `${'MATERIAL'.padEnd(14)}${'DISPATCHED'.padEnd(14)}${'RECEIVED'.padEnd(14)}${'SHORTAGE'.padEnd(12)}${'PENDING'.padEnd(12)}CURR STOCK\n`;
@@ -221,11 +263,14 @@ async function sendFCDispatchVsCCGRN() {
       const cell = (n) => `${fmt(n)} ${u}`.padEnd(14);
       const cell12 = (n) => `${fmt(n)} ${u}`.padEnd(12);
       text += `${r.material_code.padEnd(14)}${cell(r.issued_qty)}${cell(r.received_qty)}${cell12(r.shortage_qty)}${cell12(r.pending_qty)}${fmt(r.current_stock)} ${u}\n`;
+      csv += `"${fc_name} (${fc_code})","${cc_name} (${cc_code})","${r.material_code}","${u}",${r.issued_qty},${r.received_qty},${r.shortage_qty},${r.pending_qty},${r.current_stock}\n`;
     }
     text += '```\n';
   }
 
-  return postSlack(text);
+  await postSlack(text);
+  const dateSlug = today.replace(/-/g, '');
+  await uploadCsvToSlack(csv, `fc-dispatch-cc-grn-${dateSlug}.csv`, `FC Dispatch → CC GRN — ${dateLabel}`);
 }
 
 // ── Report 2: Daily Consumption Details (00:15 IST) ──────────────────────────
@@ -264,16 +309,22 @@ async function sendDailyConsumption() {
   }
 
   let text = `🏭 *Daily Consumption Report*  |  ${dateLabel}\n\n`;
+  let csv = 'Facility,Material Code,Unit,Qty Consumed\n';
+
   for (const { name, code, lines } of byWh.values()) {
     text += `*${name} (${code})*\n\`\`\``;
     text += `${'MATERIAL'.padEnd(16)}CONSUMED\n`;
     for (const r of lines) {
-      text += `${r.material_code.padEnd(16)}${fmt(r.qty_consumed)} ${displayUnit(r)}\n`;
+      const u = displayUnit(r);
+      text += `${r.material_code.padEnd(16)}${fmt(r.qty_consumed)} ${u}\n`;
+      csv += `"${name} (${code})","${r.material_code}","${u}",${r.qty_consumed}\n`;
     }
     text += '```\n';
   }
 
-  return postSlack(text);
+  await postSlack(text);
+  const dateSlug = yesterdayIst.replace(/-/g, '');
+  await uploadCsvToSlack(csv, `consumption-${dateSlug}.csv`, `Daily Consumption — ${dateLabel}`);
 }
 
 // ── Report 3: CC Balance vs Audit (schema ready — cron TBD) ──────────────────
