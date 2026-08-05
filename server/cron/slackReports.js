@@ -12,7 +12,7 @@
 //   CC Balance vs Audit — sendCCBalanceVsAudit() is ready; cron TBD
 
 // Bangalore FC (9382) + all Bangalore CCs — only these run in the nightly cron.
-const BLR_FACILITIES = ['9382', '3202', '3404', '3949', '9948', '10013', '10023', '10070', '10147', '10152'];
+const BLR_FACILITIES = ['9382', '3202', '3404', '3949', '9924', '9948', '10013', '10023', '10070', '10147', '10152'];
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
