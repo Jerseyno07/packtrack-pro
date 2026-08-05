@@ -68,11 +68,11 @@ async function uploadCsvToSlack(csvString, filename, title) {
 
   const byteLength = Buffer.byteLength(csvString, 'utf8');
 
-  // Step 1: request an upload URL from Slack
+  // Step 1: request an upload URL from Slack (requires form-encoded body)
   const urlRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename, length: byteLength }),
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ filename, length: byteLength }).toString(),
   });
   const urlData = await urlRes.json();
   if (!urlData.ok) throw new Error(`Slack getUploadURL failed: ${urlData.error}`);
