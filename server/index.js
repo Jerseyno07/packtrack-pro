@@ -1395,6 +1395,7 @@ app.get('/api/v1/audits/prefill', authenticate, asyncHandler(async (req, res) =>
   }
   const r = await pool.query(
     `SELECT m.id AS material_id, m.code AS material_code, m.name AS material_name, m.unit,
+            m.stickers_per_roll, m.meters_per_unit,
             COALESCE(cs.on_hand_qty, 0) AS system_qty
      FROM materials m
      LEFT JOIN v_current_stock cs ON cs.material_id = m.id AND cs.warehouse_id = $1

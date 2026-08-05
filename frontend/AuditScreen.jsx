@@ -3,10 +3,29 @@ import { ClipboardList, CheckCircle2, AlertTriangle, RefreshCw, X } from 'lucide
 
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
+// ── Unit helpers ──────────────────────────────────────────────────────────────
+// Roll materials: user sees/enters in rolls; DB stores in stickers.
+function dispUnit(m) {
+  return m.stickers_per_roll ? 'rolls' : m.meters_per_unit ? 'm' : m.unit;
+}
+function toDisp(m, baseQty) {
+  const n = Number(baseQty);
+  if (m.stickers_per_roll) return Math.round((n / m.stickers_per_roll) * 1000) / 1000;
+  return n;
+}
+function toBase(m, dispQty) {
+  const n = Number(dispQty) || 0;
+  if (m.stickers_per_roll) return Math.round(n * m.stickers_per_roll);
+  return n;
+}
+function fmtQty(n) {
+  return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2);
+}
+
 const MOCK_PREFILL = [
-  { material_id: 1, material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', unit: 'Pcs', system_qty: '1211.000' },
-  { material_id: 2, material_code: 'NTRLL-01', material_name: 'Net Roll', unit: 'Roll', system_qty: '950.000' },
-  { material_id: 3, material_code: 'WXRB-01', material_name: 'Wax Ribbon', unit: 'Roll', system_qty: '0.000' },
+  { material_id: 1, material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', unit: 'Pcs', stickers_per_roll: null, meters_per_unit: null, system_qty: '1211' },
+  { material_id: 2, material_code: 'NTRLL-01', material_name: 'Net Roll', unit: 'Roll', stickers_per_roll: 500, meters_per_unit: null, system_qty: '5000' },
+  { material_id: 3, material_code: 'WXRB-01', material_name: 'Wax Ribbon', unit: 'Roll', stickers_per_roll: 1000, meters_per_unit: null, system_qty: '0' },
 ];
 
 export default function AuditScreen({ token, warehouseId }) {
@@ -27,7 +46,7 @@ export default function AuditScreen({ token, warehouseId }) {
       if (!token || !warehouseId) {
         setMaterials(MOCK_PREFILL);
         const init = {};
-        MOCK_PREFILL.forEach((m) => { init[m.material_id] = String(Number(m.system_qty)); });
+        MOCK_PREFILL.forEach((m) => { init[m.material_id] = String(toDisp(m, Number(m.system_qty))); });
         setCounts(init);
         return;
       }
@@ -39,7 +58,8 @@ export default function AuditScreen({ token, warehouseId }) {
       const rows = data.data ?? [];
       setMaterials(rows);
       const init = {};
-      rows.forEach((m) => { init[m.material_id] = String(Number(m.system_qty)); });
+      // Initialise inputs in display units (rolls for roll materials)
+      rows.forEach((m) => { init[m.material_id] = String(toDisp(m, Number(m.system_qty))); });
       setCounts(init);
     } catch (e) {
       setError(e.message || 'Failed to load system quantities');
@@ -50,16 +70,16 @@ export default function AuditScreen({ token, warehouseId }) {
 
   useEffect(() => { loadPrefill(); }, [token, warehouseId]);
 
-  // Build the diff list for validation and confirmation modal
+  // Diffs are computed in display units (rolls for roll materials)
   function getDiffs() {
     return materials
       .map((m) => ({
         ...m,
-        sysQty: Number(m.system_qty),
+        sysQty: toDisp(m, Number(m.system_qty)),
         physQty: Number(counts[m.material_id]) || 0,
         remark: (lineRemarks[m.material_id] || '').trim(),
       }))
-      .filter((m) => m.physQty !== m.sysQty);
+      .filter((d) => d.physQty !== d.sysQty);
   }
 
   function handleSubmitClick() {
@@ -79,16 +99,17 @@ export default function AuditScreen({ token, warehouseId }) {
     setSubmitting(true);
     setError('');
     try {
+      // Convert display units → base units (stickers) before sending to server
       const lines = materials.map((m) => ({
         material_id: m.material_id,
-        physical_qty: Number(counts[m.material_id]) || 0,
+        physical_qty: toBase(m, Number(counts[m.material_id]) || 0),
         remark: (lineRemarks[m.material_id] || '').trim() || undefined,
       }));
 
       if (!token || !warehouseId) {
         const summary = lines.map((l) => {
           const mat = materials.find((m) => m.material_id === l.material_id);
-          return { ...l, system_qty: Number(mat.system_qty), delta: l.physical_qty - Number(mat.system_qty), material_code: mat.material_code, material_name: mat.material_name };
+          return { ...l, system_qty: Number(mat.system_qty), delta: l.physical_qty - Number(mat.system_qty), ...mat };
         });
         setSuccess({ audit_ref: 'AUD-MOCK-001', lines: summary });
         return;
@@ -102,9 +123,10 @@ export default function AuditScreen({ token, warehouseId }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
 
+      // Enrich server response with material metadata for display-unit conversion in success screen
       const enriched = (data.lines ?? []).map((l) => {
         const mat = materials.find((m) => String(m.material_id) === String(l.material_id));
-        return { ...l, material_code: mat?.material_code, material_name: mat?.material_name };
+        return { ...l, material_code: mat?.material_code, material_name: mat?.material_name, stickers_per_roll: mat?.stickers_per_roll, meters_per_unit: mat?.meters_per_unit };
       });
       setSuccess({ audit_ref: data.audit_ref, lines: enriched });
     } catch (e) {
@@ -124,7 +146,6 @@ export default function AuditScreen({ token, warehouseId }) {
   // ── Success screen ──────────────────────────────────────────────────────────
   if (success) {
     const adjusted = success.lines.filter((l) => l.delta !== 0);
-    const netDelta = success.lines.reduce((s, l) => s + l.delta, 0);
     return (
       <div className="space-y-4">
         <div className="bg-green-50 border border-green-200 rounded-xl p-5 text-center">
@@ -132,10 +153,7 @@ export default function AuditScreen({ token, warehouseId }) {
           <div className="font-bold text-slate-900">Audit Submitted</div>
           <div className="text-sm text-slate-500 mt-0.5">{success.audit_ref}</div>
           <div className="text-sm text-slate-600 mt-2">
-            {adjusted.length} line{adjusted.length !== 1 ? 's' : ''} adjusted · Net delta:{' '}
-            <span className={netDelta < 0 ? 'text-red-600 font-semibold' : netDelta > 0 ? 'text-green-600 font-semibold' : 'text-slate-600'}>
-              {netDelta > 0 ? '+' : ''}{netDelta}
-            </span>
+            {adjusted.length} line{adjusted.length !== 1 ? 's' : ''} adjusted
           </div>
         </div>
 
@@ -152,16 +170,22 @@ export default function AuditScreen({ token, warehouseId }) {
                 </tr>
               </thead>
               <tbody>
-                {adjusted.map((l, i) => (
-                  <tr key={i} className="border-t border-slate-100">
-                    <td className="px-4 py-2 text-slate-800">{l.material_name ?? l.material_code}</td>
-                    <td className="px-4 py-2 text-right text-slate-500">{l.system_qty}</td>
-                    <td className="px-4 py-2 text-right text-slate-700">{l.physical_qty}</td>
-                    <td className={`px-4 py-2 text-right font-semibold ${l.delta < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {l.delta > 0 ? '+' : ''}{l.delta}
-                    </td>
-                  </tr>
-                ))}
+                {adjusted.map((l, i) => {
+                  const u = dispUnit(l);
+                  const sysDisp = toDisp(l, l.system_qty);
+                  const physDisp = toDisp(l, l.physical_qty);
+                  const deltaDisp = toDisp(l, l.delta);
+                  return (
+                    <tr key={i} className="border-t border-slate-100">
+                      <td className="px-4 py-2 text-slate-800">{l.material_name ?? l.material_code}</td>
+                      <td className="px-4 py-2 text-right text-slate-500">{fmtQty(sysDisp)} {u}</td>
+                      <td className="px-4 py-2 text-right text-slate-700">{fmtQty(physDisp)} {u}</td>
+                      <td className={`px-4 py-2 text-right font-semibold ${deltaDisp < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {deltaDisp > 0 ? '+' : ''}{fmtQty(deltaDisp)} {u}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -206,19 +230,23 @@ export default function AuditScreen({ token, warehouseId }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {diffs.map((d, i) => (
-                      <tr key={i} className="border-t border-slate-100">
-                        <td className="px-3 py-2">
-                          <div className="font-medium text-slate-800">{d.material_name}</div>
-                          {d.remark && <div className="text-xs text-slate-400 mt-0.5 italic">{d.remark}</div>}
-                        </td>
-                        <td className="px-3 py-2 text-right text-slate-500">{d.sysQty}</td>
-                        <td className="px-3 py-2 text-right text-slate-700">{d.physQty}</td>
-                        <td className={`px-3 py-2 text-right font-semibold ${d.physQty - d.sysQty < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {d.physQty - d.sysQty > 0 ? '+' : ''}{d.physQty - d.sysQty}
-                        </td>
-                      </tr>
-                    ))}
+                    {diffs.map((d, i) => {
+                      const u = dispUnit(d);
+                      const delta = d.physQty - d.sysQty;
+                      return (
+                        <tr key={i} className="border-t border-slate-100">
+                          <td className="px-3 py-2">
+                            <div className="font-medium text-slate-800">{d.material_name}</div>
+                            {d.remark && <div className="text-xs text-slate-400 mt-0.5 italic">{d.remark}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-500">{fmtQty(d.sysQty)} {u}</td>
+                          <td className="px-3 py-2 text-right text-slate-700">{fmtQty(d.physQty)} {u}</td>
+                          <td className={`px-3 py-2 text-right font-semibold ${delta < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                            {delta > 0 ? '+' : ''}{fmtQty(delta)} {u}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -253,7 +281,7 @@ export default function AuditScreen({ token, warehouseId }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><ClipboardList size={18} /> Physical Audit</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Enter physical counts. Items with a difference require a remark.</p>
+          <p className="text-xs text-slate-500 mt-0.5">Enter physical counts. Roll materials are counted in rolls. Items with a difference require a remark.</p>
         </div>
         <button onClick={loadPrefill} className="p-2 text-slate-400 hover:text-slate-600">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
@@ -281,16 +309,17 @@ export default function AuditScreen({ token, warehouseId }) {
               </thead>
               <tbody>
                 {materials.map((m) => {
-                  const sysQty = Number(m.system_qty);
-                  const physQty = Number(counts[m.material_id]) || 0;
-                  const hasDiff = physQty !== sysQty;
+                  const sysDisp = toDisp(m, Number(m.system_qty));
+                  const physDisp = Number(counts[m.material_id]) || 0;
+                  const hasDiff = physDisp !== sysDisp;
+                  const unit = dispUnit(m);
                   const remarkVal = lineRemarks[m.material_id] || '';
                   const remarkMissing = hasDiff && !remarkVal.trim();
                   return (
                     <tr key={m.material_id} className={`border-t border-slate-100 ${hasDiff ? 'bg-amber-50' : ''}`}>
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-slate-800">{m.material_name}</div>
-                        <div className="text-xs text-slate-400">{m.material_code} · {m.unit}</div>
+                        <div className="text-xs text-slate-400">{m.material_code} · {unit}</div>
                         {hasDiff && (
                           <input
                             type="text"
@@ -301,15 +330,21 @@ export default function AuditScreen({ token, warehouseId }) {
                           />
                         )}
                       </td>
-                      <td className="px-4 py-2.5 text-right text-slate-500 font-mono align-top pt-3">{sysQty}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-500 font-mono align-top pt-3">
+                        {fmtQty(sysDisp)} <span className="text-xs">{unit}</span>
+                      </td>
                       <td className="px-4 py-2.5 text-right align-top pt-2.5">
-                        <input
-                          type="number"
-                          min={0}
-                          value={counts[m.material_id] ?? ''}
-                          onChange={(e) => setCounts((prev) => ({ ...prev, [m.material_id]: e.target.value }))}
-                          className={`w-24 px-2 py-1.5 border rounded-lg text-right text-sm font-mono focus:outline-none focus:ring-2 ${hasDiff ? 'border-amber-400 bg-amber-50 focus:ring-amber-400' : 'border-slate-300 focus:ring-blue-500'}`}
-                        />
+                        <div className="flex items-center justify-end gap-1">
+                          <input
+                            type="number"
+                            min={0}
+                            step={m.stickers_per_roll ? 1 : 'any'}
+                            value={counts[m.material_id] ?? ''}
+                            onChange={(e) => setCounts((prev) => ({ ...prev, [m.material_id]: e.target.value }))}
+                            className={`w-20 px-2 py-1.5 border rounded-lg text-right text-sm font-mono focus:outline-none focus:ring-2 ${hasDiff ? 'border-amber-400 bg-amber-50 focus:ring-amber-400' : 'border-slate-300 focus:ring-blue-500'}`}
+                          />
+                          <span className="text-xs text-slate-400">{unit}</span>
+                        </div>
                       </td>
                     </tr>
                   );
