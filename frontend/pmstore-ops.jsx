@@ -452,6 +452,20 @@ function GRNScreen({ api }) {
   );
 }
 
+function dispUnit(l) { return (l.stickers_per_roll || l.meters_per_unit) ? 'rolls' : l.unit; }
+function toDisp(l, base) {
+  const n = Number(base);
+  if (l.stickers_per_roll) return Math.round((n / Number(l.stickers_per_roll)) * 1000) / 1000;
+  if (l.meters_per_unit) return Math.round((n / Number(l.meters_per_unit)) * 1000) / 1000;
+  return n;
+}
+function toBase(l, disp) {
+  const n = Number(disp) || 0;
+  if (l.stickers_per_roll) return Math.round(n * Number(l.stickers_per_roll));
+  if (l.meters_per_unit) return Math.round(n * Number(l.meters_per_unit));
+  return n;
+}
+
 // ── Issue screen ─────────────────────────────────────────────────────────────
 function IssueScreen({ api }) {
   const today = new Date().toISOString().slice(0, 10);
@@ -475,7 +489,9 @@ function IssueScreen({ api }) {
       setAllLines(lines);
       const qtys = {};
       for (const l of lines) {
-        qtys[l.id] = String(Math.min(Number(l.pending_qty), Math.max(0, Number(l.pm_on_hand_qty))));
+        const pendingDisp = toDisp(l, l.pending_qty);
+        const pmStockDisp = toDisp(l, l.pm_on_hand_qty);
+        qtys[l.id] = String(Math.min(pendingDisp, Math.max(0, pmStockDisp)));
       }
       setLineQtys(qtys);
     } catch (e) {
@@ -505,7 +521,7 @@ function IssueScreen({ api }) {
 
   async function dispatch() {
     const items = (selectedFacility?.lines ?? [])
-      .map((l) => ({ indent_line_id: l.id, issued_qty: Number(lineQtys[l.id] ?? 0) }))
+      .map((l) => ({ indent_line_id: l.id, issued_qty: toBase(l, lineQtys[l.id] ?? 0) }))
       .filter((i) => i.issued_qty > 0);
     setSubmitting(true); setSubmitError('');
     try {
@@ -597,7 +613,7 @@ function IssueScreen({ api }) {
   const hasAnyQty = summaryItems.length > 0;
   const hasStockError = lines.some((l) => {
     const q = Number(lineQtys[l.id] ?? 0);
-    return q > 0 && q > Number(l.pm_on_hand_qty);
+    return q > 0 && q > toDisp(l, l.pm_on_hand_qty);
   });
 
   return (
@@ -623,8 +639,10 @@ function IssueScreen({ api }) {
         {lines.map((l) => {
           const qty = lineQtys[l.id] ?? '';
           const qtyNum = Number(qty);
-          const pending = Number(l.pending_qty);
-          const pmStock = Number(l.pm_on_hand_qty);
+          const unit = dispUnit(l);
+          const pending = toDisp(l, l.pending_qty);
+          const pmStock = toDisp(l, l.pm_on_hand_qty);
+          const facStock = toDisp(l, l.facility_on_hand_qty);
           const overStock = qtyNum > 0 && qtyNum > pmStock;
           const overIndent = qtyNum > 0 && qtyNum > pending;
           return (
@@ -634,27 +652,27 @@ function IssueScreen({ api }) {
                   <div className="font-semibold text-sm text-slate-900 leading-tight">{l.material_name}</div>
                   <div className="text-xs text-slate-400 mt-0.5">{l.material_code} · {l.indent_ref}</div>
                 </div>
-                <span className="text-xs bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 font-medium flex-shrink-0">{pending} {l.unit} due</span>
+                <span className="text-xs bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 font-medium flex-shrink-0">{pending} {unit} due</span>
               </div>
               <div className="grid grid-cols-3 gap-2 bg-slate-50 rounded-lg p-2.5 text-xs">
                 <div>
                   <div className="text-slate-400 mb-0.5">Indent Qty</div>
-                  <div className="font-bold text-slate-900">{pending} <span className="font-normal text-slate-400">{l.unit}</span></div>
+                  <div className="font-bold text-slate-900">{pending} <span className="font-normal text-slate-400">{unit}</span></div>
                 </div>
                 <div>
                   <div className="text-slate-400 mb-0.5">PM Stock</div>
-                  <div className={`font-bold ${pmStock < pending ? 'text-red-600' : 'text-green-700'}`}>{pmStock} <span className="font-normal text-slate-400">{l.unit}</span></div>
+                  <div className={`font-bold ${pmStock < pending ? 'text-red-600' : 'text-green-700'}`}>{pmStock} <span className="font-normal text-slate-400">{unit}</span></div>
                 </div>
                 <div>
                   <div className="text-slate-400 mb-0.5">At Facility</div>
-                  <div className="font-bold text-slate-900">{Number(l.facility_on_hand_qty)} <span className="font-normal text-slate-400">{l.unit}</span></div>
+                  <div className="font-bold text-slate-900">{facStock} <span className="font-normal text-slate-400">{unit}</span></div>
                 </div>
               </div>
               <div>
-                <label className="text-xs font-medium text-slate-500 mb-1 block">Dispatch Qty</label>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Dispatch Qty ({unit})</label>
                 <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(l.id, e.target.value)}
                   className={`w-full px-3 py-3 border rounded-lg text-base focus:outline-none focus:ring-2 ${overStock ? 'border-red-300 focus:ring-red-400 bg-red-50' : 'border-slate-300 focus:ring-blue-500'}`} />
-                {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} available)</p>}
+                {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} {unit} available)</p>}
                 {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">More than indent qty — will partially over-issue</p>}
               </div>
             </div>
@@ -690,8 +708,8 @@ function IssueScreen({ api }) {
                     <div className="text-xs text-slate-400 mt-0.5">{item.indent_ref}</div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="font-bold text-slate-900">{item.actualQty} <span className="text-slate-400 font-normal text-xs">{item.unit}</span></div>
-                    <div className="text-xs text-slate-400">of {Number(item.pending_qty)} pending</div>
+                    <div className="font-bold text-slate-900">{item.actualQty} <span className="text-slate-400 font-normal text-xs">{dispUnit(item)}</span></div>
+                    <div className="text-xs text-slate-400">of {toDisp(item, item.pending_qty)} pending</div>
                   </div>
                 </div>
               ))}

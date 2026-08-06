@@ -407,6 +407,7 @@ app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STO
            (il.requested_qty - il.issued_qty) AS pending_qty,
            il.warehouse_id, w.name AS warehouse_name, w.code AS warehouse_code,
            il.material_id, m.code AS material_code, m.name AS material_name, m.unit,
+           m.meters_per_unit, m.stickers_per_roll,
            COALESCE(pm_cs.on_hand_qty, 0) AS pm_on_hand_qty,
            COALESCE(fac_cs.on_hand_qty, 0) AS facility_on_hand_qty
     FROM indent_lines il
