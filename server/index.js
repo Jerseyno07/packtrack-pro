@@ -325,8 +325,9 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
       const whMap = new Map((await client.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id]));
       const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
 
+      // Pass 1: validate all rows — if any fail, reject the entire upload
       const errors = [];
-      let validCount = 0;
+      const validatedRows = [];
 
       for (let i = 0; i < rawRows.length; i++) {
         const rowNum = i + 2;
@@ -339,9 +340,6 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown facility_code '${facility_code}'` }); continue; }
         if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${sku_code}'` }); continue; }
 
-        // Sticker rolls (barcode/wax ribbon): qty = no_of_rolls × stickers_per_roll (no length needed)
-        // Regular roll materials: qty in meters = no_of_rolls × length_per_roll
-        // Non-roll materials: use requested_qty directly
         let finalQty;
         if (mat.stickers_per_roll) {
           if (!no_of_rolls) { errors.push({ row: rowNum, error: `"No. of Rolls" is required for sticker roll material '${sku_code}'` }); continue; }
@@ -353,25 +351,33 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
           if (!requested_qty) { errors.push({ row: rowNum, error: `Non-roll material '${sku_code}' requires requested_qty column` }); continue; }
           finalQty = requested_qty;
         }
+        validatedRows.push({ rowNum, warehouseId, matId: mat.id, finalQty, remarks });
+      }
 
+      // If any row failed validation, reject the entire upload — nothing is inserted
+      if (errors.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({ status: 'REJECTED', total_rows: rawRows.length, valid_rows: validatedRows.length, error_rows: errors.length, errors: errors.slice(0, 200) });
+      }
+
+      // Pass 2: all rows valid — insert everything
+      for (const { rowNum, warehouseId, matId, finalQty, remarks } of validatedRows) {
         const indentRef = genRef('IND');
         await client.query(
           `INSERT INTO indent_lines (indent_ref, batch_id, row_number_in_file, warehouse_id, material_id, indent_date, requested_qty, remarks)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [indentRef, batchId, rowNum, warehouseId, mat.id, indentDate, finalQty, remarks || null]
+          [indentRef, batchId, rowNum, warehouseId, matId, indentDate, finalQty, remarks || null]
         );
-        validCount++;
       }
 
-      const finalStatus = errors.length === 0 ? 'VALIDATED' : validCount === 0 ? 'FAILED' : 'PARTIALLY_FAILED';
       await client.query(
-        `UPDATE indent_batches SET status=$1, valid_rows=$2, error_rows=$3, error_detail=$4 WHERE id=$5`,
-        [finalStatus, validCount, errors.length, JSON.stringify(errors.slice(0, 200)), batchId]
+        `UPDATE indent_batches SET status='VALIDATED', valid_rows=$1, error_rows=0, error_detail='[]' WHERE id=$2`,
+        [validatedRows.length, batchId]
       );
-      await writeAudit(client, { userId: req.user.id, action: 'INDENT_BATCH_UPLOADED', entityTable: 'indent_batches', entityId: batchId, detail: { batchRef, validCount, errorCount: errors.length } });
+      await writeAudit(client, { userId: req.user.id, action: 'INDENT_BATCH_UPLOADED', entityTable: 'indent_batches', entityId: batchId, detail: { batchRef, validCount: validatedRows.length, errorCount: 0 } });
       await client.query('COMMIT');
 
-      res.status(201).json({ batch_id: batchId, batch_ref: batchRef, status: finalStatus, total_rows: rawRows.length, valid_rows: validCount, error_rows: errors.length, errors: errors.slice(0, 200) });
+      res.status(201).json({ batch_id: batchId, batch_ref: batchRef, status: 'VALIDATED', total_rows: rawRows.length, valid_rows: validatedRows.length, error_rows: 0, errors: [] });
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
