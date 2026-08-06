@@ -567,6 +567,27 @@ function DashboardSection({ token }) {
 const TERMINAL_PO = ['CANCELLED', 'CLOSED', 'FORCE_COMPLETED'];
 const TERMINAL_ISSUE = ['CANCELLED', 'RECEIVED', 'FORCE_COMPLETED'];
 
+function issueStatusLabel(si) {
+  switch (si.status) {
+    case 'DISPATCHED':         return 'Awaiting Receipt';
+    case 'PARTIALLY_RECEIVED': return 'Partially Received';
+    case 'RECEIVED':           return 'Fully Received';
+    case 'FORCE_COMPLETED':    return Number(si.received_qty_sum) > 0 ? 'Closed at CC' : 'Closed — Not Received';
+    case 'CANCELLED':          return 'Cancelled';
+    default:                   return si.status.replace(/_/g, ' ');
+  }
+}
+function issueStatusTone(si) {
+  switch (si.status) {
+    case 'DISPATCHED':         return 'blue';
+    case 'PARTIALLY_RECEIVED': return 'amber';
+    case 'RECEIVED':           return 'green';
+    case 'FORCE_COMPLETED':    return Number(si.received_qty_sum) > 0 ? 'amber' : 'red';
+    case 'CANCELLED':          return 'red';
+    default:                   return 'gray';
+  }
+}
+
 function AdminPanel({ token, tabOverride }) {
   const [overview, setOverview] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1135,8 +1156,8 @@ function AdminPanel({ token, tabOverride }) {
               onClick={() => downloadCSV(
                 `stock-issues-${issueFrom}-to-${issueTo}.csv`,
                 [
-                  ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Indent Qty', 'Issued Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
-                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.requested_qty != null ? dashDispQty(si, si.requested_qty) : '', dashDispQty(si, si.issued_qty), dashDispUnit(si), si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
+                  ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Indent Qty', 'Issued Qty', 'Received Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
+                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.requested_qty != null ? dashDispQty(si, si.requested_qty) : '', dashDispQty(si, si.issued_qty), Number(si.received_qty_sum) > 0 ? dashDispQty(si, si.received_qty_sum) : '', dashDispUnit(si), si.issue_date, si.vehicle_no ?? '', issueStatusLabel(si), si.indent_ref]),
                 ]
               )}
               disabled={issueRows.length === 0}
@@ -1155,14 +1176,15 @@ function AdminPanel({ token, tabOverride }) {
                   <th className="text-left px-4 py-2.5">From → To</th>
                   <th className="text-right px-4 py-2.5">Indent Qty</th>
                   <th className="text-right px-4 py-2.5">Issued Qty</th>
+                  <th className="text-right px-4 py-2.5">Received Qty</th>
                   <th className="text-left px-4 py-2.5">Date</th>
                   <th className="text-left px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5"></th>
                 </tr>
               </thead>
               <tbody>
-                {issueLoading && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</td></tr>}
-                {!issueLoading && issueRows.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">No stock issues found for the selected filters.</td></tr>}
+                {issueLoading && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</td></tr>}
+                {!issueLoading && issueRows.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No stock issues found for the selected filters.</td></tr>}
                 {!issueLoading && issueRows.map((si) => (
                   <tr key={si.id} className="border-t border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-3 font-medium text-slate-800">{si.issue_ref}</td>
@@ -1174,8 +1196,11 @@ function AdminPanel({ token, tabOverride }) {
                     <td className="px-4 py-3 text-right font-bold text-slate-800">
                       {dashDispQty(si, si.issued_qty)} {dashDispUnit(si)}
                     </td>
+                    <td className="px-4 py-3 text-right text-slate-600">
+                      {Number(si.received_qty_sum) > 0 ? `${dashDispQty(si, si.received_qty_sum)} ${dashDispUnit(si)}` : '—'}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
-                    <td className="px-4 py-3"><Badge tone={si.status === 'DISPATCHED' ? 'blue' : si.status === 'RECEIVED' ? 'green' : si.status === 'CANCELLED' ? 'red' : 'amber'}>{si.status.replace(/_/g, ' ')}</Badge></td>
+                    <td className="px-4 py-3"><Badge tone={issueStatusTone(si)}>{issueStatusLabel(si)}</Badge></td>
                     <td className="px-4 py-3 text-right">
                       {!TERMINAL_ISSUE.includes(si.status) && (
                         <button onClick={() => openCancel('stock-issues', si.id, si.issue_ref)}
