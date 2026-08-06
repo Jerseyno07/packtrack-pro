@@ -803,7 +803,7 @@ function StoreStockView({ token, warehouseId }) {
               {stock.map((s, i) => {
                 const unit = dispUnit(s);
                 const onHand = toDisp(s, s.on_hand_qty);
-                const minQty = s.min_qty != null ? toDisp(s, s.min_qty) : null;
+                const minQty = s.min_qty != null ? Number(s.min_qty) : null;
                 return (
                   <tr key={i} className={`border-t border-slate-100 ${s.is_low_stock ? 'bg-red-50' : ''}`}>
                     <td className="px-4 py-2.5">

@@ -754,8 +754,19 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
     if (!fromWhId) throw new ApiError(422, 'NO_PM_STORE', 'No active PM Store warehouse configured');
 
     const lineIds = items.map((i) => i.indent_line_id);
-    const linesRes = await client.query('SELECT * FROM indent_lines WHERE id = ANY($1) FOR UPDATE', [lineIds]);
+    const linesRes = await client.query(
+      `SELECT il.*, m.meters_per_unit, m.stickers_per_roll, m.unit AS mat_unit, m.code AS mat_code
+       FROM indent_lines il JOIN materials m ON m.id = il.material_id
+       WHERE il.id = ANY($1) FOR UPDATE OF il`,
+      [lineIds]
+    );
     const lineMap = new Map(linesRes.rows.map((r) => [Number(r.id), r]));
+
+    const fmtDispQty = (qty, line) => {
+      if (line.meters_per_unit) return `${(qty / Number(line.meters_per_unit)).toFixed(2)} rolls`;
+      if (line.stickers_per_roll) return `${Math.round(qty / Number(line.stickers_per_roll))} rolls`;
+      return `${qty} ${line.mat_unit}`;
+    };
 
     // Validate all lines and accumulate per-material totals for stock check
     const materialTotals = new Map();
@@ -765,7 +776,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       if (!line) throw new ApiError(404, 'INDENT_LINE_NOT_FOUND', `Indent line ${item.indent_line_id} not found`);
       if (['CANCELLED', 'FORCE_COMPLETED'].includes(line.status)) throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is ${line.status}`);
       const remaining = Number(line.requested_qty) - Number(line.issued_qty);
-      if (item.issued_qty > remaining) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${item.issued_qty} exceeds remaining qty ${remaining} for ${line.indent_ref}`);
+      if (item.issued_qty > remaining) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${fmtDispQty(item.issued_qty, line)} exceeds remaining qty ${fmtDispQty(remaining, line)} for ${line.indent_ref}`);
       materialTotals.set(line.material_id, (materialTotals.get(line.material_id) || 0) + item.issued_qty);
       lineDataList.push({ item, line, remaining });
     }
@@ -774,8 +785,8 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
     for (const [materialId, totalQty] of materialTotals) {
       const onHand = await getOnHandQty(client, fromWhId, materialId);
       if (totalQty > onHand) {
-        const matRes = await client.query('SELECT code FROM materials WHERE id = $1', [materialId]);
-        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${matRes.rows[0]?.code ?? materialId}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
+        const sampleLine = lineDataList.find((ld) => ld.line.material_id === materialId)?.line;
+        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${sampleLine?.mat_code ?? materialId}: need ${fmtDispQty(totalQty, sampleLine ?? {})}, have ${fmtDispQty(onHand, sampleLine ?? {})}`, { onHand, totalQty });
       }
     }
 
@@ -1270,7 +1281,12 @@ app.get('/api/v1/stock/current', authenticate, asyncHandler(async (req, res) => 
             m.meters_per_unit, m.stickers_per_roll,
             COALESCE(cs.on_hand_qty, 0) AS on_hand_qty, cs.weighted_avg_cost,
             COALESCE(msl.min_qty, m.low_stock_qty) AS min_qty,
-            CASE WHEN COALESCE(cs.on_hand_qty, 0) <= COALESCE(msl.min_qty, m.low_stock_qty) THEN true ELSE false END AS is_low_stock
+            CASE WHEN
+              CASE WHEN m.meters_per_unit IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.meters_per_unit
+                   WHEN m.stickers_per_roll IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.stickers_per_roll
+                   ELSE COALESCE(cs.on_hand_qty, 0)
+              END <= COALESCE(msl.min_qty, m.low_stock_qty)
+            THEN true ELSE false END AS is_low_stock
      FROM v_current_stock cs
      JOIN warehouses w ON w.id = cs.warehouse_id
      JOIN materials m ON m.id = cs.material_id
