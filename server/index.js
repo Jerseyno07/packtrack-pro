@@ -484,7 +484,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
       );
       const batchId = batchIns.rows[0].id;
 
-      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
+      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit, pieces_per_kg FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
       const whMap = new Map((await client.query("SELECT id, code FROM warehouses WHERE is_active AND warehouse_type='PM_STORE'")).rows.map((r) => [r.code, r.id]));
 
       const errors = [];
@@ -504,7 +504,8 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown or non-PM-Store pm_store_code '${d.pm_store_code}'` }); continue; }
 
         // Sticker rolls (barcode/wax ribbon): qty = no_of_rolls × stickers_per_roll
-        // Regular roll materials (net roll, cling wrap): qty in meters = no_of_rolls × meters_per_unit (stored in DB)
+        // Regular roll materials (net roll, cling wrap): qty in meters = no_of_rolls × meters_per_unit
+        // Butter paper and similar: po_qty entered in kg × pieces_per_kg = pieces stored
         // Non-roll materials: use po_qty directly
         let finalQty;
         if (mat.stickers_per_roll) {
@@ -513,6 +514,9 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         } else if (mat.unit === 'Roll') {
           if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${d.sku_code}' requires no_of_rolls column` }); continue; }
           finalQty = d.no_of_rolls * Number(mat.meters_per_unit);
+        } else if (mat.pieces_per_kg) {
+          if (!d.po_qty) { errors.push({ row: rowNum, error: `'${d.sku_code}' requires po_qty column (enter quantity in kg)` }); continue; }
+          finalQty = d.po_qty * Number(mat.pieces_per_kg);
         } else {
           if (!d.po_qty) { errors.push({ row: rowNum, error: `Non-roll material '${d.sku_code}' requires po_qty column` }); continue; }
           finalQty = d.po_qty;

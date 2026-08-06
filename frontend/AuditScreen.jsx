@@ -11,7 +11,7 @@ function dispUnit(m) {
 function toDisp(m, baseQty) {
   const n = Number(baseQty);
   if (m.stickers_per_roll) return Math.round((n / m.stickers_per_roll) * 1000) / 1000;
-  if (m.meters_per_unit) return Math.round((n / Number(m.meters_per_unit)) * 1000) / 1000;
+  if (m.meters_per_unit) return parseFloat((n / Number(m.meters_per_unit)).toFixed(2));
   return n;
 }
 function toBase(m, dispQty) {

@@ -456,7 +456,7 @@ function dispUnit(l) { return (l.stickers_per_roll || l.meters_per_unit) ? 'roll
 function toDisp(l, base) {
   const n = Number(base);
   if (l.stickers_per_roll) return Math.round((n / Number(l.stickers_per_roll)) * 1000) / 1000;
-  if (l.meters_per_unit) return Math.round((n / Number(l.meters_per_unit)) * 1000) / 1000;
+  if (l.meters_per_unit) return parseFloat((n / Number(l.meters_per_unit)).toFixed(2));
   return n;
 }
 function toBase(l, disp) {

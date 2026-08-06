@@ -172,7 +172,7 @@ async function runConsumption(options = {}) {
       (await pool.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id])
     );
     const matMap = new Map(
-      (await pool.query('SELECT id, code, meters_per_unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r])
+      (await pool.query('SELECT id, code, meters_per_unit, stickers_per_roll, consumption_rate FROM materials WHERE is_active')).rows.map((r) => [r.code, r])
     );
 
     await setProgress(50, `Processing ${rows.length} SKU rows…`);
@@ -217,9 +217,9 @@ async function runConsumption(options = {}) {
           errored++; continue;
         }
 
-        // For roll materials, deduct meters_per_unit × packaged_qty instead of units
-        const deductQty = mat.meters_per_unit
-          ? row.packaged_qty * Number(mat.meters_per_unit)
+        // For roll materials, deduct consumption_rate (m/unit) × packaged_qty
+        const deductQty = mat.consumption_rate
+          ? row.packaged_qty * Number(mat.consumption_rate)
           : row.packaged_qty;
 
         // Store as PENDING — no ledger entry yet. User must Accept the run to commit to stock.

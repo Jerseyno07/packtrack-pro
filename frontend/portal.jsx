@@ -346,7 +346,7 @@ function POUploadSection({ token }) {
       </div>
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
-        <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty (non-roll), no_of_rolls (roll materials), unit_price, po_date, expected_delivery (optional)</div>
+        <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty (non-roll; for butter paper enter kg — system converts to pcs), no_of_rolls (roll materials), unit_price, po_date, expected_delivery (optional)</div>
         <button data-tour="po-sample-csv"
           onClick={() => downloadCSV('purchase_orders_sample.csv', [
             ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'no_of_rolls', 'unit_price', 'po_date', 'expected_delivery'],
@@ -1486,13 +1486,13 @@ function AdminPanel({ token, tabOverride }) {
                                 </td>
                                 <td className="px-4 py-2.5 text-right text-slate-700">
                                   {row.meters_per_unit
-                                    ? Math.round(Number(row.total_deducted) / Number(row.meters_per_unit)).toLocaleString()
+                                    ? (Number(row.total_deducted) / Number(row.meters_per_unit)).toFixed(2)
                                     : Number(row.total_deducted).toLocaleString()}
                                   {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.unit}
                                 </td>
                                 <td className="px-4 py-2.5 text-right text-slate-500">
                                   {row.meters_per_unit
-                                    ? Math.round(Number(row.current_stock) / Number(row.meters_per_unit)).toLocaleString()
+                                    ? (Number(row.current_stock) / Number(row.meters_per_unit)).toFixed(2)
                                     : Number(row.current_stock).toLocaleString()}
                                   {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.unit}
                                 </td>
@@ -1500,7 +1500,7 @@ function AdminPanel({ token, tabOverride }) {
                                   {committed
                                     ? <span className="text-xs font-normal text-green-600 flex items-center justify-end gap-1"><CheckCircle2 size={12} />Done</span>
                                     : row.meters_per_unit
-                                      ? Math.round(after / Number(row.meters_per_unit)).toLocaleString()
+                                      ? (after / Number(row.meters_per_unit)).toFixed(2)
                                       : after.toLocaleString()}
                                 </td>
                               </tr>
@@ -1597,7 +1597,7 @@ function AdminPanel({ token, tabOverride }) {
                     r.warehouse_code,
                     r.material_name,
                     r.material_code,
-                    r.meters_per_unit ? Math.round(Number(r.qty_consumed) / Number(r.meters_per_unit)) : r.qty_consumed,
+                    r.meters_per_unit ? (Number(r.qty_consumed) / Number(r.meters_per_unit)).toFixed(2) : r.qty_consumed,
                     r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.unit,
                   ]);
                   const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -1646,7 +1646,7 @@ function AdminPanel({ token, tabOverride }) {
                     </td>
                     <td className="px-4 py-2.5 text-right font-bold text-slate-900">
                       {r.meters_per_unit
-                        ? Math.round(Number(r.qty_consumed) / Number(r.meters_per_unit)).toLocaleString()
+                        ? (Number(r.qty_consumed) / Number(r.meters_per_unit)).toFixed(2)
                         : Number(r.qty_consumed).toLocaleString()}
                     </td>
                     <td className="px-4 py-2.5 text-slate-500 text-xs">{r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.unit}</td>
