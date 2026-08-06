@@ -545,7 +545,7 @@ function AdminPanel({ token, tabOverride }) {
   const [skuError, setSkuError] = useState('');
 
   const [allMaterials, setAllMaterials] = useState([]);
-  const [matForm, setMatForm] = useState({ code: '', name: '', category: '', unit: 'Pcs', master_price: '', meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' });
+  const [matForm, setMatForm] = useState({ name: '', category: '', unit: 'Pcs', master_price: '', meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' });
   const [matSaving, setMatSaving] = useState(false);
   const [matError, setMatError] = useState('');
   const [matSuccess, setMatSuccess] = useState('');
@@ -680,8 +680,8 @@ function AdminPanel({ token, tabOverride }) {
       const res = await fetch(`${BASE_URL}/api/v1/materials`, { method: 'POST', headers: { ...hdrs, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || 'Failed');
-      setMatSuccess(`Material '${data.data.code}' added.`);
-      setMatForm({ code: '', name: '', category: '', unit: 'Pcs', master_price: '', meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' });
+      setMatSuccess(`Added — SKU code assigned: ${data.data.code}`);
+      setMatForm({ name: '', category: '', unit: 'Pcs', master_price: '', meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' });
       fetchMaterials();
     } catch (e) { setMatError(e.message); }
     finally { setMatSaving(false); }
@@ -1270,12 +1270,8 @@ function AdminPanel({ token, tabOverride }) {
           {/* Add material form */}
           <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
             <h3 className="font-semibold text-slate-800">Add New Material</h3>
+            <p className="text-xs text-slate-400">SKU code is auto-generated from the category name.</p>
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-medium text-slate-500 mb-1 block">SKU Code <span className="text-red-500">*</span></label>
-                <input value={matForm.code} onChange={(e) => setMatForm((p) => ({ ...p, code: e.target.value.toUpperCase() }))}
-                  placeholder="e.g. LDPE-06" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
               <div>
                 <label className="text-xs font-medium text-slate-500 mb-1 block">Name <span className="text-red-500">*</span></label>
                 <input value={matForm.name} onChange={(e) => setMatForm((p) => ({ ...p, name: e.target.value }))}
@@ -1334,7 +1330,7 @@ function AdminPanel({ token, tabOverride }) {
             )}
             {matError && <p className="text-sm text-red-600">{matError}</p>}
             {matSuccess && <p className="text-sm text-green-600">{matSuccess}</p>}
-            <button onClick={saveMaterial} disabled={matSaving || !matForm.code || !matForm.name}
+            <button onClick={saveMaterial} disabled={matSaving || !matForm.name}
               className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
               {matSaving ? <RefreshCw size={14} className="animate-spin" /> : null}
               {matSaving ? 'Saving…' : 'Add Material'}

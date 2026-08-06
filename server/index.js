@@ -1295,14 +1295,20 @@ app.get('/api/v1/materials', authenticate, asyncHandler(async (req, res) => {
 }));
 
 app.post('/api/v1/materials', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
-  const { code, name, category, unit, master_price, low_stock_qty, meters_per_unit, stickers_per_roll, consumption_rate, pieces_per_kg } = req.body;
-  if (!code || !name || !unit) throw new ApiError(400, 'VALIDATION_ERROR', 'code, name, and unit are required');
-  const dup = await pool.query('SELECT id FROM materials WHERE LOWER(code) = LOWER($1)', [code.trim()]);
-  if (dup.rows.length) throw new ApiError(409, 'DUPLICATE_CODE', `Material code '${code}' already exists`);
+  const { name, category, unit, master_price, low_stock_qty, meters_per_unit, stickers_per_roll, consumption_rate, pieces_per_kg } = req.body;
+  if (!name || !unit) throw new ApiError(400, 'VALIDATION_ERROR', 'name and unit are required');
+
+  // Auto-generate SKU code: first word of category (or name), up to 4 chars + sequential suffix
+  const source = (category || name).trim();
+  const prefix = source.split(/\s+/)[0].replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 4) || 'PM';
+  const existing = await pool.query(`SELECT code FROM materials WHERE code ~ $1`, [`^${prefix}-\\d+$`]);
+  const maxN = existing.rows.reduce((m, r) => { const n = parseInt(r.code.split('-').pop(), 10); return n > m ? n : m; }, 0);
+  const code = `${prefix}-${String(maxN + 1).padStart(2, '0')}`;
+
   const r = await pool.query(
     `INSERT INTO materials (code, name, category, unit, master_price, low_stock_qty, meters_per_unit, stickers_per_roll, consumption_rate, pieces_per_kg, is_active)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true) RETURNING *`,
-    [code.trim().toUpperCase(), name.trim(), category?.trim() || null, unit,
+    [code, name.trim(), category?.trim() || null, unit,
      master_price || null, low_stock_qty || null,
      meters_per_unit || null, stickers_per_roll || null, consumption_rate || null, pieces_per_kg || null]
   );
