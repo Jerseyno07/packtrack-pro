@@ -348,14 +348,4 @@ async function runConsumption(options = {}) {
   }
 }
 
-const cron = require('node-cron');
-
-// 5:00 AM IST = 23:30 UTC (IST is UTC+5:30)
-cron.schedule('30 23 * * *', () => {
-  console.log('[consumption] Nightly cron triggered');
-  runConsumption().catch((e) => console.error('[consumption] Nightly cron failed:', e.message));
-}, { timezone: 'UTC' });
-
-console.log('[consumption] Nightly cron scheduled — 05:00 IST daily');
-
 module.exports = { runConsumption };
