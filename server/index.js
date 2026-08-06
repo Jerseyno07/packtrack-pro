@@ -1309,7 +1309,7 @@ app.post('/api/v1/materials', authenticate, requireRole('ADMIN'), asyncHandler(a
     `INSERT INTO materials (code, name, category, unit, master_price, low_stock_qty, meters_per_unit, stickers_per_roll, consumption_rate, pieces_per_kg, is_active)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true) RETURNING *`,
     [code, name.trim(), category?.trim() || null, unit,
-     master_price || null, low_stock_qty || null,
+     master_price || null, low_stock_qty != null && low_stock_qty !== '' ? Number(low_stock_qty) : 0,
      meters_per_unit || null, stickers_per_roll || null, consumption_rate || null, pieces_per_kg || null]
   );
   await writeAudit(pool, { userId: req.user.id, action: 'MATERIAL_CREATED', entityTable: 'materials', entityId: r.rows[0].id, detail: { code, name, unit } });
