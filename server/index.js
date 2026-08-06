@@ -752,7 +752,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
 
     const lineIds = items.map((i) => i.indent_line_id);
     const linesRes = await client.query('SELECT * FROM indent_lines WHERE id = ANY($1) FOR UPDATE', [lineIds]);
-    const lineMap = new Map(linesRes.rows.map((r) => [r.id, r]));
+    const lineMap = new Map(linesRes.rows.map((r) => [Number(r.id), r]));
 
     // Validate all lines and accumulate per-material totals for stock check
     const materialTotals = new Map();
