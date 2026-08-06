@@ -474,6 +474,9 @@ function IssueScreen({ api }) {
   const [submitError, setSubmitError] = useState('');
   const [dispatched, setDispatched] = useState(null);
   const [dispatchRemark, setDispatchRemark] = useState('');
+  const [fcLineId, setFcLineId] = useState(null);
+  const [fcLineReason, setFcLineReason] = useState('');
+  const [fcLineSubmitting, setFcLineSubmitting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setFetchError('');
@@ -543,6 +546,20 @@ function IssueScreen({ api }) {
     setVehicleNo('');
     setDispatchRemark('');
     load();
+  }
+
+  async function forceCompleteLine(lineId) {
+    setFcLineSubmitting(true);
+    try {
+      await api.forceIndent(lineId, fcLineReason.trim());
+      setFcLineId(null);
+      setFcLineReason('');
+      await load();
+    } catch (e) {
+      setSubmitError(e.message || 'Force complete failed.');
+    } finally {
+      setFcLineSubmitting(false);
+    }
   }
 
   // ── Success ──
@@ -676,6 +693,35 @@ function IssueScreen({ api }) {
                 {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} {unit} available) — add a remark in the dispatch summary</p>}
                 {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">Exceeds indent qty — add a remark in the dispatch summary</p>}
               </div>
+
+              {fcLineId === l.id ? (
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <textarea
+                    rows={2}
+                    value={fcLineReason}
+                    onChange={(e) => setFcLineReason(e.target.value)}
+                    placeholder="Reason for closing this indent line…"
+                    className="w-full px-3 py-2 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                    autoFocus
+                  />
+                  <div className="flex gap-2">
+                    <button onClick={() => { setFcLineId(null); setFcLineReason(''); }}
+                      className="flex-1 py-2 text-sm bg-slate-100 text-slate-600 rounded-lg font-medium">
+                      Cancel
+                    </button>
+                    <button onClick={() => forceCompleteLine(l.id)} disabled={!fcLineReason.trim() || fcLineSubmitting}
+                      className="flex-1 py-2 text-sm bg-amber-600 text-white rounded-lg font-medium disabled:opacity-40 flex items-center justify-center gap-1.5">
+                      {fcLineSubmitting ? <RefreshCw size={13} className="animate-spin" /> : <Zap size={13} />}
+                      Close Indent
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => { setFcLineId(l.id); setFcLineReason(''); }}
+                  className="text-xs text-amber-600 font-medium flex items-center gap-1 hover:text-amber-800">
+                  <Zap size={12} /> Force Complete this indent
+                </button>
+              )}
             </div>
           );
         })}
