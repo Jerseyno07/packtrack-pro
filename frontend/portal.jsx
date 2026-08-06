@@ -1081,8 +1081,8 @@ function AdminPanel({ token, tabOverride }) {
                   <td className="px-4 py-3 font-medium text-slate-800">{po.po_no}</td>
                   <td className="px-4 py-3 text-slate-600 max-w-[160px] truncate">{po.vendor_name}</td>
                   <td className="px-4 py-3 text-slate-600">{po.material_code}</td>
-                  <td className="px-4 py-3 text-right text-slate-600">{po.po_qty}</td>
-                  <td className="px-4 py-3 text-right font-bold text-blue-600">{po.remaining_qty ?? (po.po_qty - po.received_qty_cache)}</td>
+                  <td className="px-4 py-3 text-right text-slate-600">{dashDispQty(po, po.po_qty)} {dashDispUnit(po)}</td>
+                  <td className="px-4 py-3 text-right font-bold text-blue-600">{dashDispQty(po, po.remaining_qty ?? (po.po_qty - po.received_qty_cache))} {dashDispUnit(po)}</td>
                   <td className="px-4 py-3"><Badge tone={po.status === 'OPEN' ? 'blue' : po.status === 'CANCELLED' ? 'red' : po.status === 'CLOSED' ? 'green' : 'gray'}>{po.status.replace(/_/g, ' ')}</Badge></td>
                   <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
                     {!TERMINAL_PO.includes(po.status) && (
@@ -1135,7 +1135,7 @@ function AdminPanel({ token, tabOverride }) {
                 `stock-issues-${issueFrom}-to-${issueTo}.csv`,
                 [
                   ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Issued Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
-                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.meters_per_unit ? parseFloat((Number(si.issued_qty) / Number(si.meters_per_unit)).toFixed(2)) : si.issued_qty, si.meters_per_unit ? 'rolls' : si.stickers_per_roll ? 'units' : si.unit, si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
+                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, dashDispQty(si, si.issued_qty), dashDispUnit(si), si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
                 ]
               )}
               disabled={issueRows.length === 0}
@@ -1167,8 +1167,7 @@ function AdminPanel({ token, tabOverride }) {
                     <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
                     <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
                     <td className="px-4 py-3 text-right font-bold text-slate-800">
-                      {si.meters_per_unit ? parseFloat((Number(si.issued_qty) / Number(si.meters_per_unit)).toFixed(2)) : si.issued_qty}
-                      {' '}{si.meters_per_unit ? 'rolls' : si.stickers_per_roll ? 'units' : si.unit}
+                      {dashDispQty(si, si.issued_qty)} {dashDispUnit(si)}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
                     <td className="px-4 py-3"><Badge tone={si.status === 'DISPATCHED' ? 'blue' : si.status === 'RECEIVED' ? 'green' : si.status === 'CANCELLED' ? 'red' : 'amber'}>{si.status.replace(/_/g, ' ')}</Badge></td>

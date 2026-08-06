@@ -469,8 +469,8 @@ function ConsumptionHistory({ token, warehouseIds }) {
                     <div className="text-xs text-slate-400 font-mono">{r.material_code}</div>
                   </td>
                   <td className="px-4 py-2.5 text-right font-bold text-slate-900">
-                    {Number(r.qty_consumed).toLocaleString()}
-                    <span className="text-xs font-normal text-slate-400 ml-1">{r.unit}</span>
+                    {rcptToDisp(r, r.qty_consumed)}
+                    <span className="text-xs font-normal text-slate-400 ml-1">{rcptDispUnit(r)}</span>
                   </td>
                 </tr>
               ))}
@@ -522,24 +522,30 @@ function StockView({ token, warehouseId }) {
               <tr>
                 <th className="px-3 py-2.5 text-left">Material</th>
                 <th className="px-3 py-2.5 text-right">On Hand</th>
+                <th className="px-3 py-2.5 text-left">UOM</th>
                 <th className="px-3 py-2.5 text-right">Avg Cost</th>
               </tr>
             </thead>
             <tbody>
-              {stock.length === 0 && <tr><td colSpan={3} className="px-3 py-8 text-center text-slate-400">No stock records</td></tr>}
-              {stock.map((s, i) => (
-                <tr key={i} className={`border-t border-slate-100 ${s.is_low_stock ? 'bg-red-50' : ''}`}>
-                  <td className="px-3 py-2.5">
-                    <div className="font-medium text-slate-800">{s.material_name}</div>
-                    <div className="text-xs text-slate-400 flex items-center gap-1">
-                      {s.material_code} · {s.unit}
-                      {s.is_low_stock && <span className="text-red-500 font-semibold">⚠ Below minimum</span>}
-                    </div>
-                  </td>
-                  <td className={`px-3 py-2.5 text-right font-bold ${s.is_low_stock ? 'text-red-600' : 'text-slate-900'}`}>{Number(s.on_hand_qty)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
-                </tr>
-              ))}
+              {stock.length === 0 && <tr><td colSpan={4} className="px-3 py-8 text-center text-slate-400">No stock records</td></tr>}
+              {stock.map((s, i) => {
+                const dispQty = rcptToDisp(s, s.on_hand_qty);
+                const dispUnit = rcptDispUnit(s);
+                return (
+                  <tr key={i} className={`border-t border-slate-100 ${s.is_low_stock ? 'bg-red-50' : ''}`}>
+                    <td className="px-3 py-2.5">
+                      <div className="font-medium text-slate-800">{s.material_name}</div>
+                      <div className="text-xs text-slate-400 flex items-center gap-1">
+                        {s.material_code}
+                        {s.is_low_stock && <span className="text-red-500 font-semibold">⚠ Below minimum</span>}
+                      </div>
+                    </td>
+                    <td className={`px-3 py-2.5 text-right font-bold ${s.is_low_stock ? 'text-red-600' : 'text-slate-900'}`}>{dispQty}</td>
+                    <td className="px-3 py-2.5 text-slate-500 text-xs">{dispUnit}</td>
+                    <td className="px-3 py-2.5 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

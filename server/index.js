@@ -578,7 +578,9 @@ app.get('/api/v1/purchase-orders', authenticate, asyncHandler(async (req, res) =
   if (material_id) { params.push(material_id); conditions.push(`po.material_id = $${params.length}`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
-    `SELECT po.*, m.code AS material_code, m.name AS material_name, w.name AS warehouse_name,
+    `SELECT po.*, m.code AS material_code, m.name AS material_name, m.unit,
+            m.meters_per_unit, m.stickers_per_roll,
+            w.name AS warehouse_name,
             (po.po_qty - po.received_qty_cache) AS remaining_qty
      FROM purchase_orders po JOIN materials m ON m.id = po.material_id JOIN warehouses w ON w.id = po.pm_store_warehouse_id
      ${where} ORDER BY po.po_date DESC`, params
@@ -1235,7 +1237,7 @@ app.get('/api/v1/admin/overview', authenticate, requireRole('ADMIN'), asyncHandl
 
   const [indents, pos, stock, issues, receipts, lowStock] = await Promise.all([
     pool.query(`SELECT il.*, w.name AS warehouse_name, m.code AS material_code, m.name AS material_name, m.unit FROM indent_lines il JOIN warehouses w ON w.id=il.warehouse_id JOIN materials m ON m.id=il.material_id WHERE 1=1 ${sinceDateClause} ORDER BY il.indent_date DESC`),
-    pool.query(`SELECT po.*, m.code AS material_code, m.name AS material_name, w.name AS warehouse_name FROM purchase_orders po JOIN materials m ON m.id=po.material_id JOIN warehouses w ON w.id=po.pm_store_warehouse_id WHERE 1=1 ${sincePoClause} ORDER BY po.po_date DESC`),
+    pool.query(`SELECT po.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, w.name AS warehouse_name FROM purchase_orders po JOIN materials m ON m.id=po.material_id JOIN warehouses w ON w.id=po.pm_store_warehouse_id WHERE 1=1 ${sincePoClause} ORDER BY po.po_date DESC`),
     pool.query(`SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, cs.on_hand_qty, cs.weighted_avg_cost FROM v_current_stock cs JOIN warehouses w ON w.id=cs.warehouse_id JOIN materials m ON m.id=cs.material_id ORDER BY w.name, m.code`),
     pool.query(`SELECT si.*, m.code AS material_code, m.name AS material_name, fw.name AS from_warehouse_name, tw.name AS to_warehouse_name FROM stock_issues si JOIN materials m ON m.id=si.material_id JOIN warehouses fw ON fw.id=si.from_warehouse_id JOIN warehouses tw ON tw.id=si.to_warehouse_id WHERE 1=1 ${sinceIssuedClause} ORDER BY si.issue_date DESC`),
     pool.query(`SELECT sr.*, si.issue_ref, m.code AS material_code, m.name AS material_name FROM stock_receipts sr JOIN stock_issues si ON si.id=sr.stock_issue_id JOIN materials m ON m.id=si.material_id WHERE 1=1 ${sinceReceiptClause} ORDER BY sr.receipt_date DESC`),

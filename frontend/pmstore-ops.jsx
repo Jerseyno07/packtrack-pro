@@ -28,6 +28,19 @@ import TourOverlay from './TourOverlay.jsx';
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 
+function poDispFactor(po) {
+  if (po.meters_per_unit) return Number(po.meters_per_unit);
+  if (po.stickers_per_roll) return Number(po.stickers_per_roll);
+  return 1;
+}
+function poDispUnit(po) {
+  return (po.meters_per_unit || po.stickers_per_roll) ? 'rolls' : (po.unit ?? '');
+}
+function poToDisp(po, baseQty) {
+  const factor = poDispFactor(po);
+  return factor > 1 ? parseFloat((Number(baseQty) / factor).toFixed(2)) : Number(baseQty);
+}
+
 function makeApi(token) {
   async function req(method, path, body) {
     const res = await fetch(`${BASE_URL}${path}`, {
@@ -209,7 +222,7 @@ function GRNScreen({ api }) {
   function selectPO(po) {
     setSelectedPO(po);
     const remaining = Number(po.remaining_qty ?? po.po_qty);
-    setInwardQty(String(remaining));
+    setInwardQty(String(poToDisp(po, remaining)));
     setFcReason('');
     setInvoiceImage(null);
     setInvoiceNo('');
@@ -233,7 +246,7 @@ function GRNScreen({ api }) {
     try {
       const res = await api.postGRN({
         po_id: selectedPO.id,
-        grn_qty: Number(inwardQty),
+        grn_qty: Math.round(qty * poDispFactor(selectedPO)),
         grn_date: grnDate,
         invoice_no: invoiceNo,
         has_invoice_attachment: !!invoiceImage,
@@ -285,7 +298,8 @@ function GRNScreen({ api }) {
           <div data-tour="grn-po-list" className="space-y-2">
             {openPOs.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No open POs found.</div>}
             {openPOs.map((po) => {
-              const remaining = Number(po.remaining_qty ?? po.po_qty);
+              const remaining = poToDisp(po, Number(po.remaining_qty ?? po.po_qty));
+              const unit = poDispUnit(po);
               const isPartial = po.status === 'PARTIALLY_RECEIVED';
               const cardCls = isPartial
                 ? 'w-full bg-amber-50 rounded-xl border border-amber-200 p-4 flex items-center gap-3 text-left hover:border-amber-400 transition-colors'
@@ -301,8 +315,8 @@ function GRNScreen({ api }) {
                     <div className="text-xs text-slate-500">{po.material_code} — {po.material_name}</div>
                   </div>
                   <div className="text-right">
-                    <div className="font-bold text-slate-900">{remaining}</div>
-                    <div className="text-xs text-slate-400">remaining of {po.po_qty}</div>
+                    <div className="font-bold text-slate-900">{remaining} {unit}</div>
+                    <div className="text-xs text-slate-400">remaining of {poToDisp(po, po.po_qty)} {unit}</div>
                   </div>
                   <ChevronRight size={16} className="text-slate-300" />
                 </button>
@@ -314,17 +328,18 @@ function GRNScreen({ api }) {
     );
   }
 
-  const remaining = Number(selectedPO.remaining_qty ?? selectedPO.po_qty);
+  const remainingBase = Number(selectedPO.remaining_qty ?? selectedPO.po_qty);
+  const remaining = poToDisp(selectedPO, remainingBase);
   const qty = Number(inwardQty) || 0;
-  const isExact = qty === remaining;
-  const isUnder = qty > 0 && qty < remaining;
-  const isOver = qty > remaining;
+  const isExact = Math.abs(qty - remaining) < 0.001;
+  const isUnder = qty > 0 && qty < remaining - 0.001;
+  const isOver = qty > remaining + 0.001;
 
   // Partial inward is a normal flow now — vendors often ship a PO line across
   // multiple deliveries. Post GRN is enabled for any qty in (0, remaining].
   // Force Complete is a separate, always-available action for deliberately
   // closing the line short (e.g. vendor won't deliver the rest).
-  const canGRN = qty > 0 && qty <= remaining && !submitting;
+  const canGRN = qty > 0 && qty <= remaining + 0.001 && !submitting;
   const canForce = fcReason.trim().length > 0 && !submitting;
 
   return (
@@ -341,26 +356,27 @@ function GRNScreen({ api }) {
         <div className="grid grid-cols-3 gap-2 text-center">
           <div className="bg-slate-50 rounded-lg py-2.5 px-2">
             <div className="text-xs text-slate-400 mb-0.5">PO Qty</div>
-            <div className="font-bold text-slate-900">{selectedPO.po_qty}</div>
+            <div className="font-bold text-slate-900">{poToDisp(selectedPO, selectedPO.po_qty)} {poDispUnit(selectedPO)}</div>
           </div>
           <div className="bg-slate-50 rounded-lg py-2.5 px-2">
             <div className="text-xs text-slate-400 mb-0.5">Already Received</div>
-            <div className="font-bold text-slate-900">{Number(selectedPO.received_qty_cache ?? 0)}</div>
+            <div className="font-bold text-slate-900">{poToDisp(selectedPO, selectedPO.received_qty_cache ?? 0)} {poDispUnit(selectedPO)}</div>
           </div>
           <div className="bg-blue-50 rounded-lg py-2.5 px-2">
             <div className="text-xs text-blue-600 mb-0.5">Remaining</div>
-            <div className="font-bold text-blue-800">{remaining}</div>
+            <div className="font-bold text-blue-800">{remaining} {poDispUnit(selectedPO)}</div>
           </div>
         </div>
 
         {/* Editable inward qty */}
         <div>
           <label className="text-xs font-medium text-slate-500 mb-1 block">
-            Actual Inward Qty <span className="text-red-500">*</span>
+            Actual Inward Qty ({poDispUnit(selectedPO)}) <span className="text-red-500">*</span>
           </label>
           <input
             type="number"
-            min={1}
+            min={0.01}
+            step="any"
             max={remaining}
             value={inwardQty}
             onChange={(e) => setInwardQty(e.target.value)}
@@ -372,7 +388,7 @@ function GRNScreen({ api }) {
             }`}
           />
           {isOver && (
-            <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertTriangle size={12} /> Cannot inward more than PO qty. Max allowed: {remaining}</p>
+            <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertTriangle size={12} /> Cannot inward more than PO qty. Max allowed: {remaining} {poDispUnit(selectedPO)}</p>
           )}
           {isExact && (
             <p className="text-xs text-green-700 mt-1">Inward qty matches remaining PO qty.</p>
