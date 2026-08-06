@@ -493,9 +493,10 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
       const whMap = new Map((await client.query("SELECT id, code FROM warehouses WHERE is_active AND warehouse_type='PM_STORE'")).rows.map((r) => [r.code, r.id]));
 
       const errors = [];
-      let validCount = 0;
+      const validRows = [];
       const seenPoMaterialKeys = new Set();
 
+      // Pass 1: validate all rows, no inserts yet
       for (let i = 0; i < rawRows.length; i++) {
         const rowNum = i + 2;
         const row = rawRows[i];
@@ -508,10 +509,6 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${d.sku_code}'` }); continue; }
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown or non-PM-Store pm_store_code '${d.pm_store_code}'` }); continue; }
 
-        // Sticker rolls (barcode/wax ribbon): qty = no_of_rolls × stickers_per_roll
-        // Regular roll materials (net roll, cling wrap): qty in meters = no_of_rolls × meters_per_unit
-        // Butter paper and similar: po_qty entered in kg × pieces_per_kg = pieces stored
-        // Non-roll materials: use po_qty directly
         let finalQty;
         if (mat.stickers_per_roll) {
           if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `"No. of Rolls" is required for sticker roll material '${d.sku_code}'` }); continue; }
@@ -535,30 +532,36 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
           if (expDelivery === undefined) { errors.push({ row: rowNum, error: `Invalid expected_delivery '${d.expected_delivery}'` }); continue; }
         }
 
-        // Duplicate (po_no, material) within the same file or against existing data -> reported as a row
-        // error, not a hard crash, so one bad row doesn't void the whole batch. Different materials are
-        // allowed to share the same po_no (one PO, multiple packaging materials).
         const dupKey = `${d.po_no}::${mat.id}`;
         if (seenPoMaterialKeys.has(dupKey)) { errors.push({ row: rowNum, error: `PO '${d.po_no}' already has a line for material '${d.sku_code}' earlier in this file` }); continue; }
         const dupCheck = await client.query('SELECT id FROM purchase_orders WHERE po_no = $1 AND material_id = $2', [d.po_no, mat.id]);
         if (dupCheck.rows.length) { errors.push({ row: rowNum, error: `PO '${d.po_no}' already has a line for material '${d.sku_code}'` }); continue; }
         seenPoMaterialKeys.add(dupKey);
 
+        validRows.push({ rowNum, d, mat, warehouseId, finalQty, poDate, expDelivery });
+      }
+
+      // If any row failed, reject the entire upload
+      if (errors.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({ status: 'FAILED', total_rows: rawRows.length, valid_rows: validRows.length, error_rows: errors.length, errors: errors.slice(0, 200) });
+      }
+
+      // Pass 2: all rows valid — insert everything
+      for (const { rowNum, d, mat, warehouseId, finalQty, poDate, expDelivery } of validRows) {
         await client.query(
           `INSERT INTO purchase_orders (po_no, batch_id, row_number_in_file, vendor_name, material_id, pm_store_warehouse_id, po_qty, unit_price, po_date, expected_delivery)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [d.po_no, batchId, rowNum, d.vendor_name, mat.id, warehouseId, finalQty, d.unit_price, poDate, expDelivery]
         );
-        validCount++;
       }
 
-      const finalStatus = errors.length === 0 ? 'VALIDATED' : validCount === 0 ? 'FAILED' : 'PARTIALLY_FAILED';
-      await client.query(`UPDATE po_batches SET status=$1, valid_rows=$2, error_rows=$3, error_detail=$4 WHERE id=$5`,
-        [finalStatus, validCount, errors.length, JSON.stringify(errors.slice(0, 200)), batchId]);
-      await writeAudit(client, { userId: req.user.id, action: 'PO_BATCH_UPLOADED', entityTable: 'po_batches', entityId: batchId, detail: { batchRef, validCount, errorCount: errors.length } });
+      await client.query(`UPDATE po_batches SET status='VALIDATED', valid_rows=$1, error_rows=0, error_detail='[]' WHERE id=$2`,
+        [validRows.length, batchId]);
+      await writeAudit(client, { userId: req.user.id, action: 'PO_BATCH_UPLOADED', entityTable: 'po_batches', entityId: batchId, detail: { batchRef, validCount: validRows.length, errorCount: 0 } });
       await client.query('COMMIT');
 
-      res.status(201).json({ batch_id: batchId, batch_ref: batchRef, status: finalStatus, total_rows: rawRows.length, valid_rows: validCount, error_rows: errors.length, errors: errors.slice(0, 200) });
+      res.status(201).json({ batch_id: batchId, batch_ref: batchRef, status: 'VALIDATED', total_rows: rawRows.length, valid_rows: validRows.length, error_rows: 0, errors: [] });
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
