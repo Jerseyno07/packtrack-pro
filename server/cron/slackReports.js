@@ -385,10 +385,10 @@ async function sendCCBalanceVsAudit() {
 
 // ── Cron jobs (timezone: Asia/Kolkata / IST) ──────────────────────────────────
 
-// 00:00 IST — auto-run and auto-accept consumption (all facilities)
+// 00:00 IST — auto-run and auto-accept consumption (Bangalore facilities only)
 cron.schedule('0 0 * * *', () => {
-  console.log('[slackReports] 00:00 IST — starting nightly consumption run (all facilities)');
-  runAndAcceptConsumption().catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
+  console.log('[slackReports] 00:00 IST — starting nightly consumption run (Bangalore only)');
+  runAndAcceptConsumption(BLR_FACILITIES).catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
 // 01:00 IST — Daily Consumption Details (give run a full hour to complete)
