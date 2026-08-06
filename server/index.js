@@ -242,6 +242,11 @@ function parseUploadedFile(file) {
 function toIsoDateOrNull(val) {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? undefined : val.toISOString().slice(0, 10);
+  // Excel serial date number (e.g. 46123) — days since 1899-12-30
+  if (typeof val === 'number' || (typeof val === 'string' && /^\d{4,6}$/.test(val.trim()) && Number(val) > 40000)) {
+    const d = new Date(Math.round((Number(val) - 25569) * 86400 * 1000));
+    return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+  }
   // Strip time component if present (e.g. "24/07/2026 10:30:00")
   const s = String(val).trim().split(/[\sT]/)[0];
   // DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY (Indian formats)
@@ -464,8 +469,8 @@ const poRowSchema = z.object({
   po_qty: z.coerce.number().positive().optional(),
   no_of_rolls: z.coerce.number().positive().optional(),
   unit_price: z.coerce.number().nonnegative(),
-  po_date: z.string().min(1),
-  expected_delivery: z.string().optional(),
+  po_date: z.coerce.string().min(1),
+  expected_delivery: z.coerce.string().optional(),
 });
 
 app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), upload.single('file'),
