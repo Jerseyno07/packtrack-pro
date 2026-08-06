@@ -544,6 +544,12 @@ function AdminPanel({ token, tabOverride }) {
   const [skuResult, setSkuResult] = useState(null);
   const [skuError, setSkuError] = useState('');
 
+  const [allMaterials, setAllMaterials] = useState([]);
+  const [matForm, setMatForm] = useState({ code: '', name: '', category: '', unit: 'Pcs', master_price: '', meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' });
+  const [matSaving, setMatSaving] = useState(false);
+  const [matError, setMatError] = useState('');
+  const [matSuccess, setMatSuccess] = useState('');
+
   const [consumptionRuns, setConsumptionRuns] = useState([]);
   const [consumptionLoading, setConsumptionLoading] = useState(false);
   const [runNowLoading, setRunNowLoading] = useState(false);
@@ -656,6 +662,30 @@ function AdminPanel({ token, tabOverride }) {
     } catch { /* silent */ }
     finally { setConsumptionLoading(false); }
   }, [token]);
+
+  async function fetchMaterials() {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/materials`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed');
+      setAllMaterials(data.data ?? []);
+    } catch { /* silent */ }
+  }
+
+  async function saveMaterial() {
+    setMatSaving(true); setMatError(''); setMatSuccess('');
+    try {
+      const body = { ...matForm };
+      ['master_price', 'meters_per_unit', 'stickers_per_roll', 'consumption_rate', 'pieces_per_kg'].forEach((k) => { if (!body[k]) delete body[k]; });
+      const res = await fetch(`${BASE_URL}/api/v1/materials`, { method: 'POST', headers: { ...hdrs, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed');
+      setMatSuccess(`Material '${data.data.code}' added.`);
+      setMatForm({ code: '', name: '', category: '', unit: 'Pcs', master_price: '', meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' });
+      fetchMaterials();
+    } catch (e) { setMatError(e.message); }
+    finally { setMatSaving(false); }
+  }
 
   async function uploadSkuMaster() {
     if (!skuFile) { setSkuError('Select a file first.'); return; }
@@ -841,6 +871,7 @@ function AdminPanel({ token, tabOverride }) {
 
   useEffect(() => { fetchOverview(); }, [fetchOverview]);
   useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
+  useEffect(() => { if (tab === 'materials') fetchMaterials(); }, [tab]);
   useEffect(() => { if (tab === 'consumption') { fetchConsumptionRuns(); fetchFacilityWarehouses(); } }, [tab, fetchConsumptionRuns]);
 
   // Poll while progress modal is open; when run reaches PENDING_REVIEW, fetch summary
@@ -919,6 +950,7 @@ function AdminPanel({ token, tabOverride }) {
     { id: 'issues', label: 'Stock Issues' },
     { id: 'stock', label: 'Current Stock' },
     { id: 'audit', label: 'Audit Log' },
+    { id: 'materials', label: 'Materials' },
     { id: 'sku', label: 'SKU Master' },
     { id: 'consumption', label: 'Consumption Runs' },
     { id: 'cons-history', label: 'Consumption History' },
@@ -1229,6 +1261,113 @@ function AdminPanel({ token, tabOverride }) {
             <span className="text-sm text-slate-500">Page {auditPage}</span>
             <button disabled={!auditHasMore || auditLoading} onClick={() => fetchAuditLog(auditPage + 1)}
               className="px-3 py-1.5 text-sm bg-white border border-slate-200 rounded-lg disabled:opacity-40">Next →</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'materials' && (
+        <div className="space-y-6 max-w-2xl">
+          {/* Add material form */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+            <h3 className="font-semibold text-slate-800">Add New Material</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">SKU Code <span className="text-red-500">*</span></label>
+                <input value={matForm.code} onChange={(e) => setMatForm((p) => ({ ...p, code: e.target.value.toUpperCase() }))}
+                  placeholder="e.g. LDPE-06" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Name <span className="text-red-500">*</span></label>
+                <input value={matForm.name} onChange={(e) => setMatForm((p) => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. LDPE Cover 6 Kg" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Category</label>
+                <input value={matForm.category} onChange={(e) => setMatForm((p) => ({ ...p, category: e.target.value }))}
+                  placeholder="e.g. LDPE Bags" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Unit <span className="text-red-500">*</span></label>
+                <select value={matForm.unit} onChange={(e) => setMatForm((p) => ({ ...p, unit: e.target.value, meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option>Pcs</option>
+                  <option>Roll</option>
+                  <option>Kg</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Unit Price (₹)</label>
+                <input type="number" value={matForm.master_price} onChange={(e) => setMatForm((p) => ({ ...p, master_price: e.target.value }))}
+                  placeholder="0.00" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            </div>
+            {/* Roll-specific fields */}
+            {matForm.unit === 'Roll' && (
+              <div className="border-t border-slate-100 pt-3 space-y-3">
+                <p className="text-xs text-slate-500 font-medium">Roll settings — fill one set only</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 mb-1 block">Meters per roll</label>
+                    <input type="number" value={matForm.meters_per_unit} onChange={(e) => setMatForm((p) => ({ ...p, meters_per_unit: e.target.value, stickers_per_roll: '' }))}
+                      placeholder="1000" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 mb-1 block">Consumption rate (m/unit)</label>
+                    <input type="number" value={matForm.consumption_rate} onChange={(e) => setMatForm((p) => ({ ...p, consumption_rate: e.target.value }))}
+                      placeholder="0.55" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 mb-1 block">Stickers per roll</label>
+                    <input type="number" value={matForm.stickers_per_roll} onChange={(e) => setMatForm((p) => ({ ...p, stickers_per_roll: e.target.value, meters_per_unit: '', consumption_rate: '' }))}
+                      placeholder="1000" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* Pieces-per-kg field */}
+            {matForm.unit !== 'Roll' && (
+              <div className="border-t border-slate-100 pt-3">
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Pieces per kg <span className="text-slate-400">(if vendor sells in kg, e.g. butter paper = 350)</span></label>
+                <input type="number" value={matForm.pieces_per_kg} onChange={(e) => setMatForm((p) => ({ ...p, pieces_per_kg: e.target.value }))}
+                  placeholder="leave blank if not applicable" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            )}
+            {matError && <p className="text-sm text-red-600">{matError}</p>}
+            {matSuccess && <p className="text-sm text-green-600">{matSuccess}</p>}
+            <button onClick={saveMaterial} disabled={matSaving || !matForm.code || !matForm.name}
+              className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
+              {matSaving ? <RefreshCw size={14} className="animate-spin" /> : null}
+              {matSaving ? 'Saving…' : 'Add Material'}
+            </button>
+          </div>
+
+          {/* Existing materials list */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="px-4 py-2.5 text-left">Code</th>
+                  <th className="px-4 py-2.5 text-left">Name</th>
+                  <th className="px-4 py-2.5 text-left">Category</th>
+                  <th className="px-4 py-2.5 text-left">Unit</th>
+                  <th className="px-4 py-2.5 text-left">Roll / Conversion</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allMaterials.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Loading…</td></tr>}
+                {allMaterials.map((m) => (
+                  <tr key={m.id} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-2.5 font-mono text-xs text-slate-700">{m.code}</td>
+                    <td className="px-4 py-2.5 text-slate-800">{m.name}</td>
+                    <td className="px-4 py-2.5 text-slate-500 text-xs">{m.category ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{m.unit}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-500">
+                      {m.meters_per_unit ? `${m.meters_per_unit} m/roll · ${m.consumption_rate ?? '?'} m/unit` : m.stickers_per_roll ? `${m.stickers_per_roll} stickers/roll` : m.pieces_per_kg ? `${m.pieces_per_kg} pcs/kg` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

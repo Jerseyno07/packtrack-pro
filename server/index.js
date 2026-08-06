@@ -1290,8 +1290,24 @@ app.get('/api/v1/warehouses', authenticate, asyncHandler(async (req, res) => {
 }));
 
 app.get('/api/v1/materials', authenticate, asyncHandler(async (req, res) => {
-  const r = await pool.query('SELECT id, code, name, category, unit, master_price FROM materials WHERE is_active ORDER BY code');
+  const r = await pool.query('SELECT id, code, name, category, unit, master_price, meters_per_unit, stickers_per_roll, consumption_rate, pieces_per_kg FROM materials WHERE is_active ORDER BY code');
   res.json({ data: r.rows });
+}));
+
+app.post('/api/v1/materials', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { code, name, category, unit, master_price, low_stock_qty, meters_per_unit, stickers_per_roll, consumption_rate, pieces_per_kg } = req.body;
+  if (!code || !name || !unit) throw new ApiError(400, 'VALIDATION_ERROR', 'code, name, and unit are required');
+  const dup = await pool.query('SELECT id FROM materials WHERE LOWER(code) = LOWER($1)', [code.trim()]);
+  if (dup.rows.length) throw new ApiError(409, 'DUPLICATE_CODE', `Material code '${code}' already exists`);
+  const r = await pool.query(
+    `INSERT INTO materials (code, name, category, unit, master_price, low_stock_qty, meters_per_unit, stickers_per_roll, consumption_rate, pieces_per_kg, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true) RETURNING *`,
+    [code.trim().toUpperCase(), name.trim(), category?.trim() || null, unit,
+     master_price || null, low_stock_qty || null,
+     meters_per_unit || null, stickers_per_roll || null, consumption_rate || null, pieces_per_kg || null]
+  );
+  await writeAudit(pool, { userId: req.user.id, action: 'MATERIAL_CREATED', entityTable: 'materials', entityId: r.rows[0].id, detail: { code, name, unit } });
+  res.status(201).json({ data: r.rows[0] });
 }));
 
 // ─────────────────────────────────────────────────────────────────────────
