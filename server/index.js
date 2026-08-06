@@ -1255,6 +1255,7 @@ app.get('/api/v1/stock/current', authenticate, asyncHandler(async (req, res) => 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
     `SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, m.unit,
+            m.meters_per_unit, m.stickers_per_roll,
             COALESCE(cs.on_hand_qty, 0) AS on_hand_qty, cs.weighted_avg_cost,
             COALESCE(msl.min_qty, m.low_stock_qty) AS min_qty,
             CASE WHEN COALESCE(cs.on_hand_qty, 0) <= COALESCE(msl.min_qty, m.low_stock_qty) THEN true ELSE false END AS is_low_stock

@@ -583,7 +583,7 @@ function IssueScreen({ api }) {
         {!loading && (
           <div data-tour="indent-list" className="space-y-2">
             {facilities.map((fac) => {
-              const hasShortage = fac.lines.some((l) => Number(l.pm_on_hand_qty) < Number(l.pending_qty));
+              const hasShortage = fac.lines.some((l) => toDisp(l, l.pm_on_hand_qty) < toDisp(l, l.pending_qty));
               return (
                 <button key={fac.warehouse_id} onClick={() => setSelectedFacilityId(fac.warehouse_id)}
                   className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left hover:border-blue-300 active:bg-blue-50 transition-colors">
@@ -800,20 +800,25 @@ function StoreStockView({ token, warehouseId }) {
             </thead>
             <tbody>
               {stock.length === 0 && <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">No stock records</td></tr>}
-              {stock.map((s, i) => (
-                <tr key={i} className={`border-t border-slate-100 ${s.is_low_stock ? 'bg-red-50' : ''}`}>
-                  <td className="px-4 py-2.5">
-                    <div className="font-medium text-slate-800">{s.material_name}</div>
-                    <div className="text-xs text-slate-400">{s.material_code} · {s.unit}</div>
-                  </td>
-                  <td className={`px-4 py-2.5 text-right font-bold ${s.is_low_stock ? 'text-red-600' : 'text-slate-900'}`}>
-                    {Number(s.on_hand_qty)}
-                    {s.is_low_stock && <span className="ml-1.5 text-xs font-normal bg-red-100 text-red-600 px-1.5 py-0.5 rounded">⚠ Below minimum</span>}
-                  </td>
-                  <td className="px-4 py-2.5 text-right text-slate-500">{s.min_qty ?? '—'}</td>
-                  <td className="px-4 py-2.5 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
-                </tr>
-              ))}
+              {stock.map((s, i) => {
+                const unit = dispUnit(s);
+                const onHand = toDisp(s, s.on_hand_qty);
+                const minQty = s.min_qty != null ? toDisp(s, s.min_qty) : null;
+                return (
+                  <tr key={i} className={`border-t border-slate-100 ${s.is_low_stock ? 'bg-red-50' : ''}`}>
+                    <td className="px-4 py-2.5">
+                      <div className="font-medium text-slate-800">{s.material_name}</div>
+                      <div className="text-xs text-slate-400">{s.material_code} · {unit}</div>
+                    </td>
+                    <td className={`px-4 py-2.5 text-right font-bold ${s.is_low_stock ? 'text-red-600' : 'text-slate-900'}`}>
+                      {onHand} {unit}
+                      {s.is_low_stock && <span className="ml-1.5 text-xs font-normal bg-red-100 text-red-600 px-1.5 py-0.5 rounded">⚠ Below minimum</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-slate-500">{minQty != null ? `${minQty} ${unit}` : '—'}</td>
+                    <td className="px-4 py-2.5 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
