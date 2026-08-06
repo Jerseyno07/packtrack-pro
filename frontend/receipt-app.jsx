@@ -28,6 +28,19 @@ import TourOverlay from './TourOverlay.jsx';
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 
+function rcptDispFactor(issue) {
+  if (issue.meters_per_unit) return Number(issue.meters_per_unit);
+  if (issue.stickers_per_roll) return Number(issue.stickers_per_roll);
+  return 1;
+}
+function rcptDispUnit(issue) {
+  return (issue.meters_per_unit || issue.stickers_per_roll) ? 'rolls' : (issue.unit ?? '');
+}
+function rcptToDisp(issue, baseQty) {
+  const factor = rcptDispFactor(issue);
+  return factor > 1 ? parseFloat((Number(baseQty) / factor).toFixed(2)) : Number(baseQty);
+}
+
 function api(token) {
   const headers = (extra = {}) => ({
     'Content-Type': 'application/json',
@@ -175,8 +188,8 @@ function IssueListItem({ issue, onSelect }) {
         <div className="text-xs text-slate-400 mt-0.5">Indent {issue.indent_ref} · {issue.issue_date}</div>
       </div>
       <div className="text-right flex-shrink-0">
-        <div className="font-bold text-slate-900">{issue.pending_qty ?? issue.issued_qty}</div>
-        <div className="text-xs text-slate-400">of {issue.issued_qty} {issue.unit}</div>
+        <div className="font-bold text-slate-900">{rcptToDisp(issue, issue.pending_qty ?? issue.issued_qty)}</div>
+        <div className="text-xs text-slate-400">of {rcptToDisp(issue, issue.issued_qty)} {rcptDispUnit(issue)}</div>
       </div>
       <ChevronRight size={18} className="text-slate-300 flex-shrink-0" />
     </button>
@@ -192,21 +205,24 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
   const [error, setError] = useState('');
 
   const client = api(token);
-  const expectedQty = Number(defaults?.expected_qty ?? issue.pending_qty ?? issue.issued_qty);
+  const dispFactor = rcptDispFactor(issue);
+  const unit = rcptDispUnit(issue);
+  const expectedQtyBase = Number(defaults?.expected_qty ?? issue.pending_qty ?? issue.issued_qty);
+  const expectedQty = rcptToDisp(issue, expectedQtyBase);
 
   useEffect(() => {
     client.receiptDefaults(issue.id).then((d) => {
       setDefaults(d);
-      setReceivedQty(String(d.suggested_received_qty ?? issue.pending_qty ?? issue.issued_qty));
+      setReceivedQty(String(rcptToDisp(issue, d.suggested_received_qty ?? issue.pending_qty ?? issue.issued_qty)));
     }).catch(() => {
-      setReceivedQty(String(issue.pending_qty ?? issue.issued_qty));
+      setReceivedQty(String(rcptToDisp(issue, issue.pending_qty ?? issue.issued_qty)));
     });
   }, [issue.id]);
 
   const qty = Number(receivedQty) || 0;
-  const isExact = qty === expectedQty;
-  const isUnder = qty > 0 && qty < expectedQty;
-  const isOver = qty > expectedQty;
+  const isExact = Math.abs(qty - expectedQty) < 0.001;
+  const isUnder = qty > 0 && qty < expectedQty - 0.001;
+  const isOver = qty > expectedQty + 0.001;
 
   const canConfirm = isExact && !submitting;
   const canForce = isUnder && fcReason.trim().length > 0 && !submitting;
@@ -217,11 +233,11 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
     try {
       const res = await client.confirmReceipt({
         stock_issue_id: issue.id,
-        received_qty: qty,
+        received_qty: Math.round(qty * dispFactor),
         shortage_qty: 0,
         damage_qty: 0,
         receipt_date: receiptDate,
-        expected_qty: expectedQty,
+        expected_qty: Math.round(expectedQty * dispFactor),
       });
       onSubmitted(res);
     } catch (e) {
@@ -264,7 +280,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
         <div className="grid grid-cols-3 gap-2 text-center pt-3 border-t border-slate-100">
           <div className="bg-slate-50 rounded-lg py-2.5 px-2">
             <div className="text-xs text-slate-400 mb-0.5">Dispatched</div>
-            <div className="font-bold text-slate-900">{issue.issued_qty}</div>
+            <div className="font-bold text-slate-900">{rcptToDisp(issue, issue.issued_qty)} {unit}</div>
           </div>
           <div className="bg-slate-50 rounded-lg py-2.5 px-2">
             <div className="text-xs text-slate-400 mb-0.5">From</div>
@@ -272,7 +288,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           </div>
           <div className="bg-blue-50 rounded-lg py-2.5 px-2">
             <div className="text-xs text-blue-600 mb-0.5">Expected</div>
-            <div className="font-bold text-blue-800">{expectedQty} {issue.unit}</div>
+            <div className="font-bold text-blue-800">{expectedQty} {unit}</div>
           </div>
         </div>
       </div>
@@ -282,10 +298,10 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
         {/* Editable received qty */}
         <div>
           <label className="text-xs font-medium text-slate-500 mb-1 block">
-            Actual Received Qty <span className="text-red-500">*</span>
+            Actual Received Qty ({unit}) <span className="text-red-500">*</span>
           </label>
           <input
-            type="number" min={1} max={expectedQty} inputMode="decimal"
+            type="number" min={0.01} max={expectedQty} inputMode="decimal" step="any"
             value={receivedQty} onChange={(e) => setReceivedQty(e.target.value)}
             className={`w-full px-3 py-2.5 border rounded-lg text-base font-medium focus:outline-none focus:ring-2 ${
               isOver    ? 'border-red-400 bg-red-50 focus:ring-red-400 text-red-700'
@@ -296,7 +312,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           />
           {isOver && (
             <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
-              <AlertTriangle size={12} /> Cannot receive more than dispatched qty. Max: {expectedQty}
+              <AlertTriangle size={12} /> Cannot receive more than dispatched qty. Max: {expectedQty} {unit}
             </p>
           )}
           {isExact && <p className="text-xs text-green-700 mt-1">Qty matches — Confirm Receipt enabled.</p>}
