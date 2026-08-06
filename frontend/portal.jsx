@@ -420,10 +420,11 @@ function dashDispQty(row, baseQty) {
   const qty = Number(baseQty);
   if (row.meters_per_unit) return parseFloat((qty / Number(row.meters_per_unit)).toFixed(2));
   if (row.stickers_per_roll) return parseFloat((qty / Number(row.stickers_per_roll)).toFixed(2));
+  if (row.pieces_per_kg) return parseFloat((qty / Number(row.pieces_per_kg)).toFixed(3));
   return qty;
 }
 function dashDispUnit(row) {
-  return row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : (row.unit ?? '');
+  return row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.pieces_per_kg ? 'Kg' : (row.unit ?? '');
 }
 
 function DashboardSection({ token }) {
@@ -1203,9 +1204,10 @@ function AdminPanel({ token, tabOverride }) {
         const stockDispQty = (s) => {
           if (s.meters_per_unit) return parseFloat((Number(s.on_hand_qty) / Number(s.meters_per_unit)).toFixed(2));
           if (s.stickers_per_roll) return parseFloat((Number(s.on_hand_qty) / Number(s.stickers_per_roll)).toFixed(2));
+          if (s.pieces_per_kg) return parseFloat((Number(s.on_hand_qty) / Number(s.pieces_per_kg)).toFixed(3));
           return s.on_hand_qty;
         };
-        const stockDispUnit = (s) => s.meters_per_unit ? 'rolls' : s.stickers_per_roll ? 'units' : (s.unit ?? '');
+        const stockDispUnit = (s) => s.meters_per_unit ? 'rolls' : s.stickers_per_roll ? 'units' : s.pieces_per_kg ? 'Kg' : (s.unit ?? '');
         const exportCsv = () => {
           const exportDate = new Date().toISOString().slice(0, 10);
           const header = ['Date', 'Warehouse', 'SKU', 'Material', 'On Hand', 'Unit', 'Avg Cost (INR)'];
@@ -1682,23 +1684,23 @@ function AdminPanel({ token, tabOverride }) {
                                   <div className="text-xs text-slate-400 font-mono">{row.material_code}</div>
                                 </td>
                                 <td className="px-4 py-2.5 text-right text-slate-700">
-                                  {row.meters_per_unit
-                                    ? (Number(row.total_deducted) / Number(row.meters_per_unit)).toFixed(2)
+                                  {row.meters_per_unit ? (Number(row.total_deducted) / Number(row.meters_per_unit)).toFixed(2)
+                                    : row.pieces_per_kg ? (Number(row.total_deducted) / Number(row.pieces_per_kg)).toFixed(3)
                                     : Number(row.total_deducted).toLocaleString()}
-                                  {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.unit}
+                                  {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.pieces_per_kg ? 'Kg' : row.unit}
                                 </td>
                                 <td className="px-4 py-2.5 text-right text-slate-500">
-                                  {row.meters_per_unit
-                                    ? (Number(row.current_stock) / Number(row.meters_per_unit)).toFixed(2)
+                                  {row.meters_per_unit ? (Number(row.current_stock) / Number(row.meters_per_unit)).toFixed(2)
+                                    : row.pieces_per_kg ? (Number(row.current_stock) / Number(row.pieces_per_kg)).toFixed(3)
                                     : Number(row.current_stock).toLocaleString()}
-                                  {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.unit}
+                                  {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.pieces_per_kg ? 'Kg' : row.unit}
                                 </td>
                                 <td className={`px-4 py-2.5 text-right font-semibold ${committed ? 'text-green-600' : after < 0 ? 'text-red-600' : 'text-slate-700'}`}>
                                   {committed
                                     ? <span className="text-xs font-normal text-green-600 flex items-center justify-end gap-1"><CheckCircle2 size={12} />Done</span>
-                                    : row.meters_per_unit
-                                      ? (after / Number(row.meters_per_unit)).toFixed(2)
-                                      : after.toLocaleString()}
+                                    : row.meters_per_unit ? (after / Number(row.meters_per_unit)).toFixed(2)
+                                    : row.pieces_per_kg ? (after / Number(row.pieces_per_kg)).toFixed(3)
+                                    : after.toLocaleString()}
                                 </td>
                               </tr>
                             );
@@ -1794,8 +1796,8 @@ function AdminPanel({ token, tabOverride }) {
                     r.warehouse_code,
                     r.material_name,
                     r.material_code,
-                    r.meters_per_unit ? (Number(r.qty_consumed) / Number(r.meters_per_unit)).toFixed(2) : r.qty_consumed,
-                    r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.unit,
+                    r.meters_per_unit ? (Number(r.qty_consumed) / Number(r.meters_per_unit)).toFixed(2) : r.pieces_per_kg ? (Number(r.qty_consumed) / Number(r.pieces_per_kg)).toFixed(3) : r.qty_consumed,
+                    r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.pieces_per_kg ? 'Kg' : r.unit,
                   ]);
                   const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
                   const blob = new Blob([csv], { type: 'text/csv' });
@@ -1842,11 +1844,11 @@ function AdminPanel({ token, tabOverride }) {
                       <div className="text-xs text-slate-400 font-mono">{r.material_code}</div>
                     </td>
                     <td className="px-4 py-2.5 text-right font-bold text-slate-900">
-                      {r.meters_per_unit
-                        ? (Number(r.qty_consumed) / Number(r.meters_per_unit)).toFixed(2)
+                      {r.meters_per_unit ? (Number(r.qty_consumed) / Number(r.meters_per_unit)).toFixed(2)
+                        : r.pieces_per_kg ? (Number(r.qty_consumed) / Number(r.pieces_per_kg)).toFixed(3)
                         : Number(r.qty_consumed).toLocaleString()}
                     </td>
-                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.unit}</td>
+                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.pieces_per_kg ? 'Kg' : r.unit}</td>
                   </tr>
                 ))}
               </tbody>

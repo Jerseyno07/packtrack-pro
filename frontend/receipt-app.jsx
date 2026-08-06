@@ -31,10 +31,11 @@ const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up
 function rcptDispFactor(issue) {
   if (issue.meters_per_unit) return Number(issue.meters_per_unit);
   if (issue.stickers_per_roll) return Number(issue.stickers_per_roll);
+  if (issue.pieces_per_kg) return Number(issue.pieces_per_kg);
   return 1;
 }
 function rcptDispUnit(issue) {
-  return (issue.meters_per_unit || issue.stickers_per_roll) ? 'rolls' : (issue.unit ?? '');
+  return issue.meters_per_unit ? 'rolls' : issue.stickers_per_roll ? 'units' : issue.pieces_per_kg ? 'Kg' : (issue.unit ?? '');
 }
 function rcptToDisp(issue, baseQty) {
   const factor = rcptDispFactor(issue);

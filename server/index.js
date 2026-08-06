@@ -327,7 +327,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
       const batchId = batchIns.rows[0].id;
 
       const whMap = new Map((await client.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id]));
-      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
+      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit, pieces_per_kg FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
 
       // Pass 1: validate all rows — if any fail, reject the entire upload
       const errors = [];
@@ -412,7 +412,7 @@ app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STO
            (il.requested_qty - il.issued_qty) AS pending_qty,
            il.warehouse_id, w.name AS warehouse_name, w.code AS warehouse_code,
            il.material_id, m.code AS material_code, m.name AS material_name, m.unit,
-           m.meters_per_unit, m.stickers_per_roll,
+           m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
            COALESCE(pm_cs.on_hand_qty, 0) AS pm_on_hand_qty,
            COALESCE(fac_cs.on_hand_qty, 0) AS facility_on_hand_qty
     FROM indent_lines il
@@ -579,7 +579,7 @@ app.get('/api/v1/purchase-orders', authenticate, asyncHandler(async (req, res) =
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
     `SELECT po.*, m.code AS material_code, m.name AS material_name, m.unit,
-            m.meters_per_unit, m.stickers_per_roll,
+            m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
             w.name AS warehouse_name,
             (po.po_qty - po.received_qty_cache) AS remaining_qty
      FROM purchase_orders po JOIN materials m ON m.id = po.material_id JOIN warehouses w ON w.id = po.pm_store_warehouse_id
@@ -763,7 +763,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
 
     const lineIds = items.map((i) => i.indent_line_id);
     const linesRes = await client.query(
-      `SELECT il.*, m.meters_per_unit, m.stickers_per_roll, m.unit AS mat_unit, m.code AS mat_code
+      `SELECT il.*, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg, m.unit AS mat_unit, m.code AS mat_code
        FROM indent_lines il JOIN materials m ON m.id = il.material_id
        WHERE il.id = ANY($1) FOR UPDATE OF il`,
       [lineIds]
@@ -772,7 +772,8 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
 
     const fmtDispQty = (qty, line) => {
       if (line.meters_per_unit) return `${(qty / Number(line.meters_per_unit)).toFixed(2)} rolls`;
-      if (line.stickers_per_roll) return `${Math.round(qty / Number(line.stickers_per_roll))} rolls`;
+      if (line.stickers_per_roll) return `${Math.round(qty / Number(line.stickers_per_roll))} units`;
+      if (line.pieces_per_kg) return `${(qty / Number(line.pieces_per_kg)).toFixed(3)} Kg`;
       return `${qty} ${line.mat_unit}`;
     };
 
@@ -861,7 +862,7 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
-    `SELECT si.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll,
+    `SELECT si.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
             fw.name AS from_warehouse_name, tw.name AS to_warehouse_name, il.indent_ref, il.requested_qty,
             (si.issued_qty - COALESCE((SELECT SUM(received_qty+shortage_qty+damage_qty) FROM stock_receipts sr WHERE sr.stock_issue_id = si.id),0)) AS pending_qty
      FROM stock_issues si JOIN materials m ON m.id = si.material_id JOIN warehouses fw ON fw.id = si.from_warehouse_id
@@ -1268,8 +1269,8 @@ app.get('/api/v1/admin/overview', authenticate, requireRole('ADMIN'), asyncHandl
 
   const [indents, pos, stock, issues, receipts, lowStock] = await Promise.all([
     pool.query(`SELECT il.*, w.name AS warehouse_name, m.code AS material_code, m.name AS material_name, m.unit FROM indent_lines il JOIN warehouses w ON w.id=il.warehouse_id JOIN materials m ON m.id=il.material_id WHERE 1=1 ${sinceDateClause} ORDER BY il.indent_date DESC`),
-    pool.query(`SELECT po.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, w.name AS warehouse_name FROM purchase_orders po JOIN materials m ON m.id=po.material_id JOIN warehouses w ON w.id=po.pm_store_warehouse_id WHERE 1=1 ${sincePoClause} ORDER BY po.po_date DESC`),
-    pool.query(`SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, cs.on_hand_qty, cs.weighted_avg_cost FROM v_current_stock cs JOIN warehouses w ON w.id=cs.warehouse_id JOIN materials m ON m.id=cs.material_id ORDER BY w.name, m.code`),
+    pool.query(`SELECT po.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg, w.name AS warehouse_name FROM purchase_orders po JOIN materials m ON m.id=po.material_id JOIN warehouses w ON w.id=po.pm_store_warehouse_id WHERE 1=1 ${sincePoClause} ORDER BY po.po_date DESC`),
+    pool.query(`SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg, cs.on_hand_qty, cs.weighted_avg_cost FROM v_current_stock cs JOIN warehouses w ON w.id=cs.warehouse_id JOIN materials m ON m.id=cs.material_id ORDER BY w.name, m.code`),
     pool.query(`SELECT si.*, m.code AS material_code, m.name AS material_name, fw.name AS from_warehouse_name, tw.name AS to_warehouse_name FROM stock_issues si JOIN materials m ON m.id=si.material_id JOIN warehouses fw ON fw.id=si.from_warehouse_id JOIN warehouses tw ON tw.id=si.to_warehouse_id WHERE 1=1 ${sinceIssuedClause} ORDER BY si.issue_date DESC`),
     pool.query(`SELECT sr.*, si.issue_ref, m.code AS material_code, m.name AS material_name FROM stock_receipts sr JOIN stock_issues si ON si.id=sr.stock_issue_id JOIN materials m ON m.id=si.material_id WHERE 1=1 ${sinceReceiptClause} ORDER BY sr.receipt_date DESC`),
     pool.query(`SELECT * FROM v_low_stock_alerts ORDER BY warehouse_name, material_code`),
@@ -1292,7 +1293,7 @@ app.get('/api/v1/dashboard/indents-to-process', authenticate, requireRole('PM_ST
   const result = await pool.query(
     `SELECT il.warehouse_id, w.name AS warehouse_name, w.warehouse_type,
             il.material_id, m.code AS material_code, m.name AS material_name, m.unit,
-            m.meters_per_unit, m.stickers_per_roll,
+            m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
             il.indent_date,
             SUM(il.requested_qty) AS total_requested,
             SUM(il.issued_qty)    AS total_issued,
@@ -1303,7 +1304,7 @@ app.get('/api/v1/dashboard/indents-to-process', authenticate, requireRole('PM_ST
      JOIN materials  m ON m.id = il.material_id
      WHERE il.status IN ('PENDING', 'PARTIALLY_ISSUED')
      GROUP BY il.warehouse_id, w.name, w.warehouse_type,
-              il.material_id, m.code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll, il.indent_date
+              il.material_id, m.code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg, il.indent_date
      ORDER BY w.name, m.code`
   );
   res.json({ data: result.rows });
@@ -1313,7 +1314,7 @@ app.get('/api/v1/dashboard/po-schedule', authenticate, requireRole('PM_STORE_EXE
   const result = await pool.query(
     `SELECT po.id, po.po_no, po.vendor_name,
             po.material_id, m.code AS material_code, m.name AS material_name,
-            m.meters_per_unit, m.stickers_per_roll, m.unit,
+            m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg, m.unit,
             po.pm_store_warehouse_id, w.name AS warehouse_name,
             po.po_qty, po.received_qty_cache,
             (po.po_qty - po.received_qty_cache) AS remaining_qty,
@@ -1331,7 +1332,7 @@ app.get('/api/v1/dashboard/low-stock-alerts', authenticate, requireRole('PM_STOR
   const result = await pool.query(
     `SELECT w.id AS warehouse_id, w.name AS warehouse_name, w.warehouse_type,
             m.id AS material_id, m.code AS material_code, m.name AS material_name, m.unit,
-            m.meters_per_unit, m.stickers_per_roll,
+            m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
             COALESCE(cs.on_hand_qty, 0) AS on_hand_qty,
             COALESCE(msl.min_qty, m.low_stock_qty) AS min_qty
      FROM warehouses w
@@ -1341,6 +1342,7 @@ app.get('/api/v1/dashboard/low-stock-alerts', authenticate, requireRole('PM_STOR
      WHERE w.is_active AND m.is_active
        AND CASE WHEN m.meters_per_unit   IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.meters_per_unit
                 WHEN m.stickers_per_roll IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.stickers_per_roll
+                WHEN m.pieces_per_kg     IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.pieces_per_kg
                 ELSE COALESCE(cs.on_hand_qty, 0)
            END <= COALESCE(msl.min_qty, m.low_stock_qty)
      ORDER BY w.name, m.code`
@@ -1356,12 +1358,13 @@ app.get('/api/v1/stock/current', authenticate, asyncHandler(async (req, res) => 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
     `SELECT cs.warehouse_id, w.name AS warehouse_name, cs.material_id, m.code AS material_code, m.name AS material_name, m.unit,
-            m.meters_per_unit, m.stickers_per_roll,
+            m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
             COALESCE(cs.on_hand_qty, 0) AS on_hand_qty, cs.weighted_avg_cost,
             COALESCE(msl.min_qty, m.low_stock_qty) AS min_qty,
             CASE WHEN
-              CASE WHEN m.meters_per_unit IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.meters_per_unit
+              CASE WHEN m.meters_per_unit   IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.meters_per_unit
                    WHEN m.stickers_per_roll IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.stickers_per_roll
+                   WHEN m.pieces_per_kg     IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.pieces_per_kg
                    ELSE COALESCE(cs.on_hand_qty, 0)
               END <= COALESCE(msl.min_qty, m.low_stock_qty)
             THEN true ELSE false END AS is_low_stock
@@ -1710,7 +1713,7 @@ app.get('/api/v1/admin/consumption/runs/:id/summary', authenticate, requireRole(
   const [summary, counts] = await Promise.all([
     pool.query(`
       SELECT
-        crl.material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll,
+        crl.material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
         SUM(crl.qty_deducted) AS total_deducted,
         COUNT(*) AS line_count,
         BOOL_OR(crl.status IN ('DEDUCTED', 'STOCK_BELOW_ZERO')) AS already_committed,
@@ -1723,7 +1726,7 @@ app.get('/api/v1/admin/consumption/runs/:id/summary', authenticate, requireRole(
       FROM consumption_run_lines crl
       JOIN materials m ON m.code = crl.material_code
       WHERE crl.run_id = $1 AND crl.status IN ('PENDING', 'DEDUCTED', 'STOCK_BELOW_ZERO')
-      GROUP BY crl.material_code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll, crl.warehouse_id
+      GROUP BY crl.material_code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg, crl.warehouse_id
       ORDER BY total_deducted DESC
     `, [runId]),
     pool.query(`
@@ -1837,7 +1840,7 @@ app.get('/api/v1/consumption/history', authenticate, asyncHandler(async (req, re
       AND ($2::date IS NULL OR cr.scraped_to::date <= $2::date)
       AND ($3::int  IS NULL OR w.id = $3::int)
       AND ($4::int[] IS NULL OR w.id = ANY($4::int[]))
-    GROUP BY cr.scraped_to::date, w.id, w.name, w.code, crl.material_code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll
+    GROUP BY cr.scraped_to::date, w.id, w.name, w.code, crl.material_code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg
     ORDER BY cr.scraped_to::date DESC, w.name, crl.material_code
   `, [from || null, to || null, filterWh, allowedIds]);
 

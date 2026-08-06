@@ -31,10 +31,11 @@ const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up
 function poDispFactor(po) {
   if (po.meters_per_unit) return Number(po.meters_per_unit);
   if (po.stickers_per_roll) return Number(po.stickers_per_roll);
+  if (po.pieces_per_kg) return Number(po.pieces_per_kg);
   return 1;
 }
 function poDispUnit(po) {
-  return (po.meters_per_unit || po.stickers_per_roll) ? 'rolls' : (po.unit ?? '');
+  return po.meters_per_unit ? 'rolls' : po.stickers_per_roll ? 'units' : po.pieces_per_kg ? 'Kg' : (po.unit ?? '');
 }
 function poToDisp(po, baseQty) {
   const factor = poDispFactor(po);
@@ -445,17 +446,19 @@ function GRNScreen({ api }) {
   );
 }
 
-function dispUnit(l) { return (l.stickers_per_roll || l.meters_per_unit) ? 'rolls' : l.unit; }
+function dispUnit(l) { return l.meters_per_unit ? 'rolls' : l.stickers_per_roll ? 'units' : l.pieces_per_kg ? 'Kg' : l.unit; }
 function toDisp(l, base) {
   const n = Number(base);
   if (l.stickers_per_roll) return Math.round((n / Number(l.stickers_per_roll)) * 1000) / 1000;
   if (l.meters_per_unit) return parseFloat((n / Number(l.meters_per_unit)).toFixed(2));
+  if (l.pieces_per_kg) return parseFloat((n / Number(l.pieces_per_kg)).toFixed(3));
   return n;
 }
 function toBase(l, disp) {
   const n = Number(disp) || 0;
   if (l.stickers_per_roll) return Math.round(n * Number(l.stickers_per_roll));
   if (l.meters_per_unit) return Math.round(n * Number(l.meters_per_unit));
+  if (l.pieces_per_kg) return Math.round(n * Number(l.pieces_per_kg));
   return n;
 }
 

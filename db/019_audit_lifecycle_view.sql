@@ -17,24 +17,28 @@ SELECT
   CASE
     WHEN m.meters_per_unit   IS NOT NULL THEN ROUND(ael.system_qty   / m.meters_per_unit,   2)
     WHEN m.stickers_per_roll IS NOT NULL THEN ROUND(ael.system_qty   / m.stickers_per_roll, 2)
+    WHEN m.pieces_per_kg     IS NOT NULL THEN ROUND(ael.system_qty   / m.pieces_per_kg,     3)
     ELSE ael.system_qty
   END                                       AS expected_qty,
 
   CASE
     WHEN m.meters_per_unit   IS NOT NULL THEN ROUND(ael.physical_qty / m.meters_per_unit,   2)
     WHEN m.stickers_per_roll IS NOT NULL THEN ROUND(ael.physical_qty / m.stickers_per_roll, 2)
+    WHEN m.pieces_per_kg     IS NOT NULL THEN ROUND(ael.physical_qty / m.pieces_per_kg,     3)
     ELSE ael.physical_qty
   END                                       AS audit_qty,
 
   CASE
     WHEN m.meters_per_unit   IS NOT NULL THEN ROUND(ael.delta / m.meters_per_unit,   2)
     WHEN m.stickers_per_roll IS NOT NULL THEN ROUND(ael.delta / m.stickers_per_roll, 2)
+    WHEN m.pieces_per_kg     IS NOT NULL THEN ROUND(ael.delta / m.pieces_per_kg,     3)
     ELSE ael.delta
   END                                       AS delta,
 
   CASE
     WHEN m.meters_per_unit   IS NOT NULL THEN 'rolls'
     WHEN m.stickers_per_roll IS NOT NULL THEN 'units'
+    WHEN m.pieces_per_kg     IS NOT NULL THEN 'Kg'
     ELSE m.unit
   END                                       AS uom,
 

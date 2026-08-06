@@ -15,24 +15,28 @@ SELECT
   CASE
     WHEN m.meters_per_unit    IS NOT NULL THEN ROUND(il.requested_qty / m.meters_per_unit,    2)
     WHEN m.stickers_per_roll  IS NOT NULL THEN ROUND(il.requested_qty / m.stickers_per_roll,  2)
+    WHEN m.pieces_per_kg      IS NOT NULL THEN ROUND(il.requested_qty / m.pieces_per_kg,      3)
     ELSE il.requested_qty
   END                                     AS indent_qty,
 
   CASE
     WHEN m.meters_per_unit    IS NOT NULL THEN ROUND(il.issued_qty / m.meters_per_unit,    2)
     WHEN m.stickers_per_roll  IS NOT NULL THEN ROUND(il.issued_qty / m.stickers_per_roll,  2)
+    WHEN m.pieces_per_kg      IS NOT NULL THEN ROUND(il.issued_qty / m.pieces_per_kg,      3)
     ELSE il.issued_qty
   END                                     AS issued_qty,
 
   CASE
     WHEN m.meters_per_unit    IS NOT NULL THEN ROUND(COALESCE(rcpt.total_received, 0) / m.meters_per_unit,   2)
     WHEN m.stickers_per_roll  IS NOT NULL THEN ROUND(COALESCE(rcpt.total_received, 0) / m.stickers_per_roll, 2)
+    WHEN m.pieces_per_kg      IS NOT NULL THEN ROUND(COALESCE(rcpt.total_received, 0) / m.pieces_per_kg,     3)
     ELSE COALESCE(rcpt.total_received, 0)
   END                                     AS received_qty,
 
   CASE
     WHEN m.meters_per_unit   IS NOT NULL THEN 'rolls'
     WHEN m.stickers_per_roll IS NOT NULL THEN 'units'
+    WHEN m.pieces_per_kg     IS NOT NULL THEN 'Kg'
     ELSE m.unit
   END                                     AS uom,
 
