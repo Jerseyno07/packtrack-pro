@@ -416,10 +416,52 @@ function POUploadSection({ token }) {
 }
 
 // ── PM STORE DASHBOARD ───────────────────────────────────────────────────────
-function DashboardSection() {
+function dashDispQty(row, baseQty) {
+  const qty = Number(baseQty);
+  if (row.meters_per_unit) return parseFloat((qty / Number(row.meters_per_unit)).toFixed(2));
+  if (row.stickers_per_roll) return parseFloat((qty / Number(row.stickers_per_roll)).toFixed(2));
+  return qty;
+}
+function dashDispUnit(row) {
+  return row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : (row.unit ?? '');
+}
+
+function DashboardSection({ token }) {
   const [tab, setTab] = useState('indents');
-  const totalPendingIndentQty = useMemo(() => MOCK_INDENT_TO_PROCESS.reduce((a, r) => a + r.pending_qty, 0), []);
-  const totalPOIncoming = useMemo(() => MOCK_PO_SCHEDULE.reduce((a, r) => a + r.remaining_qty, 0), []);
+  const [indents, setIndents] = useState([]);
+  const [pos, setPos] = useState([]);
+  const [lowStock, setLowStock] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!token) return;
+    const hdrs = { Authorization: `Bearer ${token}` };
+    setLoading(true);
+    Promise.all([
+      fetch(`${BASE_URL}/api/v1/dashboard/indents-to-process`, { headers: hdrs }).then((r) => r.json()),
+      fetch(`${BASE_URL}/api/v1/dashboard/po-schedule`, { headers: hdrs }).then((r) => r.json()),
+      fetch(`${BASE_URL}/api/v1/dashboard/low-stock-alerts`, { headers: hdrs }).then((r) => r.json()),
+    ]).then(([i, p, l]) => {
+      setIndents(i.data ?? []);
+      setPos(p.data ?? []);
+      setLowStock(l.data ?? []);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, [token]);
+
+  const totalPendingIndentQty = useMemo(
+    () => indents.reduce((a, r) => a + dashDispQty(r, r.pending_qty), 0).toFixed(2),
+    [indents]
+  );
+  const totalPOIncoming = useMemo(
+    () => pos.reduce((a, r) => a + dashDispQty(r, r.remaining_qty), 0).toFixed(2),
+    [pos]
+  );
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-24 text-slate-400 gap-2">
+      <RefreshCw size={18} className="animate-spin" /> Loading dashboard…
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -429,10 +471,10 @@ function DashboardSection() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard icon={Box} label="Pending Indent Qty" value={totalPendingIndentQty} sub={`${MOCK_INDENT_TO_PROCESS.length} SKU lines`} tone="blue" />
-        <StatCard icon={Truck} label="POs Scheduled" value={MOCK_PO_SCHEDULE.length} sub={`${totalPOIncoming} units incoming`} tone="green" />
-        <StatCard icon={AlertTriangle} label="Low Stock Alerts" value={MOCK_LOW_STOCK.length} sub="below minimum" tone="red" />
-        <StatCard icon={TrendingUp} label="Open SKUs Tracked" value="14" sub="active materials" tone="amber" />
+        <StatCard icon={Box} label="Pending Indent Qty" value={totalPendingIndentQty} sub={`${indents.length} SKU lines`} tone="blue" />
+        <StatCard icon={Truck} label="POs Scheduled" value={pos.length} sub={`${totalPOIncoming} units incoming`} tone="green" />
+        <StatCard icon={AlertTriangle} label="Low Stock Alerts" value={lowStock.length} sub="below minimum" tone="red" />
+        <StatCard icon={TrendingUp} label="Open SKUs Tracked" value={new Set(indents.map((r) => r.material_code)).size} sub="active materials" tone="amber" />
       </div>
 
       <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
@@ -450,13 +492,14 @@ function DashboardSection() {
               <tr><th className="text-left px-4 py-2.5">Facility</th><th className="text-left px-4 py-2.5">SKU</th><th className="text-right px-4 py-2.5">Requested</th><th className="text-right px-4 py-2.5">Issued</th><th className="text-right px-4 py-2.5">Pending</th><th className="text-right px-4 py-2.5">Lines</th></tr>
             </thead>
             <tbody>
-              {MOCK_INDENT_TO_PROCESS.map((r, i) => (
+              {indents.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400 text-sm">No pending indents</td></tr>}
+              {indents.map((r, i) => (
                 <tr key={i} className="border-t border-slate-100">
                   <td className="px-4 py-3 font-medium text-slate-800">{r.warehouse_name}</td>
                   <td className="px-4 py-3 text-slate-600">{r.material_code} <span className="text-slate-400">— {r.material_name}</span></td>
-                  <td className="px-4 py-3 text-right text-slate-600">{r.total_requested} {r.unit}</td>
-                  <td className="px-4 py-3 text-right text-slate-600">{r.total_issued}</td>
-                  <td className="px-4 py-3 text-right font-bold text-amber-600">{r.pending_qty}</td>
+                  <td className="px-4 py-3 text-right text-slate-600">{dashDispQty(r, r.total_requested)} {dashDispUnit(r)}</td>
+                  <td className="px-4 py-3 text-right text-slate-600">{dashDispQty(r, r.total_issued)} {dashDispUnit(r)}</td>
+                  <td className="px-4 py-3 text-right font-bold text-amber-600">{dashDispQty(r, r.pending_qty)} {dashDispUnit(r)}</td>
                   <td className="px-4 py-3 text-right text-slate-400">{r.line_count}</td>
                 </tr>
               ))}
@@ -472,14 +515,15 @@ function DashboardSection() {
               <tr><th className="text-left px-4 py-2.5">PO No</th><th className="text-left px-4 py-2.5">Vendor</th><th className="text-left px-4 py-2.5">SKU</th><th className="text-right px-4 py-2.5">PO Qty</th><th className="text-right px-4 py-2.5">Remaining</th><th className="text-left px-4 py-2.5">Expected</th><th className="text-left px-4 py-2.5">Status</th></tr>
             </thead>
             <tbody>
-              {MOCK_PO_SCHEDULE.map((r, i) => (
+              {pos.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400 text-sm">No open POs</td></tr>}
+              {pos.map((r, i) => (
                 <tr key={i} className="border-t border-slate-100">
                   <td className="px-4 py-3 font-medium text-slate-800">{r.po_no}</td>
                   <td className="px-4 py-3 text-slate-600">{r.vendor_name}</td>
                   <td className="px-4 py-3 text-slate-600">{r.material_code}</td>
-                  <td className="px-4 py-3 text-right text-slate-600">{r.po_qty}</td>
-                  <td className="px-4 py-3 text-right font-bold text-blue-600">{r.remaining_qty}</td>
-                  <td className="px-4 py-3 text-slate-600">{r.expected_delivery}</td>
+                  <td className="px-4 py-3 text-right text-slate-600">{dashDispQty(r, r.po_qty)} {dashDispUnit(r)}</td>
+                  <td className="px-4 py-3 text-right font-bold text-blue-600">{dashDispQty(r, r.remaining_qty)} {dashDispUnit(r)}</td>
+                  <td className="px-4 py-3 text-slate-600">{r.expected_delivery ?? '—'}</td>
                   <td className="px-4 py-3"><Badge tone={r.status === 'OPEN' ? 'blue' : 'amber'}>{r.status.replace('_', ' ')}</Badge></td>
                 </tr>
               ))}
@@ -495,15 +539,21 @@ function DashboardSection() {
               <tr><th className="text-left px-4 py-2.5">Facility</th><th className="text-left px-4 py-2.5">SKU</th><th className="text-right px-4 py-2.5">On Hand</th><th className="text-right px-4 py-2.5">Min Level</th><th className="text-right px-4 py-2.5">Deficit</th></tr>
             </thead>
             <tbody>
-              {MOCK_LOW_STOCK.map((r, i) => (
-                <tr key={i} className="border-t border-slate-100">
-                  <td className="px-4 py-3 font-medium text-slate-800">{r.warehouse_name} <Badge tone="gray">{r.warehouse_type}</Badge></td>
-                  <td className="px-4 py-3 text-slate-600">{r.material_code} — {r.material_name}</td>
-                  <td className="px-4 py-3 text-right font-bold text-red-600">{r.on_hand_qty}</td>
-                  <td className="px-4 py-3 text-right text-slate-600">{r.min_qty}</td>
-                  <td className="px-4 py-3 text-right text-red-500">-{r.min_qty - r.on_hand_qty}</td>
-                </tr>
-              ))}
+              {lowStock.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400 text-sm">No low stock alerts</td></tr>}
+              {lowStock.map((r, i) => {
+                const onHandDisp = dashDispQty(r, r.on_hand_qty);
+                const minQty = Number(r.min_qty);
+                const unit = dashDispUnit(r);
+                return (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-800">{r.warehouse_name} <Badge tone="gray">{r.warehouse_type}</Badge></td>
+                    <td className="px-4 py-3 text-slate-600">{r.material_code} — {r.material_name}</td>
+                    <td className="px-4 py-3 text-right font-bold text-red-600">{onHandDisp} {unit}</td>
+                    <td className="px-4 py-3 text-right text-slate-600">{minQty} {unit}</td>
+                    <td className="px-4 py-3 text-right text-red-500">-{parseFloat((minQty - onHandDisp).toFixed(2))} {unit}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -2089,7 +2139,7 @@ export default function App() {
       </div>
 
       <div className="flex-1 p-6 overflow-y-auto">
-        {section === 'dashboard' && <DashboardSection />}
+        {section === 'dashboard' && <DashboardSection token={token} />}
         {section === 'indent' && <IndentUploadSection token={token} />}
         {section === 'po' && <POUploadSection token={token} />}
         {section === 'admin' && <AdminPanel token={token} tabOverride={adminTabForTour} />}

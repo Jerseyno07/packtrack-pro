@@ -1256,17 +1256,62 @@ app.get('/api/v1/admin/overview', authenticate, requireRole('ADMIN'), asyncHandl
 // ═══════════════════════════════════════════════════════════════════════════
 
 app.get('/api/v1/dashboard/indents-to-process', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
-  const result = await pool.query('SELECT * FROM v_indent_to_process ORDER BY warehouse_name, material_code');
+  const result = await pool.query(
+    `SELECT il.warehouse_id, w.name AS warehouse_name, w.warehouse_type,
+            il.material_id, m.code AS material_code, m.name AS material_name, m.unit,
+            m.meters_per_unit, m.stickers_per_roll,
+            il.indent_date,
+            SUM(il.requested_qty) AS total_requested,
+            SUM(il.issued_qty)    AS total_issued,
+            SUM(il.requested_qty - il.issued_qty) AS pending_qty,
+            COUNT(*) AS line_count
+     FROM indent_lines il
+     JOIN warehouses w ON w.id = il.warehouse_id
+     JOIN materials  m ON m.id = il.material_id
+     WHERE il.status IN ('PENDING', 'PARTIALLY_ISSUED')
+     GROUP BY il.warehouse_id, w.name, w.warehouse_type,
+              il.material_id, m.code, m.name, m.unit, m.meters_per_unit, m.stickers_per_roll, il.indent_date
+     ORDER BY w.name, m.code`
+  );
   res.json({ data: result.rows });
 }));
 
 app.get('/api/v1/dashboard/po-schedule', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
-  const result = await pool.query('SELECT * FROM v_po_schedule');
+  const result = await pool.query(
+    `SELECT po.id, po.po_no, po.vendor_name,
+            po.material_id, m.code AS material_code, m.name AS material_name,
+            m.meters_per_unit, m.stickers_per_roll, m.unit,
+            po.pm_store_warehouse_id, w.name AS warehouse_name,
+            po.po_qty, po.received_qty_cache,
+            (po.po_qty - po.received_qty_cache) AS remaining_qty,
+            po.po_date, po.expected_delivery, po.status
+     FROM purchase_orders po
+     JOIN materials  m ON m.id = po.material_id
+     JOIN warehouses w ON w.id = po.pm_store_warehouse_id
+     WHERE po.status IN ('OPEN', 'PARTIALLY_RECEIVED')
+     ORDER BY po.expected_delivery NULLS LAST`
+  );
   res.json({ data: result.rows });
 }));
 
 app.get('/api/v1/dashboard/low-stock-alerts', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
-  const result = await pool.query('SELECT * FROM v_low_stock_alerts ORDER BY warehouse_name, material_code');
+  const result = await pool.query(
+    `SELECT w.id AS warehouse_id, w.name AS warehouse_name, w.warehouse_type,
+            m.id AS material_id, m.code AS material_code, m.name AS material_name, m.unit,
+            m.meters_per_unit, m.stickers_per_roll,
+            COALESCE(cs.on_hand_qty, 0) AS on_hand_qty,
+            COALESCE(msl.min_qty, m.low_stock_qty) AS min_qty
+     FROM warehouses w
+     CROSS JOIN materials m
+     LEFT JOIN v_current_stock cs ON cs.warehouse_id = w.id AND cs.material_id = m.id
+     LEFT JOIN min_stock_levels msl ON msl.warehouse_id = w.id AND msl.material_id = m.id
+     WHERE w.is_active AND m.is_active
+       AND CASE WHEN m.meters_per_unit   IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.meters_per_unit
+                WHEN m.stickers_per_roll IS NOT NULL THEN COALESCE(cs.on_hand_qty, 0) / m.stickers_per_roll
+                ELSE COALESCE(cs.on_hand_qty, 0)
+           END <= COALESCE(msl.min_qty, m.low_stock_qty)
+     ORDER BY w.name, m.code`
+  );
   res.json({ data: result.rows });
 }));
 
