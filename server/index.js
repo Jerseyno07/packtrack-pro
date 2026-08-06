@@ -351,6 +351,9 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         } else if (mat.unit === 'Roll') {
           if (!no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${sku_code}' requires no_of_rolls column` }); continue; }
           finalQty = no_of_rolls * Number(mat.meters_per_unit);
+        } else if (mat.pieces_per_kg) {
+          if (!requested_qty) { errors.push({ row: rowNum, error: `Butter paper '${sku_code}' requires requested_qty in Kg` }); continue; }
+          finalQty = requested_qty * Number(mat.pieces_per_kg);
         } else {
           if (!requested_qty) { errors.push({ row: rowNum, error: `Non-roll material '${sku_code}' requires requested_qty column` }); continue; }
           finalQty = requested_qty;
