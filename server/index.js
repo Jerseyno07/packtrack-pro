@@ -862,7 +862,7 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
     `SELECT si.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll,
-            fw.name AS from_warehouse_name, tw.name AS to_warehouse_name, il.indent_ref,
+            fw.name AS from_warehouse_name, tw.name AS to_warehouse_name, il.indent_ref, il.requested_qty,
             (si.issued_qty - COALESCE((SELECT SUM(received_qty+shortage_qty+damage_qty) FROM stock_receipts sr WHERE sr.stock_issue_id = si.id),0)) AS pending_qty
      FROM stock_issues si JOIN materials m ON m.id = si.material_id JOIN warehouses fw ON fw.id = si.from_warehouse_id
      JOIN warehouses tw ON tw.id = si.to_warehouse_id JOIN indent_lines il ON il.id = si.indent_line_id

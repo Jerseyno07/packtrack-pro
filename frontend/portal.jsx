@@ -1134,8 +1134,8 @@ function AdminPanel({ token, tabOverride }) {
               onClick={() => downloadCSV(
                 `stock-issues-${issueFrom}-to-${issueTo}.csv`,
                 [
-                  ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Issued Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
-                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, dashDispQty(si, si.issued_qty), dashDispUnit(si), si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
+                  ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Indent Qty', 'Issued Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
+                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.requested_qty != null ? dashDispQty(si, si.requested_qty) : '', dashDispQty(si, si.issued_qty), dashDispUnit(si), si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
                 ]
               )}
               disabled={issueRows.length === 0}
@@ -1152,6 +1152,7 @@ function AdminPanel({ token, tabOverride }) {
                   <th className="text-left px-4 py-2.5">Issue Ref</th>
                   <th className="text-left px-4 py-2.5">SKU</th>
                   <th className="text-left px-4 py-2.5">From → To</th>
+                  <th className="text-right px-4 py-2.5">Indent Qty</th>
                   <th className="text-right px-4 py-2.5">Issued Qty</th>
                   <th className="text-left px-4 py-2.5">Date</th>
                   <th className="text-left px-4 py-2.5">Status</th>
@@ -1159,13 +1160,16 @@ function AdminPanel({ token, tabOverride }) {
                 </tr>
               </thead>
               <tbody>
-                {issueLoading && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</td></tr>}
-                {!issueLoading && issueRows.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No stock issues found for the selected filters.</td></tr>}
+                {issueLoading && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</td></tr>}
+                {!issueLoading && issueRows.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">No stock issues found for the selected filters.</td></tr>}
                 {!issueLoading && issueRows.map((si) => (
                   <tr key={si.id} className="border-t border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-3 font-medium text-slate-800">{si.issue_ref}</td>
                     <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
                     <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
+                    <td className="px-4 py-3 text-right text-slate-500">
+                      {si.requested_qty != null ? `${dashDispQty(si, si.requested_qty)} ${dashDispUnit(si)}` : '—'}
+                    </td>
                     <td className="px-4 py-3 text-right font-bold text-slate-800">
                       {dashDispQty(si, si.issued_qty)} {dashDispUnit(si)}
                     </td>
