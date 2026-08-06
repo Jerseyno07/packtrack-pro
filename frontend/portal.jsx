@@ -245,13 +245,13 @@ function IndentUploadSection({ token }) {
       )}
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
-        <div><strong>Expected columns:</strong> facility_code, sku_code, requested_qty (non-roll), no_of_rolls + length_per_roll (roll materials), remarks (optional)</div>
+        <div><strong>Expected columns:</strong> facility_code, sku_code, requested_qty (non-roll), no_of_rolls (roll materials), remarks (optional)</div>
         <button
           onClick={() => downloadCSV('indent_sample.csv', [
-            ['facility_code', 'sku_code', 'requested_qty', 'no_of_rolls', 'length_per_roll', 'remarks'],
-            ['CC-BLR', 'LDPE-06', 500, '', '', 'Weekly stock'],
-            ['CC-BLR', 'NTRLL-01', '', 40, 200, ''],
-            ['FC-BLR', 'WXRB-01', '', 20, 150, 'Urgent'],
+            ['facility_code', 'sku_code', 'requested_qty', 'no_of_rolls', 'remarks'],
+            ['CC-BLR', 'LDPE-06', 500, '', 'Weekly stock'],
+            ['CC-BLR', 'NTRLL-SFT', '', 40, ''],
+            ['FC-BLR', 'BCRL-SML', '', 20, 'Urgent'],
           ])}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
         >
@@ -346,13 +346,13 @@ function POUploadSection({ token }) {
       </div>
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-800 flex items-center justify-between gap-3">
-        <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty (non-roll), no_of_rolls + length_per_roll (roll materials), unit_price, po_date, expected_delivery (optional)</div>
+        <div><strong>Expected columns:</strong> po_no, vendor_name, sku_code, pm_store_code, po_qty (non-roll), no_of_rolls (roll materials), unit_price, po_date, expected_delivery (optional)</div>
         <button data-tour="po-sample-csv"
           onClick={() => downloadCSV('purchase_orders_sample.csv', [
-            ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'no_of_rolls', 'length_per_roll', 'unit_price', 'po_date', 'expected_delivery'],
-            ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'CS-001', 2000, '', '', 2.50, '2026-07-01', '2026-07-10'],
-            ['PO-2026-0002', 'Karnataka Packaging Co', 'NTRLL-01', 'CS-001', '', 10, 200, 180.00, '2026-07-01', '2026-07-08'],
-            ['PO-2026-0003', 'Tamil Nadu Ribbons Ltd', 'WXRB-01', 'CS-001', '', 5, 150, 95.00, '2026-07-02', ''],
+            ['po_no', 'vendor_name', 'sku_code', 'pm_store_code', 'po_qty', 'no_of_rolls', 'unit_price', 'po_date', 'expected_delivery'],
+            ['PO-2026-0001', 'Shree Plastics Pvt Ltd', 'LDPE-06', 'CS-001', 2000, '', 2.50, '2026-07-01', '2026-07-10'],
+            ['PO-2026-0002', 'Karnataka Packaging Co', 'NTRLL-SFT', 'CS-001', '', 10, 180.00, '2026-07-01', '2026-07-08'],
+            ['PO-2026-0003', 'Tamil Nadu Ribbons Ltd', 'BCRL-SML', 'CS-001', '', 5, 95.00, '2026-07-02', ''],
           ])}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
         >
@@ -1053,7 +1053,7 @@ function AdminPanel({ token, tabOverride }) {
                 `stock-issues-${issueFrom}-to-${issueTo}.csv`,
                 [
                   ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Issued Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
-                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.issued_qty, si.unit, si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
+                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.meters_per_unit ? Math.round(Number(si.issued_qty) / Number(si.meters_per_unit)) : si.issued_qty, si.meters_per_unit ? 'rolls' : si.stickers_per_roll ? 'units' : si.unit, si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
                 ]
               )}
               disabled={issueRows.length === 0}
@@ -1084,7 +1084,10 @@ function AdminPanel({ token, tabOverride }) {
                     <td className="px-4 py-3 font-medium text-slate-800">{si.issue_ref}</td>
                     <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
                     <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
-                    <td className="px-4 py-3 text-right font-bold text-slate-800">{si.issued_qty}</td>
+                    <td className="px-4 py-3 text-right font-bold text-slate-800">
+                      {si.meters_per_unit ? Math.round(Number(si.issued_qty) / Number(si.meters_per_unit)) : si.issued_qty}
+                      {' '}{si.meters_per_unit ? 'rolls' : si.stickers_per_roll ? 'units' : si.unit}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
                     <td className="px-4 py-3"><Badge tone={si.status === 'DISPATCHED' ? 'blue' : si.status === 'RECEIVED' ? 'green' : si.status === 'CANCELLED' ? 'red' : 'amber'}>{si.status.replace(/_/g, ' ')}</Badge></td>
                     <td className="px-4 py-3 text-right">
@@ -1481,10 +1484,24 @@ function AdminPanel({ token, tabOverride }) {
                                   <div className="font-medium text-slate-800">{row.material_name}</div>
                                   <div className="text-xs text-slate-400 font-mono">{row.material_code}</div>
                                 </td>
-                                <td className="px-4 py-2.5 text-right text-slate-700">{Number(row.total_deducted).toLocaleString()} {row.meters_per_unit ? 'm' : row.stickers_per_roll ? 'units' : row.unit}</td>
-                                <td className="px-4 py-2.5 text-right text-slate-500">{Number(row.current_stock).toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-right text-slate-700">
+                                  {row.meters_per_unit
+                                    ? Math.round(Number(row.total_deducted) / Number(row.meters_per_unit)).toLocaleString()
+                                    : Number(row.total_deducted).toLocaleString()}
+                                  {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.unit}
+                                </td>
+                                <td className="px-4 py-2.5 text-right text-slate-500">
+                                  {row.meters_per_unit
+                                    ? Math.round(Number(row.current_stock) / Number(row.meters_per_unit)).toLocaleString()
+                                    : Number(row.current_stock).toLocaleString()}
+                                  {' '}{row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.unit}
+                                </td>
                                 <td className={`px-4 py-2.5 text-right font-semibold ${committed ? 'text-green-600' : after < 0 ? 'text-red-600' : 'text-slate-700'}`}>
-                                  {committed ? <span className="text-xs font-normal text-green-600 flex items-center justify-end gap-1"><CheckCircle2 size={12} />Done</span> : after.toLocaleString()}
+                                  {committed
+                                    ? <span className="text-xs font-normal text-green-600 flex items-center justify-end gap-1"><CheckCircle2 size={12} />Done</span>
+                                    : row.meters_per_unit
+                                      ? Math.round(after / Number(row.meters_per_unit)).toLocaleString()
+                                      : after.toLocaleString()}
                                 </td>
                               </tr>
                             );
@@ -1580,8 +1597,8 @@ function AdminPanel({ token, tabOverride }) {
                     r.warehouse_code,
                     r.material_name,
                     r.material_code,
-                    r.qty_consumed,
-                    r.meters_per_unit ? 'm' : r.stickers_per_roll ? 'units' : r.unit,
+                    r.meters_per_unit ? Math.round(Number(r.qty_consumed) / Number(r.meters_per_unit)) : r.qty_consumed,
+                    r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.unit,
                   ]);
                   const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
                   const blob = new Blob([csv], { type: 'text/csv' });
@@ -1627,8 +1644,12 @@ function AdminPanel({ token, tabOverride }) {
                       <div className="text-slate-800">{r.material_name}</div>
                       <div className="text-xs text-slate-400 font-mono">{r.material_code}</div>
                     </td>
-                    <td className="px-4 py-2.5 text-right font-bold text-slate-900">{Number(r.qty_consumed).toLocaleString()}</td>
-                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.meters_per_unit ? 'm' : r.stickers_per_roll ? 'units' : r.unit}</td>
+                    <td className="px-4 py-2.5 text-right font-bold text-slate-900">
+                      {r.meters_per_unit
+                        ? Math.round(Number(r.qty_consumed) / Number(r.meters_per_unit)).toLocaleString()
+                        : Number(r.qty_consumed).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-500 text-xs">{r.meters_per_unit ? 'rolls' : r.stickers_per_roll ? 'units' : r.unit}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1943,7 +1964,7 @@ export default function App() {
           steps={[
             { target: null, title: 'Welcome to PackTrack Admin', body: 'This tour walks you through every section and button in the portal. Use Next/Prev to navigate or Skip to dismiss at any time.' },
             { target: 'admin-nav', title: 'Sidebar Navigation', body: 'Switch between sections using this sidebar. As admin you have access to PM Store Dashboard, Upload Indent, Upload Purchase Orders, and the Admin Panel.', onEnter: () => setSection('admin') },
-            { target: 'po-sample-csv', title: 'Download Sample CSV', body: 'Always download the sample before uploading POs. Roll materials use no_of_rolls and length_per_roll; other materials use po_qty. Blank cells for unused columns are fine.', onEnter: () => { setSection('po'); setAdminTabForTour(null); } },
+            { target: 'po-sample-csv', title: 'Download Sample CSV', body: 'Always download the sample before uploading POs. Roll materials use no_of_rolls only (length is stored in the system); other materials use po_qty. Blank cells for unused columns are fine.', onEnter: () => { setSection('po'); setAdminTabForTour(null); } },
             { target: 'po-upload-btn', title: 'Upload Purchase Orders', body: 'After filling the CSV, upload it here. A single po_no can span multiple rows — one row per material under the same PO number.' },
             { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 8 tabs: Purchase Orders, Stock Issues, Current Stock, Audit Log, SKU Master, Consumption Runs, Min Stock Levels, and Users.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
             { target: 'admin-refresh', title: 'Refresh', body: 'Re-fetches all data from the server without a full page reload. Use this after making changes in another session.' },

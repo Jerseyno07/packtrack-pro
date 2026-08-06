@@ -4,18 +4,20 @@ import { ClipboardList, CheckCircle2, AlertTriangle, RefreshCw, X } from 'lucide
 const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 
 // ── Unit helpers ──────────────────────────────────────────────────────────────
-// Roll materials: user sees/enters in rolls; DB stores in stickers.
+// Roll materials: user sees/enters in rolls; DB stores in stickers or meters.
 function dispUnit(m) {
-  return m.stickers_per_roll ? 'rolls' : m.meters_per_unit ? 'm' : m.unit;
+  return m.stickers_per_roll || m.meters_per_unit ? 'rolls' : m.unit;
 }
 function toDisp(m, baseQty) {
   const n = Number(baseQty);
   if (m.stickers_per_roll) return Math.round((n / m.stickers_per_roll) * 1000) / 1000;
+  if (m.meters_per_unit) return Math.round((n / Number(m.meters_per_unit)) * 1000) / 1000;
   return n;
 }
 function toBase(m, dispQty) {
   const n = Number(dispQty) || 0;
   if (m.stickers_per_roll) return Math.round(n * m.stickers_per_roll);
+  if (m.meters_per_unit) return Math.round(n * Number(m.meters_per_unit));
   return n;
 }
 function fmtQty(n) {
@@ -24,8 +26,8 @@ function fmtQty(n) {
 
 const MOCK_PREFILL = [
   { material_id: 1, material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', unit: 'Pcs', stickers_per_roll: null, meters_per_unit: null, system_qty: '1211' },
-  { material_id: 2, material_code: 'NTRLL-01', material_name: 'Net Roll', unit: 'Roll', stickers_per_roll: 500, meters_per_unit: null, system_qty: '5000' },
-  { material_id: 3, material_code: 'WXRB-01', material_name: 'Wax Ribbon', unit: 'Roll', stickers_per_roll: 1000, meters_per_unit: null, system_qty: '0' },
+  { material_id: 2, material_code: 'NTRLL-SFT', material_name: 'Soft Net Roll', unit: 'Roll', stickers_per_roll: null, meters_per_unit: '1000', system_qty: '197000' },
+  { material_id: 3, material_code: 'BCRL-SML', material_name: 'Barcode Roll small', unit: 'Roll', stickers_per_roll: 1000, meters_per_unit: null, system_qty: '5000' },
 ];
 
 export default function AuditScreen({ token, warehouseId }) {
@@ -338,7 +340,7 @@ export default function AuditScreen({ token, warehouseId }) {
                           <input
                             type="number"
                             min={0}
-                            step={m.stickers_per_roll ? 1 : 'any'}
+                            step={m.stickers_per_roll || m.meters_per_unit ? 1 : 'any'}
                             value={counts[m.material_id] ?? ''}
                             onChange={(e) => setCounts((prev) => ({ ...prev, [m.material_id]: e.target.value }))}
                             className={`w-20 px-2 py-1.5 border rounded-lg text-right text-sm font-mono focus:outline-none focus:ring-2 ${hasDiff ? 'border-amber-400 bg-amber-50 focus:ring-amber-400' : 'border-slate-300 focus:ring-blue-500'}`}

@@ -210,7 +210,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
 const COLUMN_LABELS = {
   po_no: 'PO Number', vendor_name: 'Vendor Name', sku_code: 'SKU Code',
   pm_store_code: 'PM Store Code', po_qty: 'PO Qty', no_of_rolls: 'No. of Rolls',
-  length_per_roll: 'Length per Roll (m)', unit_price: 'Unit Price',
+  unit_price: 'Unit Price',
   po_date: 'PO Date', expected_delivery: 'Expected Delivery',
   facility_code: 'Facility Code', requested_qty: 'Requested Qty', remarks: 'Remarks',
 };
@@ -277,7 +277,6 @@ const indentRowSchema = z.object({
   sku_code: z.string().min(1),
   requested_qty: z.coerce.number().positive().optional(),
   no_of_rolls: z.coerce.number().positive().optional(),
-  length_per_roll: z.coerce.number().positive().optional(),
   remarks: z.string().optional(),
 });
 
@@ -323,7 +322,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
       const batchId = batchIns.rows[0].id;
 
       const whMap = new Map((await client.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id]));
-      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
+      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
 
       // Pass 1: validate all rows — if any fail, reject the entire upload
       const errors = [];
@@ -334,7 +333,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         const row = rawRows[i];
         const parsed = indentRowSchema.safeParse(row);
         if (!parsed.success) { errors.push({ row: rowNum, error: formatZodErrors(parsed.error.issues) }); continue; }
-        const { facility_code, sku_code, requested_qty, no_of_rolls, length_per_roll, remarks } = parsed.data;
+        const { facility_code, sku_code, requested_qty, no_of_rolls, remarks } = parsed.data;
         const warehouseId = whMap.get(facility_code);
         const mat = matMap.get(sku_code);
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown facility_code '${facility_code}'` }); continue; }
@@ -345,8 +344,8 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
           if (!no_of_rolls) { errors.push({ row: rowNum, error: `"No. of Rolls" is required for sticker roll material '${sku_code}'` }); continue; }
           finalQty = no_of_rolls * mat.stickers_per_roll;
         } else if (mat.unit === 'Roll') {
-          if (!no_of_rolls || !length_per_roll) { errors.push({ row: rowNum, error: `Roll material '${sku_code}' requires no_of_rolls and length_per_roll columns` }); continue; }
-          finalQty = no_of_rolls * length_per_roll;
+          if (!no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${sku_code}' requires no_of_rolls column` }); continue; }
+          finalQty = no_of_rolls * Number(mat.meters_per_unit);
         } else {
           if (!requested_qty) { errors.push({ row: rowNum, error: `Non-roll material '${sku_code}' requires requested_qty column` }); continue; }
           finalQty = requested_qty;
@@ -463,7 +462,6 @@ const poRowSchema = z.object({
   pm_store_code: z.string().min(1),
   po_qty: z.coerce.number().positive().optional(),
   no_of_rolls: z.coerce.number().positive().optional(),
-  length_per_roll: z.coerce.number().positive().optional(),
   unit_price: z.coerce.number().nonnegative(),
   po_date: z.string().min(1),
   expected_delivery: z.string().optional(),
@@ -485,7 +483,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
       );
       const batchId = batchIns.rows[0].id;
 
-      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
+      const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
       const whMap = new Map((await client.query("SELECT id, code FROM warehouses WHERE is_active AND warehouse_type='PM_STORE'")).rows.map((r) => [r.code, r.id]));
 
       const errors = [];
@@ -504,16 +502,16 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${d.sku_code}'` }); continue; }
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown or non-PM-Store pm_store_code '${d.pm_store_code}'` }); continue; }
 
-        // Sticker rolls (barcode/wax ribbon): qty = no_of_rolls × stickers_per_roll (no length needed)
-        // Regular roll materials: qty in meters = no_of_rolls × length_per_roll
+        // Sticker rolls (barcode/wax ribbon): qty = no_of_rolls × stickers_per_roll
+        // Regular roll materials (net roll, cling wrap): qty in meters = no_of_rolls × meters_per_unit (stored in DB)
         // Non-roll materials: use po_qty directly
         let finalQty;
         if (mat.stickers_per_roll) {
           if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `"No. of Rolls" is required for sticker roll material '${d.sku_code}'` }); continue; }
           finalQty = d.no_of_rolls * mat.stickers_per_roll;
         } else if (mat.unit === 'Roll') {
-          if (!d.no_of_rolls || !d.length_per_roll) { errors.push({ row: rowNum, error: `Roll material '${d.sku_code}' requires no_of_rolls and length_per_roll columns` }); continue; }
-          finalQty = d.no_of_rolls * d.length_per_roll;
+          if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${d.sku_code}' requires no_of_rolls column` }); continue; }
+          finalQty = d.no_of_rolls * Number(mat.meters_per_unit);
         } else {
           if (!d.po_qty) { errors.push({ row: rowNum, error: `Non-roll material '${d.sku_code}' requires po_qty column` }); continue; }
           finalQty = d.po_qty;
@@ -812,7 +810,8 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
-    `SELECT si.*, m.code AS material_code, m.name AS material_name, m.unit, fw.name AS from_warehouse_name, tw.name AS to_warehouse_name, il.indent_ref,
+    `SELECT si.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll,
+            fw.name AS from_warehouse_name, tw.name AS to_warehouse_name, il.indent_ref,
             (si.issued_qty - COALESCE((SELECT SUM(received_qty+shortage_qty+damage_qty) FROM stock_receipts sr WHERE sr.stock_issue_id = si.id),0)) AS pending_qty
      FROM stock_issues si JOIN materials m ON m.id = si.material_id JOIN warehouses fw ON fw.id = si.from_warehouse_id
      JOIN warehouses tw ON tw.id = si.to_warehouse_id JOIN indent_lines il ON il.id = si.indent_line_id
