@@ -1085,7 +1085,7 @@ function AdminPanel({ token, tabOverride }) {
                 `stock-issues-${issueFrom}-to-${issueTo}.csv`,
                 [
                   ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Issued Qty', 'Unit', 'Issue Date', 'Vehicle No', 'Status', 'Indent Ref'],
-                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.meters_per_unit ? Math.round(Number(si.issued_qty) / Number(si.meters_per_unit)) : si.issued_qty, si.meters_per_unit ? 'rolls' : si.stickers_per_roll ? 'units' : si.unit, si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
+                  ...issueRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, si.meters_per_unit ? parseFloat((Number(si.issued_qty) / Number(si.meters_per_unit)).toFixed(2)) : si.issued_qty, si.meters_per_unit ? 'rolls' : si.stickers_per_roll ? 'units' : si.unit, si.issue_date, si.vehicle_no ?? '', si.status, si.indent_ref]),
                 ]
               )}
               disabled={issueRows.length === 0}
@@ -1117,7 +1117,7 @@ function AdminPanel({ token, tabOverride }) {
                     <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
                     <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
                     <td className="px-4 py-3 text-right font-bold text-slate-800">
-                      {si.meters_per_unit ? Math.round(Number(si.issued_qty) / Number(si.meters_per_unit)) : si.issued_qty}
+                      {si.meters_per_unit ? parseFloat((Number(si.issued_qty) / Number(si.meters_per_unit)).toFixed(2)) : si.issued_qty}
                       {' '}{si.meters_per_unit ? 'rolls' : si.stickers_per_roll ? 'units' : si.unit}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
@@ -1147,15 +1147,22 @@ function AdminPanel({ token, tabOverride }) {
           }
           return true;
         });
+        const stockDispQty = (s) => {
+          if (s.meters_per_unit) return parseFloat((Number(s.on_hand_qty) / Number(s.meters_per_unit)).toFixed(2));
+          if (s.stickers_per_roll) return parseFloat((Number(s.on_hand_qty) / Number(s.stickers_per_roll)).toFixed(2));
+          return s.on_hand_qty;
+        };
+        const stockDispUnit = (s) => s.meters_per_unit ? 'rolls' : s.stickers_per_roll ? 'units' : (s.unit ?? '');
         const exportCsv = () => {
           const exportDate = new Date().toISOString().slice(0, 10);
-          const header = ['Date', 'Warehouse', 'SKU', 'Material', 'On Hand', 'Avg Cost (INR)'];
+          const header = ['Date', 'Warehouse', 'SKU', 'Material', 'On Hand', 'Unit', 'Avg Cost (INR)'];
           const rows = filteredStock.map((s) => [
             exportDate,
             s.warehouse_name,
             s.material_code,
             s.material_name,
-            s.on_hand_qty,
+            stockDispQty(s),
+            stockDispUnit(s),
             Number(s.weighted_avg_cost ?? 0).toFixed(2),
           ]);
           const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -1203,6 +1210,7 @@ function AdminPanel({ token, tabOverride }) {
                     <th className="text-left px-4 py-2.5">SKU</th>
                     <th className="text-left px-4 py-2.5">Material</th>
                     <th className="text-right px-4 py-2.5">On Hand</th>
+                    <th className="text-left px-4 py-2.5">Unit</th>
                     <th className="text-right px-4 py-2.5">Avg Cost</th>
                   </tr>
                 </thead>
@@ -1215,7 +1223,8 @@ function AdminPanel({ token, tabOverride }) {
                         <td className="px-4 py-3 font-medium text-slate-800">{s.warehouse_name}</td>
                         <td className="px-4 py-3 text-slate-600">{s.material_code}</td>
                         <td className="px-4 py-3 text-slate-500">{s.material_name}</td>
-                        <td className={`px-4 py-3 text-right font-bold ${isLow ? 'text-red-600' : 'text-slate-800'}`}>{s.on_hand_qty}{isLow && ' ⚠'}</td>
+                        <td className={`px-4 py-3 text-right font-bold ${isLow ? 'text-red-600' : 'text-slate-800'}`}>{stockDispQty(s)}{isLow && ' ⚠'}</td>
+                        <td className="px-4 py-3 text-slate-500 text-xs">{stockDispUnit(s)}</td>
                         <td className="px-4 py-3 text-right text-slate-500">₹{Number(s.weighted_avg_cost ?? 0).toFixed(2)}</td>
                       </tr>
                     );
