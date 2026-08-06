@@ -221,11 +221,13 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
   }, [issue.id]);
 
   const qty = Number(receivedQty) || 0;
-  const isExact = Math.abs(qty - expectedQty) < 0.001;
-  const isUnder = qty > 0 && qty < expectedQty - 0.001;
-  const isOver = qty > expectedQty + 0.001;
-  const needsRemark = qty > 0 && !isExact;
-  const canSubmit = qty > 0 && (isExact || fcReason.trim()) && !submitting;
+  const hasEntry = receivedQty !== '';
+  const isZero = hasEntry && qty === 0;
+  const isExact = hasEntry && !isZero && Math.abs(qty - expectedQty) < 0.001;
+  const isUnder = hasEntry && qty > 0 && qty < expectedQty - 0.001;
+  const isOver = hasEntry && qty > expectedQty + 0.001;
+  const needsRemark = hasEntry && !isExact;
+  const canSubmit = hasEntry && (isExact || fcReason.trim()) && !submitting;
 
   async function handleSubmit() {
     setError('');
@@ -290,7 +292,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
             Actual Received Qty ({unit}) <span className="text-red-500">*</span>
           </label>
           <input
-            type="number" min={0.01} inputMode="decimal" step="any"
+            type="number" min={0} inputMode="decimal" step="any"
             value={receivedQty} onChange={(e) => setReceivedQty(e.target.value)}
             className={`w-full px-3 py-2.5 border rounded-lg text-base font-medium focus:outline-none focus:ring-2 ${
               isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
@@ -299,6 +301,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
             }`}
           />
           {isExact && <p className="text-xs text-green-700 mt-1">Qty matches dispatched amount.</p>}
+          {isZero && <p className="text-xs text-amber-700 mt-1">Zero received — add a remark below. Issue will be closed with no stock credited.</p>}
           {isOver && <p className="text-xs text-amber-700 mt-1">Qty exceeds dispatched — add a remark below. Issue will be closed at this qty.</p>}
           {isUnder && <p className="text-xs text-amber-700 mt-1">Qty is less than dispatched — add a remark below. Issue will be closed at this qty.</p>}
         </div>
@@ -332,7 +335,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           </div>
         )}
 
-        {qty === 0 && <p className="text-xs text-slate-400 text-center">Enter a quantity to confirm receipt.</p>}
+        {!hasEntry && <p className="text-xs text-slate-400 text-center">Enter a quantity to confirm receipt.</p>}
         {needsRemark && !fcReason.trim() && <p className="text-xs text-amber-600 text-center">Add a remark to continue.</p>}
       </div>
 
@@ -341,7 +344,7 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           <button onClick={handleSubmit} disabled={!canSubmit}
             className={`w-full py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 ${needsRemark ? 'bg-amber-600 active:bg-amber-700' : 'bg-blue-600 active:bg-blue-700'}`}>
             {submitting ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-            {needsRemark ? 'Confirm Receipt & Close Issue' : 'Confirm Receipt'}
+            {isZero ? 'Confirm Zero Receipt & Close Issue' : needsRemark ? 'Confirm Receipt & Close Issue' : 'Confirm Receipt'}
           </button>
         </div>
       </div>
