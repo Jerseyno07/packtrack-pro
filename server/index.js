@@ -600,6 +600,7 @@ const grnSchema = z.object({
   invoice_date: z.string().optional(),
   notes: z.string().optional(),
   has_invoice_attachment: z.boolean(),
+  force_complete_reason: z.string().optional(),
 });
 
 app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
@@ -616,10 +617,7 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
     const po = poRes.rows[0];
     if (['CLOSED', 'CANCELLED', 'FORCE_COMPLETED'].includes(po.status)) throw new ApiError(409, 'PO_NOT_OPEN', `PO ${po.po_no} is ${po.status}, cannot post GRN`);
 
-    // Partial inward is allowed — vendors often ship a PO line across multiple deliveries.
-    // Only over-receipt is blocked. A PO that stays short forever is closed via Force Complete instead.
     const remaining = Number(po.po_qty) - Number(po.received_qty_cache);
-    if (d.grn_qty > remaining) throw new ApiError(422, 'GRN_EXCEEDS_PO', `GRN qty ${d.grn_qty} exceeds remaining PO qty ${remaining}`, { remaining });
 
     const grnRef = genRef('GRN');
     const grnIns = await client.query(
@@ -631,8 +629,15 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
 
     await postLedgerEntry(client, { warehouseId: po.pm_store_warehouse_id, materialId: po.material_id, movementType: 'GRN_INWARD', qtyDelta: d.grn_qty, unitCost: po.unit_price, refTable: 'goods_receipts', refId: grnId, movementDate: d.grn_date });
     await writeAudit(client, { userId: req.user.id, action: 'GRN_POSTED', entityTable: 'goods_receipts', entityId: grnId, detail: { grnRef, po_id: po.id, qty: d.grn_qty } });
+    if (d.force_complete_reason) {
+      await client.query(
+        `UPDATE purchase_orders SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
+        [req.user.id, d.force_complete_reason, po.id]
+      );
+      await writeAudit(client, { userId: req.user.id, action: 'PO_FORCE_COMPLETED', entityTable: 'purchase_orders', entityId: po.id, detail: { reason: d.force_complete_reason, via_grn: grnRef } });
+    }
     await client.query('COMMIT');
-    res.status(201).json({ grn_id: grnId, grn_ref: grnRef, po_id: po.id, status: 'POSTED' });
+    res.status(201).json({ grn_id: grnId, grn_ref: grnRef, po_id: po.id, status: d.force_complete_reason ? 'FORCE_COMPLETED' : 'POSTED' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
@@ -738,6 +743,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
   const batchSchema = z.object({
     issue_date: z.string().min(1),
     vehicle_no: z.string().optional(),
+    force_complete_reason: z.string().optional(),
     items: z.array(z.object({
       indent_line_id: z.coerce.number().int().positive(),
       issued_qty: z.coerce.number().positive(),
@@ -745,7 +751,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
   });
   const parsed = batchSchema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid batch issue payload', parsed.error.issues);
-  const { issue_date, vehicle_no, items } = parsed.data;
+  const { issue_date, vehicle_no, items, force_complete_reason } = parsed.data;
 
   const client = await pool.connect();
   try {
@@ -778,7 +784,6 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       if (!line) throw new ApiError(404, 'INDENT_LINE_NOT_FOUND', `Indent line ${item.indent_line_id} not found`);
       if (['CANCELLED', 'FORCE_COMPLETED'].includes(line.status)) throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is ${line.status}`);
       const remaining = Number(line.requested_qty) - Number(line.issued_qty);
-      if (item.issued_qty > remaining) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${fmtDispQty(item.issued_qty, line)} exceeds remaining qty ${fmtDispQty(remaining, line)} for ${line.indent_ref}`);
       materialTotals.set(line.material_id, (materialTotals.get(line.material_id) || 0) + item.issued_qty);
       lineDataList.push({ item, line, remaining });
     }
@@ -786,7 +791,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
     // Validate stock per material (cumulative across all items)
     for (const [materialId, totalQty] of materialTotals) {
       const onHand = await getOnHandQty(client, fromWhId, materialId);
-      if (totalQty > onHand) {
+      if (totalQty > onHand && !force_complete_reason) {
         const sampleLine = lineDataList.find((ld) => ld.line.material_id === materialId)?.line;
         throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${sampleLine?.mat_code ?? materialId}: need ${fmtDispQty(totalQty, sampleLine ?? {})}, have ${fmtDispQty(onHand, sampleLine ?? {})}`, { onHand, totalQty });
       }
@@ -814,12 +819,32 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       );
       const issueId = issueIns.rows[0].id;
       await postLedgerEntry(client, { warehouseId: fromWhId, materialId: line.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
+      // Update issued_qty on indent line
+      await client.query(
+        `UPDATE indent_lines SET issued_qty = issued_qty + $1, updated_at = now() WHERE id = $2`,
+        [item.issued_qty, line.id]
+      );
       await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, indent_line_id: line.id, qty: item.issued_qty } });
       issueRefs.push(issueRef);
     }
 
+    // Force-complete indent lines when remark provided
+    if (force_complete_reason) {
+      for (const { line } of lineDataList) {
+        const freshLine = await client.query('SELECT * FROM indent_lines WHERE id = $1', [line.id]);
+        const fl = freshLine.rows[0];
+        if (fl && !['FULLY_ISSUED', 'CANCELLED', 'FORCE_COMPLETED'].includes(fl.status)) {
+          await client.query(
+            `UPDATE indent_lines SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
+            [req.user.id, force_complete_reason, fl.id]
+          );
+          await writeAudit(client, { userId: req.user.id, action: 'INDENT_LINE_FORCE_COMPLETED', entityTable: 'indent_lines', entityId: fl.id, detail: { reason: force_complete_reason, via_dispatch: true } });
+        }
+      }
+    }
+
     await client.query('COMMIT');
-    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs });
+    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs, status: force_complete_reason ? 'FORCE_COMPLETED' : 'POSTED' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
@@ -857,6 +882,7 @@ const receiptSchema = z.object({
   damage_qty: z.coerce.number().nonnegative().default(0),
   shortage_reason: z.string().optional(),
   receipt_date: z.string(),
+  force_complete_reason: z.string().optional(),
 });
 
 app.get('/api/v1/stock-issues/:id/receipt-defaults', authenticate, asyncHandler(async (req, res) => {
@@ -891,8 +917,6 @@ app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     const alreadyAccounted = Number(accountedRes.rows[0].total);
     const thisTotal = d.received_qty + d.shortage_qty + d.damage_qty;
     const remaining = Number(issue.issued_qty) - alreadyAccounted;
-    if (thisTotal > remaining + 0.001) throw new ApiError(422, 'RECEIPT_EXCEEDS_ISSUE', `Receipt total ${thisTotal} exceeds remaining un-receipted qty ${remaining}`, { remaining });
-
     const expectedQtyForReceipt = remaining;
     const receiptRef = genRef('RCV');
     const receiptIns = await client.query(
@@ -910,8 +934,15 @@ app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     }
 
     await writeAudit(client, { userId: req.user.id, action: 'STOCK_RECEIPT_CONFIRMED', entityTable: 'stock_receipts', entityId: receiptId, detail: { receiptRef, issue_id: issue.id, ...d } });
+    if (d.force_complete_reason) {
+      await client.query(
+        `UPDATE stock_issues SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
+        [req.user.id, d.force_complete_reason, issue.id]
+      );
+      await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUE_FORCE_COMPLETED', entityTable: 'stock_issues', entityId: issue.id, detail: { reason: d.force_complete_reason, via_receipt: receiptRef } });
+    }
     await client.query('COMMIT');
-    res.status(201).json({ receipt_id: receiptId, receipt_ref: receiptRef });
+    res.status(201).json({ receipt_id: receiptId, receipt_ref: receiptRef, status: d.force_complete_reason ? 'FORCE_COMPLETED' : 'POSTED' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 

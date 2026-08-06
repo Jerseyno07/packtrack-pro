@@ -223,38 +223,26 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
   const isExact = Math.abs(qty - expectedQty) < 0.001;
   const isUnder = qty > 0 && qty < expectedQty - 0.001;
   const isOver = qty > expectedQty + 0.001;
+  const needsRemark = qty > 0 && !isExact;
+  const canSubmit = qty > 0 && (isExact || fcReason.trim()) && !submitting;
 
-  const canConfirm = isExact && !submitting;
-  const canForce = isUnder && fcReason.trim().length > 0 && !submitting;
-
-  async function handleConfirm() {
+  async function handleSubmit() {
     setError('');
     setSubmitting(true);
     try {
-      const res = await client.confirmReceipt({
+      const payload = {
         stock_issue_id: issue.id,
         received_qty: Math.round(qty * dispFactor),
         shortage_qty: 0,
         damage_qty: 0,
         receipt_date: receiptDate,
         expected_qty: Math.round(expectedQty * dispFactor),
-      });
-      onSubmitted(res);
+      };
+      if (!isExact) payload.force_complete_reason = fcReason.trim();
+      const res = await client.confirmReceipt(payload);
+      onSubmitted({ ...res, closed: !isExact });
     } catch (e) {
       setError(e.message || 'Failed to submit receipt. Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleForceComplete() {
-    setError('');
-    setSubmitting(true);
-    try {
-      await client.forceComplete(issue.id, fcReason.trim());
-      onSubmitted({ receipt_ref: 'FORCE_COMPLETED', forced: true });
-    } catch (e) {
-      setError(e.message || 'Force complete failed.');
     } finally {
       setSubmitting(false);
     }
@@ -301,22 +289,17 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
             Actual Received Qty ({unit}) <span className="text-red-500">*</span>
           </label>
           <input
-            type="number" min={0.01} max={expectedQty} inputMode="decimal" step="any"
+            type="number" min={0.01} inputMode="decimal" step="any"
             value={receivedQty} onChange={(e) => setReceivedQty(e.target.value)}
             className={`w-full px-3 py-2.5 border rounded-lg text-base font-medium focus:outline-none focus:ring-2 ${
-              isOver    ? 'border-red-400 bg-red-50 focus:ring-red-400 text-red-700'
-              : isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
-              : isUnder ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
+              isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
+              : needsRemark ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
               : 'border-slate-300 focus:ring-blue-500'
             }`}
           />
-          {isOver && (
-            <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
-              <AlertTriangle size={12} /> Cannot receive more than dispatched qty. Max: {expectedQty} {unit}
-            </p>
-          )}
-          {isExact && <p className="text-xs text-green-700 mt-1">Qty matches — Confirm Receipt enabled.</p>}
-          {isUnder && <p className="text-xs text-amber-700 mt-1">Qty is less than expected — only Force Complete is allowed.</p>}
+          {isExact && <p className="text-xs text-green-700 mt-1">Qty matches dispatched amount.</p>}
+          {isOver && <p className="text-xs text-amber-700 mt-1">Qty exceeds dispatched — add a remark below. Issue will be closed at this qty.</p>}
+          {isUnder && <p className="text-xs text-amber-700 mt-1">Qty is less than dispatched — add a remark below. Issue will be closed at this qty.</p>}
         </div>
 
         {/* Receipt date */}
@@ -328,15 +311,14 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           />
         </div>
 
-        {/* FC reason — only when under */}
-        {isUnder && (
+        {needsRemark && (
           <div>
             <label className="text-xs font-medium text-amber-700 mb-1 block">
-              Force Complete Reason <span className="text-red-500">*</span>
+              Remark <span className="text-red-500">*</span> <span className="text-slate-400 font-normal">(required — qty differs from dispatched)</span>
             </label>
             <textarea
               rows={2} value={fcReason} onChange={(e) => setFcReason(e.target.value)}
-              placeholder="e.g. Material damaged in transit, balance waived off"
+              placeholder="e.g. Material damaged in transit, excess received vs challan"
               className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
             />
           </div>
@@ -349,21 +331,16 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
           </div>
         )}
 
-        {isOver && <p className="text-xs text-red-500 text-center">Both actions disabled — qty exceeds dispatched.</p>}
-        {!isOver && !isExact && !isUnder && <p className="text-xs text-slate-400 text-center">Enter a quantity to enable actions.</p>}
+        {qty === 0 && <p className="text-xs text-slate-400 text-center">Enter a quantity to confirm receipt.</p>}
+        {needsRemark && !fcReason.trim() && <p className="text-xs text-amber-600 text-center">Add a remark to continue.</p>}
       </div>
 
       <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
-        <div className="max-w-md mx-auto grid grid-cols-2 gap-3">
-          <button onClick={handleConfirm} disabled={!canConfirm}
-            className="py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-blue-700">
-            {submitting && isExact ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-            Confirm Receipt
-          </button>
-          <button onClick={handleForceComplete} disabled={!canForce}
-            className="py-4 bg-amber-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-amber-700">
-            {submitting && isUnder ? <RefreshCw size={16} className="animate-spin" /> : <Zap size={16} />}
-            Force Complete
+        <div className="max-w-md mx-auto">
+          <button onClick={handleSubmit} disabled={!canSubmit}
+            className={`w-full py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 ${needsRemark ? 'bg-amber-600 active:bg-amber-700' : 'bg-blue-600 active:bg-blue-700'}`}>
+            {submitting ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+            {needsRemark ? 'Confirm Receipt & Close Issue' : 'Confirm Receipt'}
           </button>
         </div>
       </div>
@@ -372,15 +349,15 @@ function ReceiptForm({ issue, token, onBack, onSubmitted }) {
 }
 
 function SuccessScreen({ receiptInfo, onDone }) {
-  const forced = receiptInfo.forced;
+  const closed = receiptInfo.closed;
   return (
     <div className="flex flex-col items-center justify-center text-center py-12 space-y-4">
-      <div className={`w-16 h-16 rounded-full flex items-center justify-center ${forced ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
-        {forced ? <Zap size={32} /> : <CheckCircle2 size={32} />}
+      <div className={`w-16 h-16 rounded-full flex items-center justify-center ${closed ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
+        <CheckCircle2 size={32} />
       </div>
       <div>
-        <div className="font-bold text-lg text-slate-900">{forced ? 'Issue Force Completed' : 'Receipt Confirmed'}</div>
-        {!forced && <div className="text-sm text-slate-500 mt-1">{receiptInfo.receipt_ref}</div>}
+        <div className="font-bold text-lg text-slate-900">{closed ? 'Receipt Confirmed & Issue Closed' : 'Receipt Confirmed'}</div>
+        {receiptInfo.receipt_ref && <div className="text-sm text-slate-500 mt-1">{receiptInfo.receipt_ref}</div>}
       </div>
       <button onClick={onDone} className="mt-4 px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium">
         Back to Pending List

@@ -244,43 +244,32 @@ function GRNScreen({ api }) {
     setError('');
     setSubmitting(true);
     try {
-      const res = await api.postGRN({
+      const payload = {
         po_id: selectedPO.id,
         grn_qty: Math.round(qty * poDispFactor(selectedPO)),
         grn_date: grnDate,
         invoice_no: invoiceNo,
         has_invoice_attachment: !!invoiceImage,
-      });
+      };
+      if (!isExact) payload.force_complete_reason = fcReason;
+      const res = await api.postGRN(payload);
       if (invoiceImage && res.id) {
         try { await api.uploadGrnImage(res.id, invoiceImage); } catch (_) {}
       }
-      setSuccess({ grn_ref: res.grn_ref ?? res.id, forced: false });
+      setSuccess({ grn_ref: res.grn_ref ?? res.id, closed: !isExact });
     } catch (e) {
       setError(e.message || 'Failed to post GRN.');
-    } finally { setSubmitting(false); }
-  }
-
-  async function submitForce() {
-    setError('');
-    setSubmitting(true);
-    try {
-      await api.forcePO(selectedPO.id, fcReason);
-      setSuccess({ forced: true });
-    } catch (e) {
-      setError(e.message || 'Force complete failed.');
     } finally { setSubmitting(false); }
   }
 
   if (success) {
     return (
       <div className="text-center py-16">
-        {success.forced
-          ? <Zap size={40} className="text-amber-500 mx-auto mb-3" />
-          : <CheckCircle2 size={40} className="text-green-500 mx-auto mb-3" />}
-        <div className="font-bold text-lg text-slate-900">{success.forced ? 'PO Force Completed' : 'GRN Posted'}</div>
-        {!success.forced && <div className="text-sm text-slate-500 mt-1">{success.grn_ref}</div>}
+        <CheckCircle2 size={40} className={`mx-auto mb-3 ${success.closed ? 'text-amber-500' : 'text-green-500'}`} />
+        <div className="font-bold text-lg text-slate-900">{success.closed ? 'GRN Posted & PO Closed' : 'GRN Posted'}</div>
+        <div className="text-sm text-slate-500 mt-1">{success.grn_ref}</div>
         <button onClick={resetForm} className="mt-5 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
-          {success.forced ? 'Back to PO List' : 'Post Another GRN'}
+          Post Another GRN
         </button>
       </div>
     );
@@ -335,12 +324,8 @@ function GRNScreen({ api }) {
   const isUnder = qty > 0 && qty < remaining - 0.001;
   const isOver = qty > remaining + 0.001;
 
-  // Partial inward is a normal flow now — vendors often ship a PO line across
-  // multiple deliveries. Post GRN is enabled for any qty in (0, remaining].
-  // Force Complete is a separate, always-available action for deliberately
-  // closing the line short (e.g. vendor won't deliver the rest).
-  const canGRN = qty > 0 && qty <= remaining + 0.001 && !submitting;
-  const canForce = fcReason.trim().length > 0 && !submitting;
+  const needsRemark = qty > 0 && !isExact;
+  const canGRN = qty > 0 && (isExact || fcReason.trim()) && !submitting;
 
   return (
     <div className="space-y-4 pb-32">
@@ -377,24 +362,22 @@ function GRNScreen({ api }) {
             type="number"
             min={0.01}
             step="any"
-            max={remaining}
             value={inwardQty}
             onChange={(e) => setInwardQty(e.target.value)}
             className={`w-full px-3 py-3 border rounded-lg text-base focus:outline-none focus:ring-2 font-medium ${
-              isOver ? 'border-red-400 bg-red-50 focus:ring-red-400 text-red-700'
-              : isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
-              : isUnder ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
+              isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
+              : needsRemark ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
               : 'border-slate-300 focus:ring-blue-500'
             }`}
           />
-          {isOver && (
-            <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertTriangle size={12} /> Cannot inward more than PO qty. Max allowed: {remaining} {poDispUnit(selectedPO)}</p>
-          )}
           {isExact && (
             <p className="text-xs text-green-700 mt-1">Inward qty matches remaining PO qty.</p>
           )}
+          {isOver && (
+            <p className="text-xs text-amber-700 mt-1">Qty exceeds PO — a remark is required. PO will be closed at this qty.</p>
+          )}
           {isUnder && (
-            <p className="text-xs text-amber-700 mt-1">Partial inward — this posts a GRN and leaves the rest of the PO open for a future delivery.</p>
+            <p className="text-xs text-amber-700 mt-1">Qty is less than PO remaining — add a remark below. PO will be closed at this qty.</p>
           )}
         </div>
 
@@ -424,19 +407,20 @@ function GRNScreen({ api }) {
           )}
         </div>
 
-        {/* FC reason — Force Complete is always available as a deliberate "close it short" action */}
-        <div>
-          <label className="text-xs font-medium text-amber-700 mb-1 block">
-            Force Complete Reason <span className="text-slate-400 font-normal">(required only to Force Complete)</span>
-          </label>
-          <textarea
-            rows={2}
-            value={fcReason}
-            onChange={(e) => setFcReason(e.target.value)}
-            placeholder="Reason why the remaining PO qty will not be received…"
-            className="w-full px-3 py-3 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
-          />
-        </div>
+        {needsRemark && (
+          <div>
+            <label className="text-xs font-medium text-amber-700 mb-1 block">
+              Remark <span className="text-red-500">*</span> <span className="text-slate-400 font-normal">(required — qty differs from PO)</span>
+            </label>
+            <textarea
+              rows={2}
+              value={fcReason}
+              onChange={(e) => setFcReason(e.target.value)}
+              placeholder="Reason for the difference…"
+              className="w-full px-3 py-3 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+            />
+          </div>
+        )}
 
         {error && (
           <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
@@ -448,20 +432,13 @@ function GRNScreen({ api }) {
 
       <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
         <div className="max-w-lg mx-auto space-y-2">
-          {!isOver && !isExact && !isUnder && <p className="text-xs text-center text-slate-400">Enter a quantity to enable actions.</p>}
-          {isOver && <p className="text-xs text-center text-red-500">Both actions disabled — qty exceeds PO.</p>}
-          <div className="grid grid-cols-2 gap-3">
-            <button onClick={submitGRN} disabled={!canGRN}
-              className="py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-blue-700">
-              {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-              Post GRN
-            </button>
-            <button onClick={submitForce} disabled={!canForce}
-              className="py-4 bg-amber-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 active:bg-amber-700">
-              {submitting ? <RefreshCw size={15} className="animate-spin" /> : <Zap size={15} />}
-              Force Complete
-            </button>
-          </div>
+          {qty === 0 && <p className="text-xs text-center text-slate-400">Enter a quantity to enable posting.</p>}
+          {needsRemark && !fcReason.trim() && <p className="text-xs text-center text-amber-600">Add a remark to continue.</p>}
+          <button onClick={submitGRN} disabled={!canGRN}
+            className={`w-full py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 ${needsRemark ? 'bg-amber-600 active:bg-amber-700' : 'bg-blue-600 active:bg-blue-700'}`}>
+            {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+            {needsRemark ? 'Post GRN & Close PO' : 'Post GRN'}
+          </button>
         </div>
       </div>
     </div>
@@ -496,6 +473,7 @@ function IssueScreen({ api }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [dispatched, setDispatched] = useState(null);
+  const [dispatchRemark, setDispatchRemark] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setFetchError('');
@@ -541,7 +519,9 @@ function IssueScreen({ api }) {
       .filter((i) => i.issued_qty > 0);
     setSubmitting(true); setSubmitError('');
     try {
-      const result = await api.batchIssue({ issue_date: issueDate, vehicle_no: vehicleNo || undefined, items });
+      const payload = { issue_date: issueDate, vehicle_no: vehicleNo || undefined, items };
+      if (dispatchRemark.trim()) payload.force_complete_reason = dispatchRemark.trim();
+      const result = await api.batchIssue(payload);
       setDispatched({ ...result, facility_name: selectedFacility.warehouse_name });
     } catch (e) {
       setSubmitError(e.message || 'Dispatch failed.');
@@ -553,6 +533,7 @@ function IssueScreen({ api }) {
     setShowSummary(false);
     setSubmitError('');
     setVehicleNo('');
+    setDispatchRemark('');
   }
 
   function reset() {
@@ -560,6 +541,7 @@ function IssueScreen({ api }) {
     setSelectedFacilityId(null);
     setShowSummary(false);
     setVehicleNo('');
+    setDispatchRemark('');
     load();
   }
 
@@ -631,6 +613,9 @@ function IssueScreen({ api }) {
     const q = Number(lineQtys[l.id] ?? 0);
     return q > 0 && q > toDisp(l, l.pm_on_hand_qty);
   });
+  const hasOverIndent = summaryItems.some((i) => i.actualQty > toDisp(i, i.pending_qty));
+  const needsDispatchRemark = hasStockError || hasOverIndent;
+  const canDispatch = hasAnyQty && (!needsDispatchRemark || dispatchRemark.trim()) && !submitting;
 
   return (
     <div className="space-y-4 pb-32">
@@ -662,7 +647,7 @@ function IssueScreen({ api }) {
           const overStock = qtyNum > 0 && qtyNum > pmStock;
           const overIndent = qtyNum > 0 && qtyNum > pending;
           return (
-            <div key={l.id} className={`bg-white rounded-xl border p-4 space-y-3 ${overStock ? 'border-red-200' : 'border-slate-200'}`}>
+            <div key={l.id} className={`bg-white rounded-xl border p-4 space-y-3 ${overStock ? 'border-red-200' : overIndent ? 'border-amber-200' : 'border-slate-200'}`}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="font-semibold text-sm text-slate-900 leading-tight">{l.material_name}</div>
@@ -687,9 +672,9 @@ function IssueScreen({ api }) {
               <div>
                 <label className="text-xs font-medium text-slate-500 mb-1 block">Dispatch Qty ({unit})</label>
                 <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(l.id, e.target.value)}
-                  className={`w-full px-3 py-3 border rounded-lg text-base focus:outline-none focus:ring-2 ${overStock ? 'border-red-300 focus:ring-red-400 bg-red-50' : 'border-slate-300 focus:ring-blue-500'}`} />
-                {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} {unit} available)</p>}
-                {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">More than indent qty — will partially over-issue</p>}
+                  className={`w-full px-3 py-3 border rounded-lg text-base focus:outline-none focus:ring-2 ${overStock ? 'border-red-300 focus:ring-red-400 bg-red-50' : overIndent ? 'border-amber-300 focus:ring-amber-400 bg-amber-50' : 'border-slate-300 focus:ring-blue-500'}`} />
+                {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} {unit} available) — add a remark in the dispatch summary</p>}
+                {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">Exceeds indent qty — add a remark in the dispatch summary</p>}
               </div>
             </div>
           );
@@ -699,8 +684,8 @@ function IssueScreen({ api }) {
       {/* Sticky dispatch bar */}
       <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
         <div className="max-w-lg mx-auto">
-          {hasStockError && <p className="text-xs text-red-500 text-center mb-2">Fix stock errors above before dispatching.</p>}
-          <button onClick={() => setShowSummary(true)} disabled={!hasAnyQty || hasStockError}
+          {needsDispatchRemark && <p className="text-xs text-amber-600 text-center mb-2">Qty mismatch detected — add a remark in the summary to continue.</p>}
+          <button onClick={() => setShowSummary(true)} disabled={!hasAnyQty}
             className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:bg-blue-700">
             <Truck size={18} /> Review & Dispatch ({summaryItems.length} item{summaryItems.length !== 1 ? 's' : ''})
           </button>
@@ -741,6 +726,20 @@ function IssueScreen({ api }) {
                   <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)}
                     className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
+                {needsDispatchRemark && (
+                  <div>
+                    <label className="text-xs font-medium text-amber-700 mb-1 block">
+                      Remark <span className="text-red-500">*</span> <span className="text-slate-400 font-normal">(required — qty mismatch)</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={dispatchRemark}
+                      onChange={(e) => setDispatchRemark(e.target.value)}
+                      placeholder="Reason for the quantity difference…"
+                      className="w-full px-3 py-3 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                    />
+                  </div>
+                )}
               </div>
 
               {submitError && (
@@ -755,7 +754,7 @@ function IssueScreen({ api }) {
                 className="py-4 bg-slate-100 text-slate-700 rounded-xl font-semibold text-sm">
                 Cancel
               </button>
-              <button onClick={dispatch} disabled={submitting}
+              <button onClick={dispatch} disabled={!canDispatch}
                 className="py-4 bg-blue-600 text-white rounded-xl font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60">
                 {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
                 {submitting ? 'Dispatching…' : 'Confirm Dispatch'}
