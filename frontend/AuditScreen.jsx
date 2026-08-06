@@ -6,18 +6,20 @@ const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
 // ── Unit helpers ──────────────────────────────────────────────────────────────
 // Roll materials: user sees/enters in rolls; DB stores in stickers or meters.
 function dispUnit(m) {
-  return m.stickers_per_roll || m.meters_per_unit ? 'rolls' : m.unit;
+  return m.stickers_per_roll || m.meters_per_unit ? 'rolls' : m.pieces_per_kg ? 'Kg' : m.unit;
 }
 function toDisp(m, baseQty) {
   const n = Number(baseQty);
   if (m.stickers_per_roll) return Math.round((n / m.stickers_per_roll) * 1000) / 1000;
   if (m.meters_per_unit) return parseFloat((n / Number(m.meters_per_unit)).toFixed(2));
+  if (m.pieces_per_kg) return parseFloat((n / Number(m.pieces_per_kg)).toFixed(3));
   return n;
 }
 function toBase(m, dispQty) {
   const n = Number(dispQty) || 0;
   if (m.stickers_per_roll) return Math.round(n * m.stickers_per_roll);
   if (m.meters_per_unit) return Math.round(n * Number(m.meters_per_unit));
+  if (m.pieces_per_kg) return Math.round(n * Number(m.pieces_per_kg));
   return n;
 }
 function fmtQty(n) {
@@ -128,7 +130,7 @@ export default function AuditScreen({ token, warehouseId }) {
       // Enrich server response with material metadata for display-unit conversion in success screen
       const enriched = (data.lines ?? []).map((l) => {
         const mat = materials.find((m) => String(m.material_id) === String(l.material_id));
-        return { ...l, material_code: mat?.material_code, material_name: mat?.material_name, stickers_per_roll: mat?.stickers_per_roll, meters_per_unit: mat?.meters_per_unit };
+        return { ...l, material_code: mat?.material_code, material_name: mat?.material_name, stickers_per_roll: mat?.stickers_per_roll, meters_per_unit: mat?.meters_per_unit, pieces_per_kg: mat?.pieces_per_kg };
       });
       setSuccess({ audit_ref: data.audit_ref, lines: enriched });
     } catch (e) {
@@ -340,7 +342,7 @@ export default function AuditScreen({ token, warehouseId }) {
                           <input
                             type="number"
                             min={0}
-                            step={m.stickers_per_roll || m.meters_per_unit ? 1 : 'any'}
+                            step={m.stickers_per_roll || m.meters_per_unit ? 1 : m.pieces_per_kg ? 0.001 : 'any'}
                             value={counts[m.material_id] ?? ''}
                             onChange={(e) => setCounts((prev) => ({ ...prev, [m.material_id]: e.target.value }))}
                             className={`w-20 px-2 py-1.5 border rounded-lg text-right text-sm font-mono focus:outline-none focus:ring-2 ${hasDiff ? 'border-amber-400 bg-amber-50 focus:ring-amber-400' : 'border-slate-300 focus:ring-blue-500'}`}
