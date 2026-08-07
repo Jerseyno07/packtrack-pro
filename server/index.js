@@ -348,14 +348,6 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     try {
       await client.query('BEGIN');
       const batchRef = genRef('INDB');
-      const r2Key = `indents/${batchRef}/${req.file.originalname}`;
-      await uploadToR2(r2Key, req.file.buffer, req.file.mimetype || 'application/octet-stream');
-      const batchIns = await client.query(
-        `INSERT INTO indent_batches (batch_ref, source_filename, uploaded_by_user_id, indent_date, status, total_rows, source_file_key)
-         VALUES ($1,$2,$3,$4,'UPLOADED',$5,$6) RETURNING id`,
-        [batchRef, req.file.originalname, req.user.id, indentDate, rawRows.length, r2Key]
-      );
-      const batchId = batchIns.rows[0].id;
 
       const whMap = new Map((await client.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id]));
       const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit, pieces_per_kg FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
@@ -402,7 +394,18 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         return res.status(422).json({ status: 'REJECTED', total_rows: rawRows.length, valid_rows: validatedRows.length, error_rows: errors.length, errors: errors.slice(0, 200) });
       }
 
-      // Pass 2: all rows valid — insert everything
+      // All rows valid — upload source file to R2, then insert everything
+      const r2Key = `indents/${batchRef}/${req.file.originalname}`;
+      await uploadToR2(r2Key, req.file.buffer, req.file.mimetype || 'application/octet-stream');
+
+      const batchIns = await client.query(
+        `INSERT INTO indent_batches (batch_ref, source_filename, uploaded_by_user_id, indent_date, status, total_rows, source_file_key)
+         VALUES ($1,$2,$3,$4,'UPLOADED',$5,$6) RETURNING id`,
+        [batchRef, req.file.originalname, req.user.id, indentDate, rawRows.length, r2Key]
+      );
+      const batchId = batchIns.rows[0].id;
+
+      // Pass 2: insert all validated rows
       for (const { rowNum, warehouseId, matId, finalQty, remarks } of validatedRows) {
         const indentRef = genRef('IND');
         await client.query(
@@ -530,13 +533,6 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
     try {
       await client.query('BEGIN');
       const batchRef = genRef('POB');
-      const r2Key = `po/${batchRef}/${req.file.originalname}`;
-      await uploadToR2(r2Key, req.file.buffer, req.file.mimetype || 'application/octet-stream');
-      const batchIns = await client.query(
-        `INSERT INTO po_batches (batch_ref, source_filename, uploaded_by_user_id, status, total_rows, source_file_key) VALUES ($1,$2,$3,'UPLOADED',$4,$5) RETURNING id`,
-        [batchRef, req.file.originalname, req.user.id, rawRows.length, r2Key]
-      );
-      const batchId = batchIns.rows[0].id;
 
       const matMap = new Map((await client.query('SELECT id, code, unit, stickers_per_roll, meters_per_unit, pieces_per_kg FROM materials WHERE is_active')).rows.map((r) => [r.code, r]));
       const whMap = new Map((await client.query("SELECT id, code FROM warehouses WHERE is_active AND warehouse_type='PM_STORE'")).rows.map((r) => [r.code, r.id]));
@@ -596,7 +592,17 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         return res.status(422).json({ status: 'FAILED', total_rows: rawRows.length, valid_rows: validRows.length, error_rows: errors.length, errors: errors.slice(0, 200) });
       }
 
-      // Pass 2: all rows valid — insert everything
+      // All rows valid — upload source file to R2, then insert everything
+      const r2Key = `po/${batchRef}/${req.file.originalname}`;
+      await uploadToR2(r2Key, req.file.buffer, req.file.mimetype || 'application/octet-stream');
+
+      const batchIns = await client.query(
+        `INSERT INTO po_batches (batch_ref, source_filename, uploaded_by_user_id, status, total_rows, source_file_key) VALUES ($1,$2,$3,'UPLOADED',$4,$5) RETURNING id`,
+        [batchRef, req.file.originalname, req.user.id, rawRows.length, r2Key]
+      );
+      const batchId = batchIns.rows[0].id;
+
+      // Pass 2: insert all validated rows
       for (const { rowNum, d, mat, warehouseId, finalQty, poDate, expDelivery } of validRows) {
         await client.query(
           `INSERT INTO purchase_orders (po_no, batch_id, row_number_in_file, vendor_name, material_id, pm_store_warehouse_id, po_qty, unit_price, po_date, expected_delivery)

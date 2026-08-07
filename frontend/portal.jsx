@@ -173,6 +173,7 @@ function IndentUploadSection({ token }) {
         setShowConfirm(true);
         return;
       }
+      if (res.status === 422 && data.errors) { setResult(data); return; }
       if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
       setResult(data);
       // Refresh the uploaded-facilities list after a successful upload
