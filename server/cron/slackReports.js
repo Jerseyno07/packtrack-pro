@@ -391,12 +391,6 @@ cron.schedule('0 0 * * *', () => {
   runAndAcceptConsumption(BLR_FACILITIES).catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
-// 01:00 IST — Daily Consumption Details (give run a full hour to complete)
-cron.schedule('0 1 * * *', () => {
-  console.log('[slackReports] 01:00 IST — sending daily consumption report');
-  sendDailyConsumption().catch((e) => console.error('[slackReports] Daily consumption report failed:', e.message));
-}, { timezone: 'Asia/Kolkata' });
-
 // 21:00 IST — FC Dispatch vs CC GRN
 cron.schedule('0 21 * * *', () => {
   console.log('[slackReports] 21:00 IST — sending FC dispatch vs CC GRN report');
