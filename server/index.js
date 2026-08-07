@@ -1305,7 +1305,7 @@ app.get('/api/v1/ledger', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), a
   const { rows } = await pool.query(`
     SELECT
       sl.id,
-      sl.movement_date,
+      sl.movement_date::text AS movement_date,
       sl.movement_type,
       sl.qty_delta,
       m.code  AS material_code,
