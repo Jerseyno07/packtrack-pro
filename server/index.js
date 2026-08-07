@@ -1314,13 +1314,13 @@ app.get('/api/v1/ledger', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), a
       m.stickers_per_roll,
       m.meters_per_unit,
       m.pieces_per_kg,
-      CASE sl.movement_type
+      CASE sl.movement_type::text
         WHEN 'GRN_INWARD'       THEN 'Vendor GRN' || COALESCE(' · PO ' || po.po_no, '')
         WHEN 'ISSUE_OUT'        THEN 'Dispatched to ' || COALESCE(dest_w.name || ' (' || dest_w.code || ')', 'facility')
         WHEN 'RECEIPT_IN'       THEN 'Received from PM Store' || COALESCE(' · ' || src_iss.issue_ref, '')
         WHEN 'CONSUMPTION'      THEN 'Consumed in operations · Run #' || sl.ref_id
         WHEN 'AUDIT_ADJUSTMENT' THEN 'Audit adjustment'
-        ELSE sl.movement_type
+        ELSE sl.movement_type::text
       END AS reason
     FROM stock_ledger sl
     JOIN materials m ON m.id = sl.material_id
