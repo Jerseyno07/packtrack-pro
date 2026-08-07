@@ -1325,7 +1325,7 @@ app.get('/api/v1/ledger', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), a
     FROM stock_ledger sl
     JOIN materials m ON m.id = sl.material_id
     LEFT JOIN goods_receipts        gr      ON sl.ref_table = 'goods_receipts'  AND sl.ref_id = gr.id
-    LEFT JOIN purchase_orders       po      ON gr.purchase_order_id = po.id
+    LEFT JOIN purchase_orders       po      ON gr.po_id = po.id
     LEFT JOIN stock_issues          iss_out ON sl.ref_table = 'stock_issues'    AND sl.ref_id = iss_out.id
     LEFT JOIN warehouses            dest_w  ON dest_w.id = iss_out.to_warehouse_id
     LEFT JOIN stock_receipts        sr      ON sl.ref_table = 'stock_receipts'  AND sl.ref_id = sr.id
