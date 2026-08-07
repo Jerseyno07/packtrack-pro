@@ -157,10 +157,10 @@ async function acceptRun(runId) {
 // Creates and auto-accepts a run for all facilities for the previous day.
 
 async function runAndAcceptConsumption(facilityCodes = null) {
-  const today = new Date();
-  const runDate = today.toISOString().slice(0, 10);
-  const yest = new Date(today);
-  yest.setDate(yest.getDate() - 1);
+  const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  const runDate = nowIst.toISOString().slice(0, 10);
+  const yest = new Date(nowIst);
+  yest.setUTCDate(yest.getUTCDate() - 1);
   const scrapedDate = yest.toISOString().slice(0, 10);
   const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
 
