@@ -24,7 +24,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function displayUnit(row) {
-  return row.meters_per_unit ? 'm' : row.stickers_per_roll ? 'units' : row.unit;
+  return row.meters_per_unit ? 'm' : row.stickers_per_roll ? 'units' : row.pieces_per_kg ? 'Kg' : row.unit;
 }
 
 function fmt(n) {
