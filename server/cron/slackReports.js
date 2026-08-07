@@ -116,7 +116,7 @@ async function acceptRun(runId) {
   `, [runId]);
 
   let committed = 0;
-  const movementDate = new Date(run.scraped_to).toISOString().slice(0, 10);
+  const movementDate = new Date(new Date(run.scraped_to).getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   for (const g of groups.rows) {
     const totalQty = Number(g.total_qty);
