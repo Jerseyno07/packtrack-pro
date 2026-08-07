@@ -1650,6 +1650,12 @@ app.get('/api/v1/audits', authenticate, asyncHandler(async (req, res) => {
 // MODULE: CONSUMPTION RUNS (admin trigger + listing)
 // ═══════════════════════════════════════════════════════════════════════════
 
+app.post('/api/v1/admin/slack/send-daily-consumption', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { sendDailyConsumption } = require('./cron/slackReports');
+  await sendDailyConsumption();
+  res.json({ ok: true });
+}));
+
 app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { runConsumption } = require('./cron/consumptionScraper');
   const { warehouseIds } = req.body ?? {};
