@@ -309,8 +309,8 @@ function toIsoDateOrNull(val) {
 const indentRowSchema = z.object({
   facility_code: z.string().min(1),
   sku_code: z.string().min(1),
-  requested_qty: z.coerce.number().positive().optional(),
-  no_of_rolls: z.coerce.number().positive().optional(),
+  requested_qty: z.coerce.number().int('Must be a whole number').positive('Must be greater than 0').optional(),
+  no_of_rolls: z.coerce.number().int('Must be a whole number').positive('Must be greater than 0').optional(),
   remarks: z.string().optional(),
 });
 
