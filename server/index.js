@@ -24,6 +24,35 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const helmet = require('helmet');
 const cors = require('cors');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+// ── Cloudflare R2 client ──────────────────────────────────────────────────────
+const r2 = new S3Client({
+  region: 'auto',
+  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+  },
+});
+
+async function uploadToR2(key, buffer, contentType) {
+  await r2.send(new PutObjectCommand({
+    Bucket: process.env.R2_BUCKET_NAME,
+    Key: key,
+    Body: buffer,
+    ContentType: contentType,
+  }));
+}
+
+async function presignR2(key, filename) {
+  return getSignedUrl(r2, new GetObjectCommand({
+    Bucket: process.env.R2_BUCKET_NAME,
+    Key: key,
+    ResponseContentDisposition: `attachment; filename="${filename}"`,
+  }), { expiresIn: 3600 });
+}
 
 const app = express();
 app.use(helmet());
@@ -319,10 +348,12 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     try {
       await client.query('BEGIN');
       const batchRef = genRef('INDB');
+      const r2Key = `indents/${batchRef}/${req.file.originalname}`;
+      await uploadToR2(r2Key, req.file.buffer, req.file.mimetype || 'application/octet-stream');
       const batchIns = await client.query(
-        `INSERT INTO indent_batches (batch_ref, source_filename, uploaded_by_user_id, indent_date, status, total_rows)
-         VALUES ($1,$2,$3,$4,'UPLOADED',$5) RETURNING id`,
-        [batchRef, req.file.originalname, req.user.id, indentDate, rawRows.length]
+        `INSERT INTO indent_batches (batch_ref, source_filename, uploaded_by_user_id, indent_date, status, total_rows, source_file_key)
+         VALUES ($1,$2,$3,$4,'UPLOADED',$5,$6) RETURNING id`,
+        [batchRef, req.file.originalname, req.user.id, indentDate, rawRows.length, r2Key]
       );
       const batchId = batchIns.rows[0].id;
 
@@ -388,6 +419,15 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
+
+app.get('/api/v1/indents/batches/:ref/download', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT source_file_key, source_filename FROM indent_batches WHERE batch_ref = $1', [req.params.ref]);
+  if (!rows.length) throw new ApiError(404, 'NOT_FOUND', 'Batch not found');
+  const { source_file_key, source_filename } = rows[0];
+  if (!source_file_key) throw new ApiError(404, 'NO_FILE', 'No source file stored for this batch');
+  const url = await presignR2(source_file_key, source_filename);
+  res.json({ url });
+}));
 
 app.get('/api/v1/indents/uploaded-facilities', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
   const { date } = req.query;
@@ -486,9 +526,11 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
     try {
       await client.query('BEGIN');
       const batchRef = genRef('POB');
+      const r2Key = `po/${batchRef}/${req.file.originalname}`;
+      await uploadToR2(r2Key, req.file.buffer, req.file.mimetype || 'application/octet-stream');
       const batchIns = await client.query(
-        `INSERT INTO po_batches (batch_ref, source_filename, uploaded_by_user_id, status, total_rows) VALUES ($1,$2,$3,'UPLOADED',$4) RETURNING id`,
-        [batchRef, req.file.originalname, req.user.id, rawRows.length]
+        `INSERT INTO po_batches (batch_ref, source_filename, uploaded_by_user_id, status, total_rows, source_file_key) VALUES ($1,$2,$3,'UPLOADED',$4,$5) RETURNING id`,
+        [batchRef, req.file.originalname, req.user.id, rawRows.length, r2Key]
       );
       const batchId = batchIns.rows[0].id;
 
@@ -568,6 +610,15 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
+
+app.get('/api/v1/purchase-orders/batches/:ref/download', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT source_file_key, source_filename FROM po_batches WHERE batch_ref = $1', [req.params.ref]);
+  if (!rows.length) throw new ApiError(404, 'NOT_FOUND', 'Batch not found');
+  const { source_file_key, source_filename } = rows[0];
+  if (!source_file_key) throw new ApiError(404, 'NO_FILE', 'No source file stored for this batch');
+  const url = await presignR2(source_file_key, source_filename);
+  res.json({ url });
+}));
 
 app.get('/api/v1/purchase-orders', authenticate, asyncHandler(async (req, res) => {
   const { status, warehouse_id, material_id } = req.query;

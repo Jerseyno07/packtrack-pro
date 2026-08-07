@@ -294,6 +294,19 @@ function IndentUploadSection({ token }) {
             {result.error_rows === 0 ? <CheckCircle2 size={18} className="text-green-500" /> : <AlertTriangle size={18} className="text-amber-500" />}
             <span className="font-semibold text-slate-900">{result.batch_ref}</span>
             <Badge tone={result.error_rows === 0 ? 'green' : 'amber'}>{result.status}</Badge>
+            {result.error_rows === 0 && (
+              <button
+                onClick={async () => {
+                  const r = await fetch(`${BASE_URL}/api/v1/indents/batches/${result.batch_ref}/download`, { headers: { Authorization: `Bearer ${token}` } });
+                  const d = await r.json();
+                  if (d.url) window.open(d.url, '_blank');
+                }}
+                className="ml-auto flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                title="Download source file"
+              >
+                <Download size={13} /> Download
+              </button>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-3 text-sm mb-3">
             <div><div className="text-slate-400 text-xs">Total Rows</div><div className="font-bold text-slate-900">{result.total_rows}</div></div>
@@ -390,6 +403,19 @@ function POUploadSection({ token }) {
             {result.error_rows === 0 ? <CheckCircle2 size={18} className="text-green-500" /> : <AlertTriangle size={18} className="text-amber-500" />}
             <span className="font-semibold text-slate-900">{result.batch_ref}</span>
             <Badge tone={result.error_rows === 0 ? 'green' : result.valid_rows === 0 ? 'red' : 'amber'}>{result.status}</Badge>
+            {result.error_rows === 0 && (
+              <button
+                onClick={async () => {
+                  const r = await fetch(`${BASE_URL}/api/v1/purchase-orders/batches/${result.batch_ref}/download`, { headers: { Authorization: `Bearer ${token}` } });
+                  const d = await r.json();
+                  if (d.url) window.open(d.url, '_blank');
+                }}
+                className="ml-auto flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                title="Download source file"
+              >
+                <Download size={13} /> Download
+              </button>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-3 text-sm">
             <div><div className="text-slate-400 text-xs">Total Rows</div><div className="font-bold text-slate-900">{result.total_rows}</div></div>
