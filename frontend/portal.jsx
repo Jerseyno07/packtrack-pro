@@ -670,9 +670,6 @@ function AdminPanel({ token, tabOverride }) {
   const [chLoading, setChLoading] = useState(false);
   const [chWarehouses, setChWarehouses] = useState([]);
 
-  const [downloadsList, setDownloadsList] = useState([]);
-  const [downloadsLoading, setDownloadsLoading] = useState(false);
-
   const thirtyDaysAgo = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
   const [issueRows, setIssueRows] = useState([]);
   const [issueLoading, setIssueLoading] = useState(false);
@@ -1015,15 +1012,6 @@ function AdminPanel({ token, tabOverride }) {
     }
   }, [tab]);
   useEffect(() => { if (tab === 'users') fetchUsers(); }, [tab, fetchUsers]);
-  useEffect(() => {
-    if (tab !== 'downloads') return;
-    setDownloadsLoading(true);
-    fetch(`${BASE_URL}/api/v1/admin/downloads`, { headers: hdrs })
-      .then((r) => r.json())
-      .then((d) => setDownloadsList(Array.isArray(d) ? d : []))
-      .catch(() => {})
-      .finally(() => setDownloadsLoading(false));
-  }, [tab]);
 
   async function submitReverse() {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
@@ -1066,7 +1054,6 @@ function AdminPanel({ token, tabOverride }) {
     { id: 'cons-history', label: 'Consumption History' },
     { id: 'msl', label: 'Min Stock Levels' },
     { id: 'users', label: 'Users' },
-    { id: 'downloads', label: 'Downloads' },
   ];
 
   if (loading) return (
@@ -2067,77 +2054,6 @@ function AdminPanel({ token, tabOverride }) {
         </div>
       )}
 
-      {tab === 'downloads' && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-slate-800">Uploaded Source Files</h3>
-              <p className="text-xs text-slate-500 mt-0.5">Download original indent and PO CSVs. Links expire after 1 hour but can be regenerated any time.</p>
-            </div>
-            <button onClick={() => {
-              setDownloadsLoading(true);
-              fetch(`${BASE_URL}/api/v1/admin/downloads`, { headers: hdrs })
-                .then((r) => r.json())
-                .then((d) => setDownloadsList(Array.isArray(d) ? d : []))
-                .catch(() => {})
-                .finally(() => setDownloadsLoading(false));
-            }} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
-              <RefreshCw size={14} />
-            </button>
-          </div>
-          {downloadsLoading ? (
-            <div className="py-12 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
-          ) : downloadsList.length === 0 ? (
-            <div className="bg-white rounded-xl border border-slate-200 py-12 text-center text-slate-400 text-sm">
-              No files stored yet. Files are saved from the next upload onwards.
-            </div>
-          ) : (
-            <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-              <table className="w-full text-sm min-w-[600px]">
-                <thead className="bg-slate-50 text-slate-500 text-xs">
-                  <tr>
-                    <th className="text-left px-4 py-2.5">Type</th>
-                    <th className="text-left px-4 py-2.5">Batch Ref</th>
-                    <th className="text-left px-4 py-2.5">Filename</th>
-                    <th className="text-left px-4 py-2.5">Uploaded</th>
-                    <th className="text-right px-4 py-2.5">Rows</th>
-                    <th className="px-4 py-2.5"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {downloadsList.map((row) => (
-                    <tr key={row.batch_ref} className="border-t border-slate-100 hover:bg-slate-50">
-                      <td className="px-4 py-3">
-                        <Badge tone={row.type === 'indent' ? 'blue' : 'amber'}>{row.type === 'indent' ? 'Indent' : 'PO'}</Badge>
-                      </td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.batch_ref}</td>
-                      <td className="px-4 py-3 text-slate-700 max-w-xs truncate" title={row.source_filename}>{row.source_filename}</td>
-                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{new Date(row.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                      <td className="px-4 py-3 text-right text-slate-600">{row.valid_rows}</td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={async () => {
-                            const endpoint = row.type === 'indent'
-                              ? `${BASE_URL}/api/v1/indents/batches/${row.batch_ref}/download`
-                              : `${BASE_URL}/api/v1/purchase-orders/batches/${row.batch_ref}/download`;
-                            const r = await fetch(endpoint, { headers: hdrs });
-                            const d = await r.json();
-                            if (d.url) window.open(d.url, '_blank');
-                          }}
-                          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium"
-                        >
-                          <Download size={12} /> Download
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
       {resetModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
@@ -2221,6 +2137,89 @@ function AdminPanel({ token, tabOverride }) {
   );
 }
 
+// ── DOWNLOADS SECTION ────────────────────────────────────────────────────────
+function DownloadsSection({ token }) {
+  const hdrs = { Authorization: `Bearer ${token}` };
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  function load() {
+    setLoading(true);
+    fetch(`${BASE_URL}/api/v1/admin/downloads`, { headers: hdrs })
+      .then((r) => r.json())
+      .then((d) => setList(Array.isArray(d) ? d : []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function handleDownload(row) {
+    const endpoint = row.type === 'indent'
+      ? `${BASE_URL}/api/v1/indents/batches/${row.batch_ref}/download`
+      : `${BASE_URL}/api/v1/purchase-orders/batches/${row.batch_ref}/download`;
+    const r = await fetch(endpoint, { headers: hdrs });
+    const d = await r.json();
+    if (d.url) window.open(d.url, '_blank');
+  }
+
+  return (
+    <div className="space-y-4 max-w-4xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Downloads</h2>
+          <p className="text-sm text-slate-500">Original indent and PO source files. Links are generated fresh on demand and expire after 1 hour.</p>
+        </div>
+        <button onClick={load} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700">
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="py-16 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
+      ) : list.length === 0 ? (
+        <div className="bg-white rounded-xl border border-slate-200 py-16 text-center text-slate-400 text-sm">
+          No files stored yet. Files are saved automatically from the next upload onwards.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm min-w-[600px]">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr>
+                <th className="text-left px-4 py-2.5">Type</th>
+                <th className="text-left px-4 py-2.5">Batch Ref</th>
+                <th className="text-left px-4 py-2.5">Filename</th>
+                <th className="text-left px-4 py-2.5">Uploaded</th>
+                <th className="text-right px-4 py-2.5">Rows</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((row) => (
+                <tr key={row.batch_ref} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-3">
+                    <Badge tone={row.type === 'indent' ? 'blue' : 'amber'}>{row.type === 'indent' ? 'Indent' : 'PO'}</Badge>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.batch_ref}</td>
+                  <td className="px-4 py-3 text-slate-700 max-w-xs truncate" title={row.source_filename}>{row.source_filename}</td>
+                  <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{new Date(row.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td className="px-4 py-3 text-right text-slate-600">{row.valid_rows}</td>
+                  <td className="px-4 py-3 text-right">
+                    <button onClick={() => handleDownload(row)}
+                      className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium">
+                      <Download size={12} /> Download
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── APP SHELL ────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(null);
@@ -2247,6 +2246,7 @@ export default function App() {
     { id: 'dashboard', label: 'PM Store Dashboard', icon: TrendingUp, roles: ['PM_STORE_EXEC', 'ADMIN'] },
     { id: 'indent', label: 'Upload Indent', icon: Box, roles: ['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'] },
     { id: 'po', label: 'Upload Purchase Orders', icon: Truck, roles: ['PM_STORE_EXEC', 'ADMIN'] },
+    { id: 'downloads', label: 'Downloads', icon: Download, roles: ['PM_STORE_EXEC', 'ADMIN'] },
     { id: 'admin', label: 'Admin Panel', icon: Shield, roles: ['ADMIN'] },
   ].filter((n) => n.roles.includes(user.role));
 
@@ -2282,6 +2282,7 @@ export default function App() {
         {section === 'dashboard' && <DashboardSection token={token} />}
         {section === 'indent' && <IndentUploadSection token={token} />}
         {section === 'po' && <POUploadSection token={token} />}
+        {section === 'downloads' && <DownloadsSection token={token} />}
         {section === 'admin' && <AdminPanel token={token} tabOverride={adminTabForTour} />}
       </div>
 
