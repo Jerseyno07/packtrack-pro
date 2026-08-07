@@ -363,6 +363,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
       // Pass 1: validate all rows — if any fail, reject the entire upload
       const errors = [];
       const validatedRows = [];
+      const seenFacilitySku = new Set();
 
       for (let i = 0; i < rawRows.length; i++) {
         const rowNum = i + 2;
@@ -374,6 +375,9 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
         const mat = matMap.get(sku_code);
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown facility_code '${facility_code}'` }); continue; }
         if (!mat) { errors.push({ row: rowNum, error: `Unknown sku_code '${sku_code}'` }); continue; }
+        const dedupKey = `${facility_code}::${sku_code}`;
+        if (seenFacilitySku.has(dedupKey)) { errors.push({ row: rowNum, error: `Duplicate: facility '${facility_code}' + SKU '${sku_code}' already appears earlier in this file` }); continue; }
+        seenFacilitySku.add(dedupKey);
 
         let finalQty;
         if (mat.stickers_per_roll) {
