@@ -44,6 +44,7 @@ function chunkText(text, max = 3900) {
   return chunks;
 }
 
+// Post text via webhook (fallback when no bot token).
 async function postSlack(text) {
   const webhook = process.env.SLACK_REPORTS_WEBHOOK;
   if (!webhook) { console.warn('[slackReports] SLACK_REPORTS_WEBHOOK not set'); return; }
@@ -56,19 +57,19 @@ async function postSlack(text) {
   }
 }
 
-// Upload a CSV string as a file attachment to the Slack channel.
-// Requires SLACK_BOT_TOKEN + SLACK_CHANNEL_ID; silently skips if either is missing.
-async function uploadCsvToSlack(csvString, filename, title) {
+// Send a report: if bot token available, upload CSV with text as initial_comment (one message).
+// If no bot token, fall back to webhook text-only post.
+async function sendReport(text, csvString, filename, title) {
   const token = process.env.SLACK_BOT_TOKEN;
   const channelId = process.env.SLACK_CHANNEL_ID;
+
   if (!token || !channelId) {
-    console.warn('[slackReports] SLACK_BOT_TOKEN or SLACK_CHANNEL_ID not set — skipping CSV upload');
-    return;
+    console.warn('[slackReports] SLACK_BOT_TOKEN or SLACK_CHANNEL_ID not set — posting text only via webhook');
+    return postSlack(text);
   }
 
   const byteLength = Buffer.byteLength(csvString, 'utf8');
 
-  // Step 1: request an upload URL from Slack (requires form-encoded body)
   const urlRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -77,18 +78,16 @@ async function uploadCsvToSlack(csvString, filename, title) {
   const urlData = await urlRes.json();
   if (!urlData.ok) throw new Error(`Slack getUploadURL failed: ${urlData.error}`);
 
-  // Step 2: PUT the file content to the pre-signed upload URL
   await fetch(urlData.upload_url, {
     method: 'POST',
     headers: { 'Content-Type': 'text/csv' },
     body: csvString,
   });
 
-  // Step 3: complete the upload and share to channel
   const completeRes = await fetch('https://slack.com/api/files.completeUploadExternal', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: [{ id: urlData.file_id, title }], channel_id: channelId }),
+    body: JSON.stringify({ files: [{ id: urlData.file_id, title }], channel_id: channelId, initial_comment: text }),
   });
   const completeData = await completeRes.json();
   if (!completeData.ok) throw new Error(`Slack completeUpload failed: ${completeData.error}`);
@@ -269,9 +268,8 @@ async function sendFCDispatchVsCCGRN() {
     text += '```\n';
   }
 
-  await postSlack(text);
   const dateSlug = today.replace(/-/g, '');
-  await uploadCsvToSlack(csv, `fc-dispatch-cc-grn-${dateSlug}.csv`, `FC Dispatch → CC GRN — ${dateLabel}`);
+  await sendReport(text, csv, `fc-dispatch-cc-grn-${dateSlug}.csv`, `FC Dispatch → CC GRN — ${dateLabel}`);
 }
 
 // ── Report 2: Daily Consumption Details (00:15 IST) ──────────────────────────
@@ -337,8 +335,7 @@ async function sendDailyConsumption(runId = null) {
     text += '```\n';
   }
 
-  await postSlack(text);
-  await uploadCsvToSlack(csv, `consumption-${dateSlug}.csv`, `Daily Consumption — ${scrapedToIst}`);
+  await sendReport(text, csv, `consumption-${dateSlug}.csv`, `Daily Consumption — ${scrapedToIst}`);
 }
 
 // ── Report 3: CC Balance vs Audit (schema ready — cron TBD) ──────────────────
