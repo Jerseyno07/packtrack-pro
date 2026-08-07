@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
-import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap, Users } from 'lucide-react';
+import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap, Users, BookOpen, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import TourOverlay from './TourOverlay.jsx';
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
@@ -2221,6 +2221,185 @@ function DownloadsSection({ token }) {
   );
 }
 
+// ── LEDGER SECTION ───────────────────────────────────────────────────────────
+const MOVEMENT_META = {
+  GRN_INWARD:       { label: 'Vendor GRN',            dir: 'in',  tone: 'green' },
+  RECEIPT_IN:       { label: 'Received from PM Store', dir: 'in',  tone: 'green' },
+  ISSUE_OUT:        { label: 'Dispatched',             dir: 'out', tone: 'red'   },
+  CONSUMPTION:      { label: 'Consumed',               dir: 'out', tone: 'red'   },
+  AUDIT_ADJUSTMENT: { label: 'Audit Adjustment',       dir: 'adj', tone: 'amber' },
+};
+
+function fmtLedgerQty(row) {
+  const n = Math.abs(Number(row.qty_delta));
+  if (row.stickers_per_roll) return `${(n / Number(row.stickers_per_roll)).toFixed(2)} rolls`;
+  if (row.meters_per_unit)   return `${(n / Number(row.meters_per_unit)).toFixed(2)} rolls`;
+  if (row.pieces_per_kg)     return `${(n / Number(row.pieces_per_kg)).toFixed(3)} Kg`;
+  return `${n % 1 === 0 ? n : n.toFixed(3)} ${row.unit}`;
+}
+
+function LedgerSection({ token }) {
+  const hdrs = { Authorization: `Bearer ${token}` };
+  const today = new Date().toISOString().slice(0, 10);
+  const thirtyAgo = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+
+  const [warehouses, setWarehouses] = useState([]);
+  const [warehouseId, setWarehouseId] = useState('');
+  const [dateFrom, setDateFrom] = useState(thirtyAgo);
+  const [dateTo, setDateTo] = useState(today);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [searched, setSearched] = useState(false);
+
+  useEffect(() => {
+    fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs })
+      .then(r => r.json())
+      .then(d => setWarehouses(d.data ?? []))
+      .catch(() => {});
+  }, []);
+
+  async function fetchLedger() {
+    if (!warehouseId) { setError('Select a facility first.'); return; }
+    setError(''); setLoading(true); setSearched(true);
+    try {
+      const p = new URLSearchParams({ warehouse_id: warehouseId, date_from: dateFrom, date_to: dateTo });
+      const res = await fetch(`${BASE_URL}/api/v1/ledger?${p}`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed to load ledger');
+      setRows(Array.isArray(data) ? data : []);
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  }
+
+  const totalIn  = rows.filter(r => Number(r.qty_delta) > 0).reduce((s, r) => s + Number(r.qty_delta), 0);
+  const totalOut = rows.filter(r => Number(r.qty_delta) < 0).reduce((s, r) => s + Number(r.qty_delta), 0);
+
+  function exportCsv() {
+    const wh = warehouses.find(w => String(w.id) === String(warehouseId));
+    const header = ['Date', 'Material Code', 'Material Name', 'Movement', 'In', 'Out', 'Reason'];
+    const dataRows = rows.map(r => {
+      const delta = Number(r.qty_delta);
+      return [
+        r.movement_date?.slice(0, 10),
+        r.material_code,
+        r.material_name,
+        MOVEMENT_META[r.movement_type]?.label ?? r.movement_type,
+        delta > 0 ? delta : '',
+        delta < 0 ? Math.abs(delta) : '',
+        r.reason,
+      ];
+    });
+    downloadCSV(`ledger-${wh?.code ?? warehouseId}-${dateFrom}-${dateTo}.csv`, [header, ...dataRows]);
+  }
+
+  return (
+    <div className="space-y-4 max-w-5xl">
+      <div>
+        <h2 className="text-lg font-bold text-slate-900">Stock Ledger</h2>
+        <p className="text-sm text-slate-500">All stock movements for a facility — inwards, outwards, consumption, and adjustments.</p>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-wrap gap-3 items-end">
+        <div className="flex-1 min-w-[200px]">
+          <label className="text-xs font-medium text-slate-500 mb-1 block">Facility <span className="text-red-500">*</span></label>
+          <select value={warehouseId} onChange={e => setWarehouseId(e.target.value)}
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">Select facility…</option>
+            {warehouses.map(w => <option key={w.id} value={w.id}>{w.name} ({w.code})</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">From</label>
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">To</label>
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <button onClick={fetchLedger} disabled={loading}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-60">
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> {loading ? 'Loading…' : 'View'}
+        </button>
+        {rows.length > 0 && (
+          <button onClick={exportCsv} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
+            <Download size={14} /> Export
+          </button>
+        )}
+      </div>
+
+      {error && <div className="text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+
+      {searched && !loading && rows.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-green-50 border border-green-100 rounded-xl p-4 flex items-center gap-3">
+            <ArrowDownCircle size={20} className="text-green-600 flex-shrink-0" />
+            <div>
+              <div className="text-xs text-green-700 font-medium">Total Inward</div>
+              <div className="text-lg font-bold text-green-800">{totalIn.toLocaleString('en-IN')}</div>
+            </div>
+          </div>
+          <div className="bg-red-50 border border-red-100 rounded-xl p-4 flex items-center gap-3">
+            <ArrowUpCircle size={20} className="text-red-600 flex-shrink-0" />
+            <div>
+              <div className="text-xs text-red-700 font-medium">Total Outward</div>
+              <div className="text-lg font-bold text-red-800">{Math.abs(totalOut).toLocaleString('en-IN')}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {searched && !loading && rows.length === 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 py-14 text-center text-slate-400 text-sm">
+          No movements found for this facility and date range.
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr>
+                <th className="text-left px-4 py-2.5">Date</th>
+                <th className="text-left px-4 py-2.5">Material</th>
+                <th className="text-left px-4 py-2.5">Movement</th>
+                <th className="text-right px-4 py-2.5 text-green-700">In</th>
+                <th className="text-right px-4 py-2.5 text-red-700">Out</th>
+                <th className="text-left px-4 py-2.5">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => {
+                const delta = Number(row.qty_delta);
+                const meta = MOVEMENT_META[row.movement_type] ?? { label: row.movement_type, dir: 'adj', tone: 'gray' };
+                const dispQty = fmtLedgerQty(row);
+                return (
+                  <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-3 text-slate-500 whitespace-nowrap text-xs">{row.movement_date?.slice(0, 10)}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-slate-800 text-xs">{row.material_code}</div>
+                      <div className="text-slate-400 text-xs">{row.material_name}</div>
+                    </td>
+                    <td className="px-4 py-3"><Badge tone={meta.tone}>{meta.label}</Badge></td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">
+                      {delta > 0 ? <span className="text-green-700 font-semibold">{dispQty}</span> : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">
+                      {delta < 0 ? <span className="text-red-600 font-semibold">{dispQty}</span> : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-500 text-xs max-w-xs truncate" title={row.reason}>{row.reason}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── APP SHELL ────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(null);
@@ -2247,6 +2426,7 @@ export default function App() {
     { id: 'dashboard', label: 'PM Store Dashboard', icon: TrendingUp, roles: ['PM_STORE_EXEC', 'ADMIN'] },
     { id: 'indent', label: 'Upload Indent', icon: Box, roles: ['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'] },
     { id: 'po', label: 'Upload Purchase Orders', icon: Truck, roles: ['PM_STORE_EXEC', 'ADMIN'] },
+    { id: 'ledger', label: 'Stock Ledger', icon: BookOpen, roles: ['PM_STORE_EXEC', 'ADMIN'] },
     { id: 'downloads', label: 'Downloads', icon: Download, roles: ['PM_STORE_EXEC', 'ADMIN'] },
     { id: 'admin', label: 'Admin Panel', icon: Shield, roles: ['ADMIN'] },
   ].filter((n) => n.roles.includes(user.role));
@@ -2283,6 +2463,7 @@ export default function App() {
         {section === 'dashboard' && <DashboardSection token={token} />}
         {section === 'indent' && <IndentUploadSection token={token} />}
         {section === 'po' && <POUploadSection token={token} />}
+        {section === 'ledger' && <LedgerSection token={token} />}
         {section === 'downloads' && <DownloadsSection token={token} />}
         {section === 'admin' && <AdminPanel token={token} tabOverride={adminTabForTour} />}
       </div>

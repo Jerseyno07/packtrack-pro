@@ -1293,6 +1293,52 @@ app.post('/api/v1/admin/stock-receipts/:id/cancel', authenticate, requireRole('A
 }));
 
 // ── Admin Audit Log ───────────────────────────────────────────────────────
+app.get('/api/v1/ledger', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const { warehouse_id, date_from, date_to, material_id } = req.query;
+  if (!warehouse_id) throw new ApiError(400, 'MISSING_PARAM', 'warehouse_id is required');
+  if (!date_from || !date_to) throw new ApiError(400, 'MISSING_PARAM', 'date_from and date_to are required');
+
+  const params = [warehouse_id, date_from, date_to];
+  let matFilter = '';
+  if (material_id) { params.push(material_id); matFilter = `AND sl.material_id = $${params.length}`; }
+
+  const { rows } = await pool.query(`
+    SELECT
+      sl.id,
+      sl.movement_date,
+      sl.movement_type,
+      sl.qty_delta,
+      m.code  AS material_code,
+      m.name  AS material_name,
+      m.unit,
+      m.stickers_per_roll,
+      m.meters_per_unit,
+      m.pieces_per_kg,
+      CASE sl.movement_type
+        WHEN 'GRN_INWARD'       THEN 'Vendor GRN' || COALESCE(' · PO ' || po.po_no, '')
+        WHEN 'ISSUE_OUT'        THEN 'Dispatched to ' || COALESCE(dest_w.name || ' (' || dest_w.code || ')', 'facility')
+        WHEN 'RECEIPT_IN'       THEN 'Received from PM Store' || COALESCE(' · ' || src_iss.issue_ref, '')
+        WHEN 'CONSUMPTION'      THEN 'Consumed in operations · Run #' || sl.ref_id
+        WHEN 'AUDIT_ADJUSTMENT' THEN 'Audit adjustment'
+        ELSE sl.movement_type
+      END AS reason
+    FROM stock_ledger sl
+    JOIN materials m ON m.id = sl.material_id
+    LEFT JOIN goods_receipts        gr      ON sl.ref_table = 'goods_receipts'  AND sl.ref_id = gr.id
+    LEFT JOIN purchase_orders       po      ON gr.purchase_order_id = po.id
+    LEFT JOIN stock_issues          iss_out ON sl.ref_table = 'stock_issues'    AND sl.ref_id = iss_out.id
+    LEFT JOIN warehouses            dest_w  ON dest_w.id = iss_out.to_warehouse_id
+    LEFT JOIN stock_receipts        sr      ON sl.ref_table = 'stock_receipts'  AND sl.ref_id = sr.id
+    LEFT JOIN stock_issues          src_iss ON sr.stock_issue_id = src_iss.id
+    WHERE sl.warehouse_id = $1
+      AND sl.movement_date BETWEEN $2 AND $3
+      ${matFilter}
+    ORDER BY sl.movement_date DESC, sl.id DESC
+  `, params);
+
+  res.json(rows);
+}));
+
 app.get('/api/v1/admin/downloads', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { rows } = await pool.query(`
     SELECT 'indent' AS type, batch_ref, source_filename, created_at, total_rows, valid_rows
