@@ -62,6 +62,8 @@ function makeApi(token) {
     pendingByFacility: () => req('GET', '/api/v1/indents/pending-by-facility'),
     batchIssue: (payload) => req('POST', '/api/v1/stock-issues/batch', payload),
     adhocIssue: (payload) => req('POST', '/api/v1/stock-issues/adhoc', payload),
+    listWarehouses: () => req('GET', '/api/v1/warehouses'),
+    listMaterials: () => req('GET', '/api/v1/materials'),
     postGRN: (payload) => req('POST', '/api/v1/goods-receipts', payload),
     postIssue: (payload) => req('POST', '/api/v1/stock-issues', payload),
     forcePO: (id, reason) => req('POST', `/api/v1/purchase-orders/${id}/force-complete`, { reason }),
@@ -908,13 +910,11 @@ function AdhocIssueScreen({ api }) {
   const [result, setResult] = useState(null);
 
   useEffect(() => {
-    fetch(`${BASE_URL}/api/v1/warehouses`)
-      .then(r => r.json())
+    api.listWarehouses()
       .then(d => setFacilities((d.data || []).filter(w => w.warehouse_type !== 'PM_STORE').sort((a, b) => a.name.localeCompare(b.name))))
       .catch(() => {});
-    fetch(`${BASE_URL}/api/v1/materials`)
-      .then(r => r.json())
-      .then(d => setMaterials((d.data || []).filter(m => m.is_active !== false)))
+    api.listMaterials()
+      .then(d => setMaterials(d.data || []))
       .catch(() => {});
   }, []);
 
@@ -1002,6 +1002,7 @@ function AdhocIssueScreen({ api }) {
           value={search}
           onChange={e => { setSearch(e.target.value); setShowDropdown(true); }}
           onFocus={() => setShowDropdown(true)}
+          onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
           placeholder="Search by code or name…"
           className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm"
         />
