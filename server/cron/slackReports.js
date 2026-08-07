@@ -205,6 +205,7 @@ async function runAndAcceptConsumption(facilityCodes = null) {
   await runConsumption({ runId, facilityCodes });
   const committed = await acceptRun(runId);
   console.log(`[slackReports] Run ${runId} accepted — ${committed} lines committed`);
+  await sendDailyConsumption(runId);
   return runId;
 }
 
@@ -275,31 +276,45 @@ async function sendFCDispatchVsCCGRN() {
 
 // ── Report 2: Daily Consumption Details (00:15 IST) ──────────────────────────
 
-async function sendDailyConsumption() {
-  const yest = new Date();
-  yest.setDate(yest.getDate() - 1);
-  // Use IST date for "yesterday"
-  const yesterdayIst = yest.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-  const dateLabel = yest.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+async function sendDailyConsumption(runId = null) {
+  // Resolve which run to report on:
+  // - If runId provided (called from accept endpoint), use that run.
+  // - Otherwise fall back to the most recently completed run.
+  let runRow;
+  if (runId) {
+    const r = await pool.query('SELECT * FROM consumption_runs WHERE id = $1', [runId]);
+    runRow = r.rows[0];
+  } else {
+    const r = await pool.query(`SELECT * FROM consumption_runs WHERE status = 'COMPLETED' ORDER BY completed_at DESC LIMIT 1`);
+    runRow = r.rows[0];
+  }
+
+  if (!runRow) {
+    return postSlack(`🏭 *Daily Consumption Report*\n_No completed consumption run found._`);
+  }
+
+  // Label using scraped_to converted to IST date
+  const scrapedToIst = new Date(runRow.scraped_to).toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata',
+  });
+  const dateSlug = new Date(runRow.scraped_to).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).replace(/-/g, '');
 
   const { rows } = await pool.query(`
     SELECT
       w.name AS warehouse_name, w.code AS warehouse_code,
-      crl.material_code, m.unit, m.meters_per_unit, m.stickers_per_roll,
+      crl.material_code, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
       SUM(crl.qty_deducted) AS qty_consumed
     FROM consumption_run_lines crl
-    JOIN consumption_runs cr ON cr.id = crl.run_id
-    JOIN warehouses w         ON w.id  = crl.warehouse_id
-    JOIN materials  m         ON m.code = crl.material_code
-    WHERE crl.status IN ('DEDUCTED', 'STOCK_BELOW_ZERO')
-      AND cr.status = 'COMPLETED'
-      AND cr.scraped_to::date = $1
-    GROUP BY w.name, w.code, crl.material_code, m.unit, m.meters_per_unit, m.stickers_per_roll
+    JOIN warehouses w ON w.id  = crl.warehouse_id
+    JOIN materials  m ON m.code = crl.material_code
+    WHERE crl.run_id = $1
+      AND crl.status IN ('DEDUCTED', 'STOCK_BELOW_ZERO')
+    GROUP BY w.name, w.code, crl.material_code, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg
     ORDER BY w.name, crl.material_code
-  `, [yesterdayIst]);
+  `, [runRow.id]);
 
   if (rows.length === 0) {
-    return postSlack(`🏭 *Daily Consumption Report*  |  ${dateLabel}\n_No consumption data found — run may still be in progress._`);
+    return postSlack(`🏭 *Daily Consumption Report*  |  ${scrapedToIst}\n_No consumption lines found for this run._`);
   }
 
   const byWh = new Map();
@@ -308,7 +323,7 @@ async function sendDailyConsumption() {
     byWh.get(r.warehouse_code).lines.push(r);
   }
 
-  let text = `🏭 *Daily Consumption Report*  |  ${dateLabel}\n\n`;
+  let text = `🏭 *Daily Consumption Report*  |  ${scrapedToIst}\n\n`;
   let csv = 'Facility,Material Code,Unit,Qty Consumed\n';
 
   for (const { name, code, lines } of byWh.values()) {
@@ -323,8 +338,7 @@ async function sendDailyConsumption() {
   }
 
   await postSlack(text);
-  const dateSlug = yesterdayIst.replace(/-/g, '');
-  await uploadCsvToSlack(csv, `consumption-${dateSlug}.csv`, `Daily Consumption — ${dateLabel}`);
+  await uploadCsvToSlack(csv, `consumption-${dateSlug}.csv`, `Daily Consumption — ${scrapedToIst}`);
 }
 
 // ── Report 3: CC Balance vs Audit (schema ready — cron TBD) ──────────────────

@@ -1806,9 +1806,9 @@ app.post('/api/v1/admin/consumption/runs/:id/accept', authenticate, requireRole(
     [committed, runId]
   );
   res.json({ ok: true, committed });
-  // Fire Slack report after responding — non-blocking
+  // Fire Slack report after responding — non-blocking, pass runId so it reports this exact run
   const { sendDailyConsumption } = require('./cron/slackReports');
-  sendDailyConsumption().catch((e) => console.error('[consumption] Slack report failed:', e.message));
+  sendDailyConsumption(runId).catch((e) => console.error('[consumption] Slack report failed:', e.message));
 }));
 
 // POST /api/v1/admin/consumption/runs/:id/cancel — discard pending run
