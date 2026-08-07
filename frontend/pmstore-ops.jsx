@@ -61,6 +61,7 @@ function makeApi(token) {
     listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN,PARTIALLY_RECEIVED'),
     pendingByFacility: () => req('GET', '/api/v1/indents/pending-by-facility'),
     batchIssue: (payload) => req('POST', '/api/v1/stock-issues/batch', payload),
+    adhocIssue: (payload) => req('POST', '/api/v1/stock-issues/adhoc', payload),
     postGRN: (payload) => req('POST', '/api/v1/goods-receipts', payload),
     postIssue: (payload) => req('POST', '/api/v1/stock-issues', payload),
     forcePO: (id, reason) => req('POST', `/api/v1/purchase-orders/${id}/force-complete`, { reason }),
@@ -891,6 +892,185 @@ function StoreStockView({ token, warehouseId }) {
   );
 }
 
+// ── Adhoc Issue screen ────────────────────────────────────────────────────────
+function AdhocIssueScreen({ api }) {
+  const todayIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const [facilities, setFacilities] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [toWarehouseId, setToWarehouseId] = useState('');
+  const [search, setSearch] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [items, setItems] = useState([]);
+  const [issueDate, setIssueDate] = useState(todayIst);
+  const [vehicleNo, setVehicleNo] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    fetch(`${BASE_URL}/api/v1/warehouses`)
+      .then(r => r.json())
+      .then(d => setFacilities((d.data || []).filter(w => w.warehouse_type !== 'PM_STORE').sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => {});
+    fetch(`${BASE_URL}/api/v1/materials`)
+      .then(r => r.json())
+      .then(d => setMaterials((d.data || []).filter(m => m.is_active !== false)))
+      .catch(() => {});
+  }, []);
+
+  const filtered = materials.filter(m =>
+    !items.find(i => i.material_id === m.id) &&
+    (m.code.toLowerCase().includes(search.toLowerCase()) || m.name.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  function addItem(mat) {
+    setItems(prev => [...prev, { material_id: mat.id, material: mat, qty_disp: '' }]);
+    setSearch('');
+    setShowDropdown(false);
+  }
+
+  function removeItem(materialId) {
+    setItems(prev => prev.filter(i => i.material_id !== materialId));
+  }
+
+  function setQty(materialId, val) {
+    setItems(prev => prev.map(i => i.material_id === materialId ? { ...i, qty_disp: val } : i));
+  }
+
+  async function handleDispatch() {
+    setError('');
+    setLoading(true);
+    try {
+      const payload = {
+        to_warehouse_id: Number(toWarehouseId),
+        issue_date: issueDate,
+        vehicle_no: vehicleNo || undefined,
+        items: items.map(i => ({ material_id: i.material_id, issued_qty: toBase(i.material, i.qty_disp) })),
+      };
+      const data = await api.adhocIssue(payload);
+      setResult(data);
+    } catch (err) {
+      setError(err.message || 'Dispatch failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function reset() {
+    setToWarehouseId('');
+    setItems([]);
+    setIssueDate(todayIst);
+    setVehicleNo('');
+    setError('');
+    setResult(null);
+    setSearch('');
+  }
+
+  if (result) {
+    return (
+      <div className="space-y-4 pt-2">
+        <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-green-700 font-semibold mb-2"><CheckCircle2 size={18} /> Dispatched</div>
+          <div className="text-sm text-green-700 space-y-1">
+            {result.issue_refs.map(ref => <div key={ref} className="font-mono">{ref}</div>)}
+          </div>
+        </div>
+        <button onClick={reset} className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm">Dispatch Another</button>
+      </div>
+    );
+  }
+
+  const canSubmit = toWarehouseId && items.length > 0 && items.every(i => Number(i.qty_disp) > 0) && !loading;
+
+  return (
+    <div className="space-y-4 pt-2">
+      {/* Facility */}
+      <div>
+        <label className="block text-xs font-medium text-slate-500 mb-1">Facility</label>
+        <select value={toWarehouseId} onChange={e => setToWarehouseId(e.target.value)}
+          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm bg-white">
+          <option value="">Select facility…</option>
+          {facilities.map(f => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+        </select>
+      </div>
+
+      {/* Material search */}
+      <div className="relative">
+        <label className="block text-xs font-medium text-slate-500 mb-1">Add Material</label>
+        <input
+          type="text"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setShowDropdown(true); }}
+          onFocus={() => setShowDropdown(true)}
+          placeholder="Search by code or name…"
+          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm"
+        />
+        {showDropdown && search.length > 0 && filtered.length > 0 && (
+          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
+            {filtered.slice(0, 20).map(m => (
+              <button key={m.id} onMouseDown={() => addItem(m)}
+                className="w-full text-left px-3 py-2.5 text-sm hover:bg-slate-50 border-b border-slate-100 last:border-0">
+                <span className="font-mono font-medium text-blue-700">{m.code}</span>
+                <span className="text-slate-500 ml-2">{m.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {showDropdown && search.length > 0 && filtered.length === 0 && (
+          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 px-3 py-2.5 text-sm text-slate-400">No materials found</div>
+        )}
+      </div>
+
+      {/* Items list */}
+      {items.length > 0 && (
+        <div className="space-y-2">
+          {items.map(item => (
+            <div key={item.material_id} className="bg-white border border-slate-200 rounded-xl px-3 py-2.5 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-mono font-medium text-blue-700">{item.material.code}</div>
+                <div className="text-xs text-slate-500 truncate">{item.material.name}</div>
+              </div>
+              <input
+                type="number"
+                min="0"
+                step={item.material.pieces_per_kg ? '0.001' : '1'}
+                value={item.qty_disp}
+                onChange={e => setQty(item.material_id, e.target.value)}
+                placeholder="0"
+                className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right"
+              />
+              <span className="text-xs text-slate-400 w-8">{dispUnit(item.material)}</span>
+              <button onClick={() => removeItem(item.material_id)} className="text-slate-300 hover:text-red-400 text-lg leading-none">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Date + Vehicle */}
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <label className="block text-xs font-medium text-slate-500 mb-1">Issue Date</label>
+          <input type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)}
+            className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+        </div>
+        <div className="flex-1">
+          <label className="block text-xs font-medium text-slate-500 mb-1">Vehicle No <span className="text-slate-300">(optional)</span></label>
+          <input type="text" value={vehicleNo} onChange={e => setVehicleNo(e.target.value)}
+            placeholder="KA01AB1234"
+            className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+        </div>
+      </div>
+
+      {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-3 py-2">{error}</div>}
+
+      <button onClick={handleDispatch} disabled={!canSubmit}
+        className={`w-full py-3.5 rounded-xl font-semibold text-sm ${canSubmit ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+        {loading ? 'Dispatching…' : `Dispatch ${items.length > 0 ? `(${items.length} item${items.length > 1 ? 's' : ''})` : ''}`}
+      </button>
+    </div>
+  );
+}
+
 export default function PMStoreOps() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
@@ -945,15 +1125,17 @@ export default function PMStoreOps() {
       </div>
 
       <div data-tour="pmstore-tabs" className="flex gap-1 bg-slate-100 rounded-xl p-1 mx-4 mt-3">
-        <button onClick={() => setTab('grn')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>GRN</button>
-        <button onClick={() => setTab('issue')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue</button>
-        <button onClick={() => setTab('stock')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Stock</button>
-        <button onClick={() => setTab('audit')} className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
+        <button onClick={() => setTab('grn')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>GRN</button>
+        <button onClick={() => setTab('issue')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue</button>
+        <button onClick={() => setTab('adhoc')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'adhoc' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Adhoc</button>
+        <button onClick={() => setTab('stock')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Stock</button>
+        <button onClick={() => setTab('audit')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
       </div>
 
       <div className="px-4 pt-3 pb-8">
         {tab === 'grn' && <GRNScreen api={client} />}
         {tab === 'issue' && <IssueScreen api={client} />}
+        {tab === 'adhoc' && <AdhocIssueScreen api={client} />}
         {tab === 'stock' && <StoreStockView token={token} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'audit' && <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />}
       </div>

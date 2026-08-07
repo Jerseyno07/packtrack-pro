@@ -913,6 +913,79 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
+app.post('/api/v1/stock-issues/adhoc', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const adhocSchema = z.object({
+    to_warehouse_id: z.coerce.number().int().positive(),
+    issue_date: z.string().min(1),
+    vehicle_no: z.string().optional(),
+    items: z.array(z.object({
+      material_id: z.coerce.number().int().positive(),
+      issued_qty: z.coerce.number().positive(),
+    })).min(1),
+  });
+  const parsed = adhocSchema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid adhoc issue payload', parsed.error.issues);
+  const { to_warehouse_id, issue_date, vehicle_no, items } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const pmWhRes = await client.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
+    const fromWhId = pmWhRes.rows[0]?.id;
+    if (!fromWhId) throw new ApiError(422, 'NO_PM_STORE', 'No active PM Store warehouse configured');
+
+    const destRes = await client.query('SELECT id, warehouse_type FROM warehouses WHERE id = $1', [to_warehouse_id]);
+    if (!destRes.rows.length) throw new ApiError(404, 'WAREHOUSE_NOT_FOUND', `Warehouse ${to_warehouse_id} not found`);
+    if (destRes.rows[0].warehouse_type === 'PM_STORE') throw new ApiError(422, 'INVALID_DEST', 'Cannot issue to PM Store itself');
+
+    const materialIds = items.map((i) => i.material_id);
+    const matsRes = await client.query('SELECT id, code, unit FROM materials WHERE id = ANY($1)', [materialIds]);
+    const matMap = new Map(matsRes.rows.map((r) => [Number(r.id), r]));
+    for (const item of items) {
+      if (!matMap.get(item.material_id)) throw new ApiError(404, 'MATERIAL_NOT_FOUND', `Material ${item.material_id} not found`);
+    }
+
+    const materialTotals = new Map();
+    for (const item of items) materialTotals.set(item.material_id, (materialTotals.get(item.material_id) || 0) + item.issued_qty);
+
+    for (const [materialId, totalQty] of materialTotals) {
+      const onHand = await getOnHandQty(client, fromWhId, materialId);
+      if (totalQty > onHand) {
+        const mat = matMap.get(materialId);
+        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${mat.code}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
+      }
+    }
+
+    const avgCosts = new Map();
+    for (const materialId of materialTotals.keys()) {
+      const costRes = await client.query(
+        `SELECT COALESCE(SUM(qty_delta*unit_cost),0) / NULLIF(SUM(CASE WHEN qty_delta>0 THEN qty_delta ELSE 0 END),0) AS avg_cost FROM stock_ledger WHERE warehouse_id=$1 AND material_id=$2`,
+        [fromWhId, materialId]
+      );
+      avgCosts.set(materialId, Number(costRes.rows[0].avg_cost || 0));
+    }
+
+    const issueRefs = [];
+    for (const item of items) {
+      const unitCost = avgCosts.get(item.material_id);
+      const issueRef = genRef('ISS');
+      const issueIns = await client.query(
+        `INSERT INTO stock_issues (issue_ref, indent_line_id, from_warehouse_id, to_warehouse_id, material_id, issued_qty, expected_qty, unit_cost_snapshot, issue_date, dispatched_by_user_id, vehicle_no)
+         VALUES ($1,NULL,$2,$3,$4,$5,$5,$6,$7,$8,$9) RETURNING id`,
+        [issueRef, fromWhId, to_warehouse_id, item.material_id, item.issued_qty, unitCost, issue_date, req.user.id, vehicle_no || null]
+      );
+      const issueId = issueIns.rows[0].id;
+      await postLedgerEntry(client, { warehouseId: fromWhId, materialId: item.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
+      await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED_ADHOC', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, material_id: item.material_id, qty: item.issued_qty, to_warehouse_id } });
+      issueRefs.push(issueRef);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
 app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   const { to_warehouse_id, status, date_from, date_to } = req.query;
   const conditions = []; const params = [];
