@@ -1283,6 +1283,18 @@ app.post('/api/v1/admin/stock-receipts/:id/cancel', authenticate, requireRole('A
 }));
 
 // ── Admin Audit Log ───────────────────────────────────────────────────────
+app.get('/api/v1/admin/downloads', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT 'indent' AS type, batch_ref, source_filename, created_at, total_rows, valid_rows
+    FROM indent_batches WHERE source_file_key IS NOT NULL
+    UNION ALL
+    SELECT 'po' AS type, batch_ref, source_filename, created_at, total_rows, valid_rows
+    FROM po_batches WHERE source_file_key IS NOT NULL
+    ORDER BY created_at DESC
+  `);
+  res.json(rows);
+}));
+
 app.get('/api/v1/admin/audit-log', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { entity_table, entity_id, user_id, date_from, date_to, page = 1, page_size = 50 } = req.query;
   const limit = Math.min(Number(page_size), 200);
