@@ -958,8 +958,7 @@ function AdhocIssueScreen({ api }) {
   });
 
   const filtered = materials.filter(m =>
-    !items.find(i => i.material_id === m.id) &&
-    (m.code.toLowerCase().includes(search.toLowerCase()) || m.name.toLowerCase().includes(search.toLowerCase()))
+    m.code.toLowerCase().includes(search.toLowerCase()) || m.name.toLowerCase().includes(search.toLowerCase())
   );
 
   function selectFacility(f) {
@@ -973,9 +972,13 @@ function AdhocIssueScreen({ api }) {
     setFacilitySearch('');
   }
 
-  function addItem(mat) {
-    setItems(prev => [...prev, { material_id: mat.id, material: mat, qty_disp: '' }]);
-    setSearch('');
+  function toggleItem(mat) {
+    const isSelected = !!items.find(i => i.material_id === mat.id);
+    if (isSelected) {
+      setItems(prev => prev.filter(i => i.material_id !== mat.id));
+    } else {
+      setItems(prev => [...prev, { material_id: mat.id, material: mat, qty_disp: '' }]);
+    }
     setTimeout(() => matSearchRef.current?.focus(), 0);
   }
 
@@ -1091,13 +1094,19 @@ function AdhocIssueScreen({ api }) {
         />
         {showDropdown && search.length > 0 && filtered.length > 0 && (
           <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
-            {filtered.slice(0, 20).map(m => (
-              <button key={m.id} onMouseDown={() => addItem(m)}
-                className="w-full text-left px-3 py-2.5 text-sm hover:bg-slate-50 border-b border-slate-100 last:border-0">
-                <span className="font-mono font-medium text-blue-700">{m.code}</span>
-                <span className="text-slate-500 ml-2">{m.name}</span>
-              </button>
-            ))}
+            {filtered.slice(0, 20).map(m => {
+              const isSelected = !!items.find(i => i.material_id === m.id);
+              return (
+                <button key={m.id} onMouseDown={() => toggleItem(m)}
+                  className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2.5 border-b border-slate-100 last:border-0 ${isSelected ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+                  <span className={`flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center text-white text-[10px] font-bold ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-slate-300'}`}>
+                    {isSelected && '✓'}
+                  </span>
+                  <span className="font-mono font-medium text-blue-700">{m.code}</span>
+                  <span className="text-slate-500 truncate">{m.name}</span>
+                </button>
+              );
+            })}
           </div>
         )}
         {showDropdown && search.length > 0 && filtered.length === 0 && (
