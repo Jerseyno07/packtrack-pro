@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone } from 'lucide-react';
 
 function useInstallPrompt() {
@@ -930,6 +930,8 @@ function AdhocIssueScreen({ api }) {
   const [facilities, setFacilities] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [toWarehouseId, setToWarehouseId] = useState('');
+  const [facilitySearch, setFacilitySearch] = useState('');
+  const [showFacilityDd, setShowFacilityDd] = useState(false);
   const [search, setSearch] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [items, setItems] = useState([]);
@@ -938,6 +940,7 @@ function AdhocIssueScreen({ api }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+  const matSearchRef = useRef(null);
 
   useEffect(() => {
     api.listWarehouses()
@@ -948,15 +951,32 @@ function AdhocIssueScreen({ api }) {
       .catch(() => {});
   }, []);
 
+  const selectedFacility = facilities.find(f => f.id === Number(toWarehouseId)) || null;
+  const filteredFacilities = facilities.filter(f => {
+    const q = facilitySearch.toLowerCase();
+    return !q || f.name.toLowerCase().includes(q) || (f.code || '').toLowerCase().includes(q);
+  });
+
   const filtered = materials.filter(m =>
     !items.find(i => i.material_id === m.id) &&
     (m.code.toLowerCase().includes(search.toLowerCase()) || m.name.toLowerCase().includes(search.toLowerCase()))
   );
 
+  function selectFacility(f) {
+    setToWarehouseId(f.id);
+    setFacilitySearch('');
+    setShowFacilityDd(false);
+  }
+
+  function clearFacility() {
+    setToWarehouseId('');
+    setFacilitySearch('');
+  }
+
   function addItem(mat) {
     setItems(prev => [...prev, { material_id: mat.id, material: mat, qty_disp: '' }]);
     setSearch('');
-    setShowDropdown(false);
+    setTimeout(() => matSearchRef.current?.focus(), 0);
   }
 
   function removeItem(materialId) {
@@ -988,6 +1008,7 @@ function AdhocIssueScreen({ api }) {
 
   function reset() {
     setToWarehouseId('');
+    setFacilitySearch('');
     setItems([]);
     setIssueDate(todayIst);
     setVehicleNo('');
@@ -1013,21 +1034,53 @@ function AdhocIssueScreen({ api }) {
   const canSubmit = toWarehouseId && items.length > 0 && items.every(i => Number(i.qty_disp) > 0) && !loading;
 
   return (
-    <div className="space-y-4 pt-2">
-      {/* Facility */}
-      <div>
+    <div className="space-y-4 pt-2 pb-6">
+      {/* Facility search */}
+      <div className="relative">
         <label className="block text-xs font-medium text-slate-500 mb-1">Facility</label>
-        <select value={toWarehouseId} onChange={e => setToWarehouseId(e.target.value)}
-          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm bg-white">
-          <option value="">Select facility…</option>
-          {facilities.map(f => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
-        </select>
+        {selectedFacility ? (
+          <div className="flex items-center gap-2 w-full border border-blue-300 bg-blue-50 rounded-xl px-3 py-3">
+            <span className="flex-1 text-sm font-medium text-blue-800">{selectedFacility.name}
+              {selectedFacility.code && <span className="ml-1.5 text-xs font-normal text-blue-500">({selectedFacility.code})</span>}
+            </span>
+            <button onClick={clearFacility} className="text-blue-400 hover:text-blue-700 text-lg leading-none">×</button>
+          </div>
+        ) : (
+          <>
+            <input
+              type="text"
+              value={facilitySearch}
+              onChange={e => { setFacilitySearch(e.target.value); setShowFacilityDd(true); }}
+              onFocus={() => setShowFacilityDd(true)}
+              onBlur={() => setTimeout(() => setShowFacilityDd(false), 150)}
+              placeholder="Search facility by name or code…"
+              className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm"
+            />
+            {showFacilityDd && filteredFacilities.length > 0 && (
+              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
+                {filteredFacilities.map(f => (
+                  <button key={f.id} onMouseDown={() => selectFacility(f)}
+                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-slate-50 border-b border-slate-100 last:border-0">
+                    <span className="font-medium text-slate-800">{f.name}</span>
+                    {f.code && <span className="ml-2 text-xs text-slate-400">{f.code}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {showFacilityDd && facilitySearch.length > 0 && filteredFacilities.length === 0 && (
+              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 px-3 py-2.5 text-sm text-slate-400">No facilities found</div>
+            )}
+          </>
+        )}
       </div>
 
-      {/* Material search */}
+      {/* Material multi-search */}
       <div className="relative">
-        <label className="block text-xs font-medium text-slate-500 mb-1">Add Material</label>
+        <label className="block text-xs font-medium text-slate-500 mb-1">
+          Add Materials <span className="text-slate-300 font-normal">(search and select multiple)</span>
+        </label>
         <input
+          ref={matSearchRef}
           type="text"
           value={search}
           onChange={e => { setSearch(e.target.value); setShowDropdown(true); }}
