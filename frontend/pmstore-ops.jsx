@@ -244,7 +244,7 @@ function GRNScreen({ api }) {
     loadPOs();
   }
 
-  async function submitGRN() {
+  async function submitGRN(shouldClose = false) {
     setError('');
     setSubmitting(true);
     try {
@@ -255,12 +255,12 @@ function GRNScreen({ api }) {
         invoice_no: invoiceNo,
         has_invoice_attachment: !!invoiceImage,
       };
-      if (isOver) payload.force_complete_reason = fcReason;
+      if (isOver || shouldClose) payload.force_complete_reason = fcReason;
       const res = await api.postGRN(payload);
       if (invoiceImage && res.id) {
         try { await api.uploadGrnImage(res.id, invoiceImage); } catch (_) {}
       }
-      setSuccess({ grn_ref: res.grn_ref ?? res.id, closed: isOver });
+      setSuccess({ grn_ref: res.grn_ref ?? res.id, closed: isOver || shouldClose });
     } catch (e) {
       setError(e.message || 'Failed to post GRN.');
     } finally { setSubmitting(false); }
@@ -330,6 +330,7 @@ function GRNScreen({ api }) {
 
   const needsRemark = isOver;
   const canGRN = qty > 0 && (!isOver || fcReason.trim()) && !submitting;
+  const canClose = isUnder && qty > 0 && fcReason.trim() && !submitting;
 
   return (
     <div className="space-y-4 pb-32">
@@ -426,6 +427,20 @@ function GRNScreen({ api }) {
           </div>
         )}
 
+        {isUnder && (
+          <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 space-y-2">
+            <p className="text-xs font-medium text-amber-800">Force-close this PO short?</p>
+            <p className="text-xs text-amber-700">Use "Post GRN & Close PO" below to close at this qty. Remark is mandatory.</p>
+            <textarea
+              rows={2}
+              value={fcReason}
+              onChange={(e) => setFcReason(e.target.value)}
+              placeholder="Reason for closing PO short…"
+              className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none bg-white"
+            />
+          </div>
+        )}
+
         {error && (
           <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
             <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}
@@ -438,11 +453,26 @@ function GRNScreen({ api }) {
         <div className="max-w-lg mx-auto space-y-2">
           {qty === 0 && <p className="text-xs text-center text-slate-400">Enter a quantity to enable posting.</p>}
           {needsRemark && !fcReason.trim() && <p className="text-xs text-center text-amber-600">Add a remark to continue.</p>}
-          <button onClick={submitGRN} disabled={!canGRN}
-            className={`w-full py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 ${needsRemark ? 'bg-amber-600 active:bg-amber-700' : 'bg-blue-600 active:bg-blue-700'}`}>
-            {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
-            {needsRemark ? 'Post GRN & Close PO' : 'Post GRN'}
-          </button>
+          {isUnder ? (
+            <div className="flex gap-3">
+              <button onClick={() => submitGRN(false)} disabled={!canGRN}
+                className="flex-1 py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 bg-blue-600 active:bg-blue-700">
+                {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                Post GRN
+              </button>
+              <button onClick={() => submitGRN(true)} disabled={!canClose}
+                className="flex-1 py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 bg-amber-600 active:bg-amber-700 text-sm">
+                {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                Post GRN & Close PO
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => submitGRN(false)} disabled={!canGRN}
+              className={`w-full py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 ${needsRemark ? 'bg-amber-600 active:bg-amber-700' : 'bg-blue-600 active:bg-blue-700'}`}>
+              {submitting ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              {needsRemark ? 'Post GRN & Close PO' : 'Post GRN'}
+            </button>
+          )}
         </div>
       </div>
     </div>
