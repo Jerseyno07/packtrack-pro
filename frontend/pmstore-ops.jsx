@@ -255,12 +255,12 @@ function GRNScreen({ api }) {
         invoice_no: invoiceNo,
         has_invoice_attachment: !!invoiceImage,
       };
-      if (!isExact) payload.force_complete_reason = fcReason;
+      if (isOver) payload.force_complete_reason = fcReason;
       const res = await api.postGRN(payload);
       if (invoiceImage && res.id) {
         try { await api.uploadGrnImage(res.id, invoiceImage); } catch (_) {}
       }
-      setSuccess({ grn_ref: res.grn_ref ?? res.id, closed: !isExact });
+      setSuccess({ grn_ref: res.grn_ref ?? res.id, closed: isOver });
     } catch (e) {
       setError(e.message || 'Failed to post GRN.');
     } finally { setSubmitting(false); }
@@ -328,8 +328,8 @@ function GRNScreen({ api }) {
   const isUnder = qty > 0 && qty < remaining - 0.001;
   const isOver = qty > remaining + 0.001;
 
-  const needsRemark = qty > 0 && !isExact;
-  const canGRN = qty > 0 && (isExact || fcReason.trim()) && !submitting;
+  const needsRemark = isOver;
+  const canGRN = qty > 0 && (!isOver || fcReason.trim()) && !submitting;
 
   return (
     <div className="space-y-4 pb-32">
@@ -381,7 +381,7 @@ function GRNScreen({ api }) {
             <p className="text-xs text-amber-700 mt-1">Qty exceeds PO — a remark is required. PO will be closed at this qty.</p>
           )}
           {isUnder && (
-            <p className="text-xs text-amber-700 mt-1">Qty is less than PO remaining — add a remark below. PO will be closed at this qty.</p>
+            <p className="text-xs text-blue-600 mt-1">Partial GRN — PO will stay open for future deliveries.</p>
           )}
         </div>
 
