@@ -203,6 +203,7 @@ function GRNScreen({ api }) {
   const [invoiceNo, setInvoiceNo] = useState('');
   const [inwardQty, setInwardQty] = useState('');
   const [fcReason, setFcReason] = useState('');
+  const [forceWord, setForceWord] = useState('');
   const [invoiceImage, setInvoiceImage] = useState(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -228,6 +229,7 @@ function GRNScreen({ api }) {
     const remaining = Number(po.remaining_qty ?? po.po_qty);
     setInwardQty(String(poToDisp(po, remaining)));
     setFcReason('');
+    setForceWord('');
     setInvoiceImage(null);
     setInvoiceNo('');
     setError('');
@@ -238,6 +240,7 @@ function GRNScreen({ api }) {
     setSelectedPO(null);
     setInwardQty('');
     setFcReason('');
+    setForceWord('');
     setInvoiceImage(null);
     setInvoiceNo('');
     setError('');
@@ -330,7 +333,7 @@ function GRNScreen({ api }) {
 
   const needsRemark = isOver;
   const canGRN = qty > 0 && (!isOver || fcReason.trim()) && !submitting;
-  const canClose = isUnder && qty > 0 && fcReason.trim() && !submitting;
+  const canClose = isUnder && qty > 0 && fcReason.trim() && forceWord === 'FORCE' && !submitting;
 
   return (
     <div className="space-y-4 pb-32">
@@ -428,9 +431,8 @@ function GRNScreen({ api }) {
         )}
 
         {isUnder && (
-          <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 space-y-2">
+          <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 space-y-3">
             <p className="text-xs font-medium text-amber-800">Force-close this PO short?</p>
-            <p className="text-xs text-amber-700">Use "Post GRN & Close PO" below to close at this qty. Remark is mandatory.</p>
             <textarea
               rows={2}
               value={fcReason}
@@ -438,6 +440,19 @@ function GRNScreen({ api }) {
               placeholder="Reason for closing PO short…"
               className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none bg-white"
             />
+            <div>
+              <label className="text-xs font-medium text-amber-800 mb-1 block">
+                Type <span className="font-mono font-bold tracking-widest">FORCE</span> to confirm
+              </label>
+              <input
+                type="text"
+                value={forceWord}
+                onChange={(e) => setForceWord(e.target.value)}
+                placeholder="FORCE"
+                autoComplete="off"
+                className={`w-full px-3 py-2.5 border rounded-lg text-base font-mono focus:outline-none focus:ring-2 bg-white ${forceWord === 'FORCE' ? 'border-amber-500 focus:ring-amber-500 text-amber-800' : 'border-amber-300 focus:ring-amber-400'}`}
+              />
+            </div>
           </div>
         )}
 
