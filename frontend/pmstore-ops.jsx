@@ -966,7 +966,7 @@ function AdhocIssueScreen({ api }) {
       .catch(() => {});
   }, []);
 
-  const selectedFacility = facilities.find(f => f.id === Number(toWarehouseId)) || null;
+  const selectedFacility = facilities.find(f => String(f.id) === String(toWarehouseId)) || null;
   const filteredFacilities = facilities.filter(f => {
     const q = facilitySearch.toLowerCase();
     return !q || f.name.toLowerCase().includes(q) || (f.code || '').toLowerCase().includes(q);
@@ -977,7 +977,7 @@ function AdhocIssueScreen({ api }) {
   );
 
   function selectFacility(f) {
-    setToWarehouseId(f.id);
+    setToWarehouseId(String(f.id));
     setFacilitySearch('');
     setShowFacilityDd(false);
   }
