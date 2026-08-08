@@ -57,6 +57,11 @@ async function postSlack(text) {
   }
 }
 
+// Track which runIds have already had a Slack report sent this process lifetime.
+// Guards against double-send when both the nightly cron and the HTTP accept endpoint
+// would otherwise call sendDailyConsumption for the same run.
+const _reportedRunIds = new Set();
+
 // Send a report: if bot token available, upload CSV with text as initial_comment (one message).
 // If no bot token, fall back to webhook text-only post.
 async function sendReport(text, csvString, filename, title) {
@@ -275,8 +280,13 @@ async function sendFCDispatchVsCCGRN() {
 // ── Report 2: Daily Consumption Details (00:15 IST) ──────────────────────────
 
 async function sendDailyConsumption(runId = null) {
+  if (runId && _reportedRunIds.has(runId)) {
+    console.log(`[slackReports] Run ${runId} already reported — skipping duplicate Slack send`);
+    return;
+  }
+
   // Resolve which run to report on:
-  // - If runId provided (called from accept endpoint), use that run.
+  // - If runId provided (called from nightly cron), use that run.
   // - Otherwise fall back to the most recently completed run.
   let runRow;
   if (runId) {
@@ -336,6 +346,7 @@ async function sendDailyConsumption(runId = null) {
   }
 
   await sendReport(text, csv, `consumption-${dateSlug}.csv`, `Daily Consumption — ${scrapedToIst}`);
+  if (runId) _reportedRunIds.add(runId);
 }
 
 // ── Report 3: CC Balance vs Audit (schema ready — cron TBD) ──────────────────
