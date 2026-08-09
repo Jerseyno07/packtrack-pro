@@ -27,7 +27,9 @@ if (process.env.BETTERSTACK_SOURCE_TOKEN) {
       method: 'POST',
       headers: LOGTAIL_HEADERS,
       body: JSON.stringify({ dt: new Date().toISOString(), level, message }),
-    }).catch(() => {});
+    }).then((r) => {
+      if (!r.ok) process.stderr.write(`[BetterStack] HTTP ${r.status}\n`);
+    }).catch((e) => process.stderr.write(`[BetterStack] fetch error: ${e.message}\n`));
   };
   const _log = console.log.bind(console);
   const _warn = console.warn.bind(console);
