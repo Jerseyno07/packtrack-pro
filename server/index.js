@@ -13,17 +13,28 @@
 
 require('dotenv').config();
 
-// BetterStack — patch console so all existing logs stream to Logtail.
+// BetterStack — patch console so all existing logs stream via HTTP API.
 // If BETTERSTACK_SOURCE_TOKEN is not set (local dev), this is a no-op.
 if (process.env.BETTERSTACK_SOURCE_TOKEN) {
-  const { Logtail } = require('@logtail/node');
-  const logtail = new Logtail(process.env.BETTERSTACK_SOURCE_TOKEN);
+  const LOGTAIL_ENDPOINT = 'https://in.logs.betterstack.com';
+  const LOGTAIL_HEADERS = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${process.env.BETTERSTACK_SOURCE_TOKEN}`,
+  };
+  const ship = (level, args) => {
+    const message = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    fetch(LOGTAIL_ENDPOINT, {
+      method: 'POST',
+      headers: LOGTAIL_HEADERS,
+      body: JSON.stringify({ dt: new Date().toISOString(), level, message }),
+    }).catch(() => {});
+  };
   const _log = console.log.bind(console);
   const _warn = console.warn.bind(console);
   const _error = console.error.bind(console);
-  console.log   = (...a) => { _log(...a);   logtail.log(a.map(String).join(' ')).catch(() => {}); };
-  console.warn  = (...a) => { _warn(...a);  logtail.warn(a.map(String).join(' ')).catch(() => {}); };
-  console.error = (...a) => { _error(...a); logtail.error(a.map(String).join(' ')).catch(() => {}); };
+  console.log   = (...a) => { _log(...a);   ship('info',  a); };
+  console.warn  = (...a) => { _warn(...a);  ship('warn',  a); };
+  console.error = (...a) => { _error(...a); ship('error', a); };
 }
 
 const Sentry = require('@sentry/node');
