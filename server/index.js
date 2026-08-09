@@ -92,6 +92,12 @@ app.use(express.json({ limit: '2mb' }));
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// TEMP: observability test — hit GET /test-error to verify Sentry + BetterStack. Remove after confirming.
+app.get('/test-error', (req, res, next) => {
+  console.log('[test] Observability test triggered — check BetterStack for this log');
+  next(new Error('PackTrack observability test error — Sentry + BetterStack check'));
+});
+
 // Public health endpoint — no auth required, used by Railway healthcheck
 app.get('/health', (req, res) => res.json({
   ok: true,
