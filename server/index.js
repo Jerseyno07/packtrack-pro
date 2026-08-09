@@ -16,7 +16,7 @@ require('dotenv').config();
 // BetterStack — patch console so all existing logs stream via HTTP API.
 // If BETTERSTACK_SOURCE_TOKEN is not set (local dev), this is a no-op.
 if (process.env.BETTERSTACK_SOURCE_TOKEN) {
-  const LOGTAIL_ENDPOINT = 'https://in.logs.betterstack.com';
+  const LOGTAIL_ENDPOINT = process.env.BETTERSTACK_ENDPOINT || 'https://in.logs.betterstack.com';
   const LOGTAIL_HEADERS = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${process.env.BETTERSTACK_SOURCE_TOKEN}`,
