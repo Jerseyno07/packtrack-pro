@@ -12,6 +12,15 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 require('dotenv').config();
+
+// BetterStack — patch console so all existing logs stream to Logtail.
+// If BETTERSTACK_SOURCE_TOKEN is not set (local dev), this is a no-op.
+if (process.env.BETTERSTACK_SOURCE_TOKEN) {
+  const { Logtail } = require('@logtail/node');
+  const logtail = new Logtail(process.env.BETTERSTACK_SOURCE_TOKEN);
+  logtail.attachToConsole();
+}
+
 const Sentry = require('@sentry/node');
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
