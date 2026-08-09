@@ -18,7 +18,12 @@ require('dotenv').config();
 if (process.env.BETTERSTACK_SOURCE_TOKEN) {
   const { Logtail } = require('@logtail/node');
   const logtail = new Logtail(process.env.BETTERSTACK_SOURCE_TOKEN);
-  logtail.attachToConsole();
+  const _log = console.log.bind(console);
+  const _warn = console.warn.bind(console);
+  const _error = console.error.bind(console);
+  console.log   = (...a) => { _log(...a);   logtail.log(a.map(String).join(' ')).catch(() => {}); };
+  console.warn  = (...a) => { _warn(...a);  logtail.warn(a.map(String).join(' ')).catch(() => {}); };
+  console.error = (...a) => { _error(...a); logtail.error(a.map(String).join(' ')).catch(() => {}); };
 }
 
 const Sentry = require('@sentry/node');
