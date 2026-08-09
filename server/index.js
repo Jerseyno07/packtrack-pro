@@ -312,14 +312,21 @@ function toIsoDateOrNull(val) {
   return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
 }
 
+// CSV uploads parse everything as the JS type Excel infers — codes like "3202" often
+// arrive as numbers. This coerces any scalar to a trimmed non-empty string.
+const csvStr = z.preprocess(
+  (v) => (v == null ? '' : String(v).trim()),
+  z.string().min(1)
+);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE 1: INDENT UPLOAD — facility-wise, SKU-wise, for a given date
 // Expected columns: facility_code, sku_code, requested_qty, remarks (optional)
 // ═══════════════════════════════════════════════════════════════════════════
 
 const indentRowSchema = z.object({
-  facility_code: z.string().min(1),
-  sku_code: z.string().min(1),
+  facility_code: csvStr,
+  sku_code: csvStr,
   requested_qty: z.coerce.number().int('Must be a whole number').positive('Must be greater than 0').optional(),
   no_of_rolls: z.coerce.number().int('Must be a whole number').positive('Must be greater than 0').optional(),
   remarks: z.string().optional(),
@@ -523,10 +530,10 @@ app.get('/api/v1/indents', authenticate, asyncHandler(async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const poRowSchema = z.object({
-  po_no: z.string().min(1),
-  vendor_name: z.string().min(1),
-  sku_code: z.string().min(1),
-  pm_store_code: z.string().min(1),
+  po_no: csvStr,
+  vendor_name: csvStr,
+  sku_code: csvStr,
+  pm_store_code: csvStr,
   po_qty: z.coerce.number().positive().optional(),
   no_of_rolls: z.coerce.number().positive().optional(),
   unit_price: z.coerce.number().nonnegative(),
