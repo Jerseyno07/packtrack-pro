@@ -313,10 +313,11 @@ function toIsoDateOrNull(val) {
 }
 
 // CSV uploads parse everything as the JS type Excel infers — codes like "3202" often
-// arrive as numbers. This coerces any scalar to a trimmed non-empty string.
+// arrive as numbers. Empty/null cells become undefined (skipped); non-empty values
+// are coerced to a trimmed string regardless of whether they arrived as string or number.
 const csvStr = z.preprocess(
-  (v) => (v == null ? '' : String(v).trim()),
-  z.string().min(1)
+  (v) => (v == null || String(v).trim() === '' ? undefined : String(v).trim()),
+  z.string().optional()
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
