@@ -12,6 +12,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 require('dotenv').config();
+const Sentry = require('@sentry/node');
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: process.env.NODE_ENV || 'production',
+  tracesSampleRate: 0.2,
+});
+
 const express = require('express');
 const { Pool } = require('pg');
 const multer = require('multer');
@@ -64,8 +71,8 @@ app.use(helmet({
       'script-src': ["'self'", "'unsafe-inline'", 'https://*.clarity.ms'],
       // Clarity spins up a blob: web worker for off-thread data processing
       'worker-src': ["'self'", 'blob:'],
-      // Clarity sends session data to e.clarity.ms and pixel pings to other subdomains
-      'connect-src': ["'self'", 'https://*.clarity.ms'],
+      // Clarity sends session data to e.clarity.ms; Sentry sends error reports to ingest.sentry.io
+      'connect-src': ["'self'", 'https://*.clarity.ms', 'https://*.sentry.io'],
       'img-src':     ["'self'", 'data:', 'https://*.clarity.ms'],
     },
   },
@@ -2147,6 +2154,7 @@ app.get('*', (req, res, next) => {
 });
 
 app.use((req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: `No route for ${req.method} ${req.path}` } }));
+app.use(Sentry.expressErrorHandler());
 app.use((err, req, res, next) => {
   if (err instanceof ApiError) return res.status(err.status).json({ error: { code: err.code, message: err.message, details: err.details } });
   console.error(err);
