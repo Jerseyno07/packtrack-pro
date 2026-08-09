@@ -60,8 +60,11 @@ app.use(helmet({
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
       // 'unsafe-inline' needed for inline scripts in index.html (PWA manifest switcher, Clarity tag)
-      'script-src': ["'self'", "'unsafe-inline'", 'https://www.clarity.ms'],
-      // Clarity sends session data and uses pixel pings back to these domains
+      // *.clarity.ms needed because Clarity dynamically loads a second script from c.clarity.ms
+      'script-src': ["'self'", "'unsafe-inline'", 'https://*.clarity.ms'],
+      // Clarity spins up a blob: web worker for off-thread data processing
+      'worker-src': ["'self'", 'blob:'],
+      // Clarity sends session data to e.clarity.ms and pixel pings to other subdomains
       'connect-src': ["'self'", 'https://*.clarity.ms'],
       'img-src':     ["'self'", 'data:', 'https://*.clarity.ms'],
     },
