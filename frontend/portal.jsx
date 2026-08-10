@@ -2165,7 +2165,7 @@ function DownloadsSection({ token }) {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div data-tour="downloads-section" className="space-y-4 max-w-4xl">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-slate-900">Downloads</h2>
@@ -2300,7 +2300,7 @@ function LedgerSection({ token }) {
         <p className="text-sm text-slate-500">All stock movements for a facility — inwards, outwards, consumption, and adjustments.</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-wrap gap-3 items-end">
+      <div data-tour="ledger-filter" className="bg-white rounded-xl border border-slate-200 p-4 flex flex-wrap gap-3 items-end">
         <div className="flex-1 min-w-[200px]">
           <label className="text-xs font-medium text-slate-500 mb-1 block">Facility <span className="text-red-500">*</span></label>
           <select value={warehouseId} onChange={e => setWarehouseId(e.target.value)}
@@ -2488,10 +2488,12 @@ export default function App() {
           onDone={finishTour}
           steps={[
             { target: null, title: 'Welcome to PackTrack Admin', body: 'This tour walks you through every section and button in the portal. Use Next/Prev to navigate or Skip to dismiss at any time.' },
-            { target: 'admin-nav', title: 'Sidebar Navigation', body: 'Switch between sections using this sidebar. As admin you have access to PM Store Dashboard, Upload Indent, Upload Purchase Orders, and the Admin Panel.', onEnter: () => setSection('admin') },
+            { target: 'admin-nav', title: 'Sidebar Navigation', body: 'Switch between sections using this sidebar. As admin you have access to PM Store Dashboard, Upload Indent, Upload Purchase Orders, Stock Ledger, Downloads, and the Admin Panel.', onEnter: () => setSection('admin') },
             { target: 'po-sample-csv', title: 'Download Sample CSV', body: 'Always download the sample before uploading POs. Roll materials use no_of_rolls only (length is stored in the system); other materials use po_qty. Blank cells for unused columns are fine.', onEnter: () => { setSection('po'); setAdminTabForTour(null); } },
             { target: 'po-upload-btn', title: 'Upload Purchase Orders', body: 'After filling the CSV, upload it here. A single po_no can span multiple rows — one row per material under the same PO number.' },
-            { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 8 tabs: Purchase Orders, Stock Issues, Current Stock, Audit Log, SKU Master, Consumption Runs, Min Stock Levels, and Users.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
+            { target: 'ledger-filter', title: 'Stock Ledger', body: 'View all stock movements for any facility — GRNs, dispatches, consumption, and adjustments. Select a facility and date range, then hit View. Use Export to download the results as CSV.', onEnter: () => setSection('ledger') },
+            { target: 'downloads-section', title: 'Downloads', body: 'Every indent and PO file uploaded to the system is stored here. Click Download on any row to get a fresh pre-signed link — links expire after 1 hour.', onEnter: () => setSection('downloads') },
+            { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 10 tabs: Purchase Orders, Stock Issues, Current Stock, Audit Log, Materials, SKU Master, Consumption Runs, Consumption History, Min Stock Levels, and Users.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
             { target: 'admin-refresh', title: 'Refresh', body: 'Re-fetches all data from the server without a full page reload. Use this after making changes in another session.' },
             { target: 'po-filter', title: 'Active / All Toggle', body: 'Active shows only open and partially received POs. Switch to All to include closed, cancelled, and force-completed POs too.', onEnter: () => setAdminTabForTour('pos') },
             { target: 'po-table', title: 'Purchase Orders Table', body: 'Each row is a PO line. The Cancel button withdraws an active PO; Reverse Force Complete (visible on force-completed POs) undoes an accidental close — both require a written reason.' },
