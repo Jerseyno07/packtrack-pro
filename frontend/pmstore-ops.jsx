@@ -1200,7 +1200,7 @@ export default function PMStoreOps() {
   const client = makeApi(token);
 
   const tourSteps = [
-    { target: 'pmstore-tabs', title: 'Welcome to PM Store Ops', body: 'Four sections: Post GRN (inward from vendors), Issue Against Indent (dispatch to FC/CC), Store Stock (current on-hand), and Audit (movement history).' },
+    { target: 'pmstore-tabs', title: 'Welcome to PM Store Ops', body: 'Five sections: Post GRN (inward from vendors), Issue Against Indent (dispatch to FC/CC), Adhoc (direct dispatch without indent), Store Stock (current on-hand), and Audit (movement history).' },
     { target: 'grn-po-list', title: 'Post GRN — Open POs', body: 'Green cards are POs not yet inwarded; amber are partially inwarded with remaining qty shown on the right. Tap a card to start a GRN.', onEnter: () => setTab('grn') },
     { target: null, title: 'Entering Inward Quantity', body: 'After tapping a PO card, enter the quantity received in this shipment. Partial quantities are fine — the PO stays open for the next delivery.' },
     { target: null, title: 'Invoice Number', body: 'Enter the vendor\'s invoice number. Used for reconciliation and audit trail. Optional but recommended.' },
