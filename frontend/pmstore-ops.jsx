@@ -1187,13 +1187,14 @@ export default function PMStoreOps() {
 
   function finishTour() {
     setShowTour(false);
-    if (user) localStorage.setItem(`packtrack_tour_done_${user.role}`, '1');
+    if (user) { try { localStorage.setItem(`packtrack_tour_done_${user.role}`, '1'); } catch (_) {} }
   }
 
   if (!token) {
     return <LoginScreen onLogin={(t, u) => {
       setToken(t); setUser(u);
-      if (!localStorage.getItem(`packtrack_tour_done_${u.role}`)) setShowTour(true);
+      let tourDone = false; try { tourDone = !!localStorage.getItem(`packtrack_tour_done_${u.role}`); } catch (_) {}
+      if (!tourDone) setShowTour(true);
     }} />;
   }
 
