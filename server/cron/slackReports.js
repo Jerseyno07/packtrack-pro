@@ -1,14 +1,15 @@
-// Slack daily reports — three scheduled reports posted to #packtrack-alerts.
+// Slack daily reports — scheduled reports posted to #packtrack-alerts.
 // Env vars required:
 //   SLACK_REPORTS_WEBHOOK  — Incoming Webhook URL for #packtrack-alerts (text messages)
 //   SLACK_BOT_TOKEN        — xoxb-... Bot Token (for CSV file uploads)
 //   SLACK_CHANNEL_ID       — Channel ID for #packtrack-alerts (e.g. C08XXXXXXXX)
 //   DATABASE_URL           — Neon connection string (shared with index.js)
 //
-// Cron schedule (Asia/Kolkata / IST):
-//   00:00  — auto-trigger consumption run (Bangalore facilities only) and auto-accept
-//   01:00  — Daily Consumption Details report
-//   21:00  — FC Dispatch vs CC GRN report
+// Cron schedule (Asia/Kolkata / IST) — all Bangalore facilities only (BLR_FACILITIES):
+//   00:00  — auto-trigger consumption run and auto-accept
+//   09:00  — Indents Uploaded (date & facility-wise)
+//   15:00  — Indent Fulfillment Status (uploaded vs issued/force-completed/pending)
+//   21:00  — FC Dispatch vs CC GRN report (today's dispatches + backlog from earlier dates)
 //   CC Balance vs Audit — sendCCBalanceVsAudit() is ready; cron TBD
 
 // Bangalore FC (9382) + all Bangalore CCs — only these run in the nightly cron.
@@ -30,6 +31,22 @@ function displayUnit(row) {
 function fmt(n) {
   return Number(n).toLocaleString();
 }
+
+const ISSUE_STATUS_LABEL = {
+  DISPATCHED: 'Awaiting Receipt',
+  PARTIALLY_RECEIVED: 'Partial',
+  RECEIVED: 'Fully Completed',
+  FORCE_COMPLETED: 'Force Completed',
+  CANCELLED: 'Cancelled',
+};
+
+const INDENT_STATUS_LABEL = {
+  PENDING: 'Pending',
+  PARTIALLY_ISSUED: 'Partial',
+  FULLY_ISSUED: 'Fully Issued',
+  FORCE_COMPLETED: 'Force Completed',
+  CANCELLED: 'Cancelled',
+};
 
 // Split text into ≤3900-char chunks on newline boundaries (Slack 4000-char limit).
 function chunkText(text, max = 3900) {
@@ -225,11 +242,12 @@ async function sendFCDispatchVsCCGRN() {
       fw.name AS fc_name, fw.code AS fc_code,
       tw.name AS cc_name, tw.code AS cc_code,
       m.code  AS material_code, m.unit, m.meters_per_unit, m.stickers_per_roll,
-      si.issued_qty,
+      si.status,
+      SUM(si.issued_qty) AS issued_qty,
       COALESCE(SUM(sr.received_qty), 0)  AS received_qty,
       COALESCE(SUM(sr.shortage_qty), 0)  AS shortage_qty,
       COALESCE(SUM(sr.damage_qty),   0)  AS damage_qty,
-      si.issued_qty
+      SUM(si.issued_qty)
         - COALESCE(SUM(sr.received_qty + sr.shortage_qty + sr.damage_qty), 0) AS pending_qty,
       COALESCE(cs.on_hand_qty, 0) AS current_stock
     FROM stock_issues si
@@ -238,15 +256,40 @@ async function sendFCDispatchVsCCGRN() {
     JOIN materials  m   ON m.id  = si.material_id
     LEFT JOIN stock_receipts sr ON sr.stock_issue_id = si.id
     LEFT JOIN v_current_stock cs ON cs.warehouse_id = si.to_warehouse_id AND cs.material_id = si.material_id
-    WHERE si.issue_date = $1
+    WHERE si.issue_date = $1 AND tw.code = ANY($2)
     GROUP BY fw.name, fw.code, tw.name, tw.code,
              m.code, m.unit, m.meters_per_unit, m.stickers_per_roll,
-             si.issued_qty, cs.on_hand_qty
+             si.status, cs.on_hand_qty
     ORDER BY tw.name, m.code
-  `, [today]);
+  `, [today, BLR_FACILITIES]);
 
-  if (rows.length === 0) {
-    return postSlack(`📦 *FC Dispatch → CC GRN Report*  |  ${dateLabel}\n_No dispatches recorded for today._`);
+  const { rows: backlogRows } = await pool.query(`
+    SELECT
+      fw.name AS fc_name, fw.code AS fc_code,
+      tw.name AS cc_name, tw.code AS cc_code,
+      m.code  AS material_code, m.unit, m.meters_per_unit, m.stickers_per_roll,
+      si.status,
+      TO_CHAR(MIN(si.issue_date), 'YYYY-MM-DD') AS oldest_pending_since,
+      SUM(si.issued_qty) AS issued_qty,
+      COALESCE(SUM(sr.received_qty), 0)  AS received_qty,
+      COALESCE(SUM(sr.shortage_qty), 0)  AS shortage_qty,
+      COALESCE(SUM(sr.damage_qty),   0)  AS damage_qty,
+      SUM(si.issued_qty)
+        - COALESCE(SUM(sr.received_qty + sr.shortage_qty + sr.damage_qty), 0) AS pending_qty
+    FROM stock_issues si
+    JOIN warehouses fw  ON fw.id = si.from_warehouse_id
+    JOIN warehouses tw  ON tw.id = si.to_warehouse_id
+    JOIN materials  m   ON m.id  = si.material_id
+    LEFT JOIN stock_receipts sr ON sr.stock_issue_id = si.id
+    WHERE si.issue_date < $1 AND si.status IN ('DISPATCHED','PARTIALLY_RECEIVED')
+      AND tw.code = ANY($2)
+    GROUP BY fw.name, fw.code, tw.name, tw.code,
+             m.code, m.unit, m.meters_per_unit, m.stickers_per_roll, si.status
+    ORDER BY tw.name, m.code
+  `, [today, BLR_FACILITIES]);
+
+  if (rows.length === 0 && backlogRows.length === 0) {
+    return postSlack(`📦 *FC Dispatch → CC GRN Report*  |  ${dateLabel}\n_No dispatches recorded for today, and no pending items from earlier dates._`);
   }
 
   // Group by CC facility
@@ -258,23 +301,155 @@ async function sendFCDispatchVsCCGRN() {
   }
 
   let text = `📦 *FC Dispatch → CC GRN Report*  |  ${dateLabel}\n\n`;
-  let csv = 'FC,CC,Material,Unit,Dispatched,Received,Shortage,Pending,Current Stock\n';
+  let csv = 'FC,CC,Material,Unit,Status,Dispatched,Received,Shortage,Pending,Current Stock\n';
+
+  if (rows.length === 0) {
+    text += '_No dispatches recorded for today._\n\n';
+  }
 
   for (const { cc_name, cc_code, fc_name, fc_code, lines } of byCc.values()) {
     text += `*${cc_name} (${cc_code})* ← ${fc_name} (${fc_code})\n\`\`\``;
-    text += `${'MATERIAL'.padEnd(14)}${'DISPATCHED'.padEnd(14)}${'RECEIVED'.padEnd(14)}${'SHORTAGE'.padEnd(12)}${'PENDING'.padEnd(12)}CURR STOCK\n`;
+    text += `${'MATERIAL'.padEnd(14)}${'STATUS'.padEnd(18)}${'DISPATCHED'.padEnd(14)}${'RECEIVED'.padEnd(14)}${'SHORTAGE'.padEnd(12)}${'PENDING'.padEnd(12)}CURR STOCK\n`;
     for (const r of lines) {
       const u = displayUnit(r);
       const cell = (n) => `${fmt(n)} ${u}`.padEnd(14);
       const cell12 = (n) => `${fmt(n)} ${u}`.padEnd(12);
-      text += `${r.material_code.padEnd(14)}${cell(r.issued_qty)}${cell(r.received_qty)}${cell12(r.shortage_qty)}${cell12(r.pending_qty)}${fmt(r.current_stock)} ${u}\n`;
-      csv += `"${fc_name} (${fc_code})","${cc_name} (${cc_code})","${r.material_code}","${u}",${r.issued_qty},${r.received_qty},${r.shortage_qty},${r.pending_qty},${r.current_stock}\n`;
+      const label = ISSUE_STATUS_LABEL[r.status] || r.status;
+      text += `${r.material_code.padEnd(14)}${label.padEnd(18)}${cell(r.issued_qty)}${cell(r.received_qty)}${cell12(r.shortage_qty)}${cell12(r.pending_qty)}${fmt(r.current_stock)} ${u}\n`;
+      csv += `"${fc_name} (${fc_code})","${cc_name} (${cc_code})","${r.material_code}","${u}","${label}",${r.issued_qty},${r.received_qty},${r.shortage_qty},${r.pending_qty},${r.current_stock}\n`;
     }
     text += '```\n';
   }
 
+  if (backlogRows.length > 0) {
+    const byCcBacklog = new Map();
+    for (const r of backlogRows) {
+      const key = r.cc_code;
+      if (!byCcBacklog.has(key)) byCcBacklog.set(key, { cc_name: r.cc_name, cc_code: r.cc_code, fc_name: r.fc_name, fc_code: r.fc_code, lines: [] });
+      byCcBacklog.get(key).lines.push(r);
+    }
+    text += `*Pending from earlier dates:*\n\n`;
+    for (const { cc_name, cc_code, fc_name, fc_code, lines } of byCcBacklog.values()) {
+      text += `*${cc_name} (${cc_code})* ← ${fc_name} (${fc_code})\n\`\`\``;
+      text += `${'MATERIAL'.padEnd(14)}${'STATUS'.padEnd(18)}${'PENDING'.padEnd(14)}SINCE\n`;
+      for (const r of lines) {
+        const u = displayUnit(r);
+        const label = ISSUE_STATUS_LABEL[r.status] || r.status;
+        const since = r.oldest_pending_since;
+        text += `${r.material_code.padEnd(14)}${label.padEnd(18)}${`${fmt(r.pending_qty)} ${u}`.padEnd(14)}${since}\n`;
+      }
+      text += '```\n';
+    }
+  }
+
   const dateSlug = today.replace(/-/g, '');
+  if (rows.length === 0) {
+    return postSlack(text);
+  }
   await sendReport(text, csv, `fc-dispatch-cc-grn-${dateSlug}.csv`, `FC Dispatch → CC GRN — ${dateLabel}`);
+}
+
+// ── Report: Indents Uploaded — Date & Facility-wise (09:00 IST) ──────────────
+
+async function sendIndentsUploadedReport() {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const dateLabel = istDateLabel();
+
+  const uploaded = await pool.query(`
+    SELECT w.code AS facility_code, w.name AS facility_name, w.warehouse_type,
+           ARRAY_AGG(DISTINCT ib.batch_ref) AS batch_refs,
+           MIN(ib.created_at) AS first_upload_at,
+           COUNT(il.id)::int AS line_count,
+           COUNT(DISTINCT il.material_id)::int AS material_count
+    FROM indent_lines il
+    JOIN warehouses w ON w.id = il.warehouse_id
+    JOIN indent_batches ib ON ib.id = il.batch_id
+    WHERE il.indent_date = $1 AND w.code = ANY($2)
+    GROUP BY w.code, w.name, w.warehouse_type
+    ORDER BY w.name
+  `, [today, BLR_FACILITIES]);
+
+  const missing = await pool.query(`
+    SELECT code, name, warehouse_type FROM warehouses
+    WHERE warehouse_type IN ('CC','FC') AND is_active = true AND code = ANY($2)
+      AND id NOT IN (SELECT DISTINCT warehouse_id FROM indent_lines WHERE indent_date = $1)
+    ORDER BY name
+  `, [today, BLR_FACILITIES]);
+
+  let text = `📋 *Indents Uploaded — ${dateLabel}*\n\n`;
+
+  if (uploaded.rows.length === 0) {
+    text += '_No indents uploaded yet for today._\n\n';
+  } else {
+    for (const r of uploaded.rows) {
+      const uploadTime = new Date(r.first_upload_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
+      text += `*${r.facility_name}* (${r.batch_refs.join(', ')}) — ${r.line_count} lines, ${r.material_count} materials, uploaded ${uploadTime}\n`;
+    }
+    text += '\n';
+  }
+
+  if (missing.rows.length > 0) {
+    text += `*Not yet uploaded:*\n`;
+    for (const r of missing.rows) {
+      text += `• ${r.name} (${r.code})\n`;
+    }
+  }
+
+  return postSlack(text);
+}
+
+// ── Report: Indent Fulfillment Status (15:00 IST) ────────────────────────────
+
+async function sendIndentFulfillmentReport() {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const dateLabel = istDateLabel();
+
+  const { rows } = await pool.query(`
+    SELECT w.code AS facility_code, w.name AS facility_name,
+           m.code AS material_code, m.unit, m.meters_per_unit, m.stickers_per_roll,
+           il.status,
+           SUM(il.requested_qty) AS requested_qty,
+           SUM(il.issued_qty) AS issued_qty,
+           SUM(il.requested_qty - il.issued_qty) AS pending_qty,
+           COUNT(*)::int AS line_count
+    FROM indent_lines il
+    JOIN warehouses w ON w.id = il.warehouse_id
+    JOIN materials m ON m.id = il.material_id
+    WHERE il.indent_date = $1 AND w.code = ANY($2)
+    GROUP BY w.code, w.name, m.code, m.unit, m.meters_per_unit, m.stickers_per_roll, il.status
+    ORDER BY w.name, m.code
+  `, [today, BLR_FACILITIES]);
+
+  if (rows.length === 0) {
+    return postSlack(`📈 *Indent Fulfillment Status*  |  ${dateLabel}\n_No indents found for today._`);
+  }
+
+  const byWh = new Map();
+  for (const r of rows) {
+    const key = r.facility_code;
+    if (!byWh.has(key)) byWh.set(key, { name: r.facility_name, code: r.facility_code, lines: [], statusCounts: {} });
+    const entry = byWh.get(key);
+    entry.lines.push(r);
+    entry.statusCounts[r.status] = (entry.statusCounts[r.status] || 0) + r.line_count;
+  }
+
+  let text = `📈 *Indent Fulfillment Status*  |  ${dateLabel}\n\n`;
+
+  for (const { name, code, lines, statusCounts } of byWh.values()) {
+    text += `*${name} (${code})*\n\`\`\``;
+    text += `${'MATERIAL'.padEnd(14)}${'REQUESTED'.padEnd(14)}${'ISSUED'.padEnd(14)}${'PENDING'.padEnd(14)}STATUS\n`;
+    for (const r of lines) {
+      const u = displayUnit(r);
+      const cell = (n) => `${fmt(n)} ${u}`.padEnd(14);
+      const label = INDENT_STATUS_LABEL[r.status] || r.status;
+      text += `${r.material_code.padEnd(14)}${cell(r.requested_qty)}${cell(r.issued_qty)}${cell(r.pending_qty)}${label}\n`;
+    }
+    text += '```\n';
+    const summary = Object.entries(statusCounts).map(([s, n]) => `${INDENT_STATUS_LABEL[s] || s}: ${n}`).join(' · ');
+    text += `_${summary}_\n\n`;
+  }
+
+  return postSlack(text);
 }
 
 // ── Report 2: Daily Consumption Details (00:15 IST) ──────────────────────────
@@ -413,10 +588,29 @@ cron.schedule('0 0 * * *', () => {
   runAndAcceptConsumption(BLR_FACILITIES).catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
+// 09:00 IST — Indents Uploaded (date & facility-wise)
+cron.schedule('0 9 * * *', () => {
+  console.log('[slackReports] 09:00 IST — sending indents uploaded report');
+  sendIndentsUploadedReport().catch((e) => console.error('[slackReports] Indents uploaded report failed:', e.message));
+}, { timezone: 'Asia/Kolkata' });
+
+// 15:00 IST — Indent Fulfillment Status
+cron.schedule('0 15 * * *', () => {
+  console.log('[slackReports] 15:00 IST — sending indent fulfillment report');
+  sendIndentFulfillmentReport().catch((e) => console.error('[slackReports] Indent fulfillment report failed:', e.message));
+}, { timezone: 'Asia/Kolkata' });
+
 // 21:00 IST — FC Dispatch vs CC GRN
 cron.schedule('0 21 * * *', () => {
   console.log('[slackReports] 21:00 IST — sending FC dispatch vs CC GRN report');
   sendFCDispatchVsCCGRN().catch((e) => console.error('[slackReports] FC vs CC report failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
-module.exports = { sendFCDispatchVsCCGRN, sendDailyConsumption, sendCCBalanceVsAudit, runAndAcceptConsumption };
+module.exports = {
+  sendFCDispatchVsCCGRN,
+  sendDailyConsumption,
+  sendCCBalanceVsAudit,
+  sendIndentsUploadedReport,
+  sendIndentFulfillmentReport,
+  runAndAcceptConsumption,
+};

@@ -1910,6 +1910,18 @@ app.post('/api/v1/admin/slack/send-daily-consumption', authenticate, requireRole
   res.json({ ok: true, run_id: runId });
 }));
 
+app.post('/api/v1/admin/slack/send-indents-uploaded', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { sendIndentsUploadedReport } = require('./cron/slackReports');
+  await sendIndentsUploadedReport();
+  res.json({ ok: true });
+}));
+
+app.post('/api/v1/admin/slack/send-indent-fulfillment', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { sendIndentFulfillmentReport } = require('./cron/slackReports');
+  await sendIndentFulfillmentReport();
+  res.json({ ok: true });
+}));
+
 app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { runConsumption } = require('./cron/consumptionScraper');
   const { warehouseIds } = req.body ?? {};
