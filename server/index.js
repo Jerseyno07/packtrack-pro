@@ -1729,12 +1729,19 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       const primaryRaw = String(row['packing_material'] ?? row['primary_pm_code'] ?? '').trim();
 
       if (!sku_code) { errors.push({ row: rowNum, error: 'FSN ID is required' }); continue; }
-      if (!primaryRaw) { errors.push({ row: rowNum, error: 'Packing Material (col H) is required' }); continue; }
 
-      const primary_pm_code = resolveMaterial(primaryRaw);
-      if (!primary_pm_code) {
-        errors.push({ row: rowNum, error: `Packing Material '${primaryRaw}' not found in materials (match by name or code)` });
-        continue;
+      // Packing Material (col H) is optional: an FSN can be uploaded with no primary
+      // material mapped at all (e.g. MRP-sticker-only SKUs). MRP sticker (barcode +
+      // wax ribbon) deduction only requires the FSN to have a sku_packaging_master
+      // row — it does not depend on primary_pm_code resolving to anything. If a
+      // value IS provided, it must still resolve to a real material.
+      let primary_pm_code = null;
+      if (primaryRaw) {
+        primary_pm_code = resolveMaterial(primaryRaw);
+        if (!primary_pm_code) {
+          errors.push({ row: rowNum, error: `Packing Material '${primaryRaw}' not found in materials (match by name or code)` });
+          continue;
+        }
       }
 
       // Collect sec. packing materials — any column with a non-empty, non-zero value
