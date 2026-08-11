@@ -1718,7 +1718,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
     const secPackingCols = firstRowKeys.filter((k) => /^sec[._].*packing/i.test(k));
 
     const errors = [];
-    const upserted = [];
+    const validRows = [];
 
     for (let i = 0; i < rawRows.length; i++) {
       const rowNum = i + 2;
@@ -1750,17 +1750,50 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
         if (code && code !== primary_pm_code && !secCodes.includes(code)) secCodes.push(code);
       }
 
-      const secondary_pm_code = secCodes[0] ?? null;
-      const tertiary_pm_code = secCodes[1] ?? null;
+      validRows.push({
+        sku_code, sku_name, primary_pm_code,
+        secondary_pm_code: secCodes[0] ?? null,
+        tertiary_pm_code: secCodes[1] ?? null,
+      });
+    }
 
+    // Dedupe by sku_code within this file (last occurrence wins, matching the previous
+    // sequential-upsert behavior) — a single batched INSERT can't hit the same
+    // ON CONFLICT row twice in one statement.
+    const bySku = new Map();
+    for (const r of validRows) bySku.set(r.sku_code, r);
+    const dedupedRows = [...bySku.values()];
+
+    // Batch upserts instead of one round-trip per row — a full FSN catalog can be
+    // thousands of rows, and one query per row was slow enough to trip Railway's
+    // proxy timeout (surfaces to the client as a non-JSON "upstream error" body).
+    const BATCH_SIZE = 1000;
+    for (let i = 0; i < dedupedRows.length; i += BATCH_SIZE) {
+      const chunk = dedupedRows.slice(i, i + BATCH_SIZE);
       await pool.query(
         `INSERT INTO sku_packaging_master (sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code, uploaded_by, uploaded_at)
-         VALUES ($1,$2,$3,$4,$5,$6,now())
-         ON CONFLICT (sku_code) DO UPDATE SET sku_name=$2, primary_pm_code=$3, secondary_pm_code=$4, tertiary_pm_code=$5, uploaded_by=$6, uploaded_at=now()`,
-        [sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code, req.user.id]
+         SELECT sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code, $6, now()
+         FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+           AS t(sku_code, sku_name, primary_pm_code, secondary_pm_code, tertiary_pm_code)
+         ON CONFLICT (sku_code) DO UPDATE SET
+           sku_name = EXCLUDED.sku_name,
+           primary_pm_code = EXCLUDED.primary_pm_code,
+           secondary_pm_code = EXCLUDED.secondary_pm_code,
+           tertiary_pm_code = EXCLUDED.tertiary_pm_code,
+           uploaded_by = EXCLUDED.uploaded_by,
+           uploaded_at = EXCLUDED.uploaded_at`,
+        [
+          chunk.map((r) => r.sku_code),
+          chunk.map((r) => r.sku_name),
+          chunk.map((r) => r.primary_pm_code),
+          chunk.map((r) => r.secondary_pm_code),
+          chunk.map((r) => r.tertiary_pm_code),
+          req.user.id,
+        ]
       );
-      upserted.push(sku_code);
     }
+
+    const upserted = dedupedRows.map((r) => r.sku_code);
 
     await writeAudit(pool, { userId: req.user.id, action: 'SKU_MASTER_UPLOADED', entityTable: 'sku_packaging_master', entityId: 0, detail: { upserted: upserted.length, errors: errors.length } });
     res.status(201).json({ total_rows: rawRows.length, upserted: upserted.length, error_rows: errors.length, errors: errors.slice(0, 200) });

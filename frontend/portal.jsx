@@ -797,7 +797,13 @@ function AdminPanel({ token, tabOverride }) {
         headers: { Authorization: `Bearer ${token}` },
         body: fd,
       });
-      const data = await res.json();
+      const raw = await res.text();
+      let data;
+      try { data = JSON.parse(raw); } catch {
+        throw new Error(res.ok
+          ? 'Upload may still be processing — check SKU Master after a moment before re-uploading.'
+          : `Upload failed (server returned a non-JSON response, HTTP ${res.status}). Try again — if it repeats, the file may be too large.`);
+      }
       if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
       setSkuResult(data);
     } catch (e) { setSkuError(e.message); }
