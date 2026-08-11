@@ -1226,7 +1226,7 @@ function AdminPanel({ token, tabOverride }) {
                     <td className="px-4 py-3 text-right text-slate-600">
                       {Number(si.received_qty_sum) > 0 ? `${dashDispQty(si, si.received_qty_sum)} ${dashDispUnit(si)}` : '—'}
                     </td>
-                    <td className="px-4 py-3 text-slate-600">{si.issue_date}</td>
+                    <td className="px-4 py-3 text-slate-600">{si.issue_date?.slice(0, 10)}</td>
                     <td className="px-4 py-3"><Badge tone={issueStatusTone(si)}>{issueStatusLabel(si)}</Badge></td>
                     <td className="px-4 py-3 text-right">
                       {!TERMINAL_ISSUE.includes(si.status) && (
