@@ -186,7 +186,10 @@ function IssueListItem({ issue, onSelect }) {
           {isPartial && <Badge tone="amber">Partial</Badge>}
         </div>
         <div className="text-xs text-slate-500">{issue.issue_ref} · from {issue.from_warehouse_name}</div>
-        <div className="text-xs text-slate-400 mt-0.5">Indent {issue.indent_ref} · {issue.issue_date?.slice(0, 10)}</div>
+        <div className="text-xs text-slate-400 mt-0.5">
+          Indent {issue.indent_ref} · {issue.issue_date?.slice(0, 10)}
+          {issue.created_at && ` · ${new Date(issue.created_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}`}
+        </div>
       </div>
       <div className="text-right flex-shrink-0">
         <div className="font-bold text-slate-900">{rcptToDisp(issue, issue.pending_qty ?? issue.issued_qty)}</div>
