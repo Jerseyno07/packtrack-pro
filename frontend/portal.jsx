@@ -143,8 +143,6 @@ function IndentUploadSection({ token }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [uploadedFacilities, setUploadedFacilities] = useState([]);
-  const [dupeFacilities, setDupeFacilities] = useState([]);
-  const [showConfirm, setShowConfirm] = useState(false);
 
   useEffect(() => {
     if (!indentDate) return;
@@ -153,7 +151,7 @@ function IndentUploadSection({ token }) {
     }).then((r) => r.json()).then((d) => setUploadedFacilities(Array.isArray(d) ? d : [])).catch(() => {});
   }, [indentDate, token]);
 
-  async function handleUpload(force = false) {
+  async function handleUpload() {
     setError('');
     if (!file) { setError('Please choose a file.'); return; }
     setUploading(true);
@@ -161,18 +159,12 @@ function IndentUploadSection({ token }) {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('indent_date', indentDate);
-      if (force) fd.append('force', 'true');
       const res = await fetch(`${BASE_URL}/api/v1/indents/upload`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: fd,
       });
       const data = await res.json();
-      if (res.status === 409 && data.requires_confirmation) {
-        setDupeFacilities(data.duplicate_facilities);
-        setShowConfirm(true);
-        return;
-      }
       if (res.status === 422 && data.errors) { setResult(data); return; }
       if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
       setResult(data);
@@ -183,44 +175,8 @@ function IndentUploadSection({ token }) {
     } catch (e) { setError(e.message || 'Upload failed. Please try again.'); } finally { setUploading(false); }
   }
 
-  async function handleConfirmUpload() {
-    setShowConfirm(false);
-    await handleUpload(true);
-  }
-
   return (
     <div className="space-y-4 max-w-2xl">
-      {showConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full space-y-4 shadow-xl">
-            <div className="flex items-start gap-3">
-              <AlertTriangle size={22} className="text-amber-500 flex-shrink-0 mt-0.5" />
-              <div>
-                <div className="font-bold text-slate-900">Indent already uploaded</div>
-                <div className="text-sm text-slate-500 mt-1">The following facilities already have an indent for <strong>{indentDate}</strong>:</div>
-              </div>
-            </div>
-            <div className="bg-amber-50 rounded-lg border border-amber-200 divide-y divide-amber-100">
-              {dupeFacilities.map((f) => (
-                <div key={f.facility_code} className="px-3 py-2 flex items-center justify-between text-sm">
-                  <span className="font-medium text-slate-800">{f.facility_name}</span>
-                  <span className="text-xs text-slate-400 font-mono">{f.facility_code}</span>
-                </div>
-              ))}
-            </div>
-            <p className="text-sm text-slate-500">Uploading again will add new indent lines on top of the existing ones for these facilities. Are you sure you want to continue?</p>
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={() => setShowConfirm(false)} className="py-2.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                Cancel
-              </button>
-              <button onClick={handleConfirmUpload} disabled={uploading} className="py-2.5 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-60">
-                {uploading ? 'Uploading...' : 'Upload Anyway'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div>
         <h2 className="text-lg font-bold text-slate-900">Upload Indent</h2>
         <p className="text-sm text-slate-500">Bulk upload facility-wise, SKU-wise demand for a given date.</p>

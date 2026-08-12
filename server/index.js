@@ -386,25 +386,6 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
     const rawRows = parseUploadedFile(req.file);
     if (!rawRows.length) throw new ApiError(400, 'EMPTY_FILE', 'File contains no data rows');
 
-    // Duplicate facility check — warn before inserting unless caller explicitly forces
-    if (req.body.force !== 'true') {
-      const rawFacilityCodes = [...new Set(rawRows.map((r) => String(r.facility_code ?? '')).filter(Boolean))];
-      if (rawFacilityCodes.length > 0) {
-        const dupeRes = await pool.query(
-          `SELECT w.code AS facility_code, w.name AS facility_name
-           FROM indent_lines il
-           JOIN warehouses w ON w.id = il.warehouse_id
-           WHERE il.indent_date = $1 AND w.code = ANY($2)
-           GROUP BY w.code, w.name
-           ORDER BY w.name`,
-          [indentDate, rawFacilityCodes]
-        );
-        if (dupeRes.rows.length > 0) {
-          return res.status(409).json({ requires_confirmation: true, duplicate_facilities: dupeRes.rows });
-        }
-      }
-    }
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -446,7 +427,32 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
           if (!requested_qty) { errors.push({ row: rowNum, error: `Non-roll material '${sku_code}' requires requested_qty column` }); continue; }
           finalQty = requested_qty;
         }
-        validatedRows.push({ rowNum, warehouseId, matId: mat.id, finalQty, remarks });
+        validatedRows.push({ rowNum, warehouseId, matId: mat.id, finalQty, remarks, facility_code, sku_code });
+      }
+
+      // Reject any row whose (facility, material) already has an indent line for this
+      // indent_date from a prior upload — the whole file is rejected (same all-or-nothing
+      // path as other validation errors below), so the uploader has to remove those exact
+      // lines from the file and re-upload rather than silently re-creating duplicates.
+      if (validatedRows.length > 0) {
+        const pairs = [...new Set(validatedRows.map((r) => `${r.warehouseId}::${r.matId}`))]
+          .map((k) => k.split('::').map(Number));
+        const existingRes = await client.query(
+          `SELECT DISTINCT il.warehouse_id, il.material_id
+           FROM indent_lines il
+           WHERE il.indent_date = $1
+             AND (il.warehouse_id, il.material_id) IN (SELECT * FROM unnest($2::bigint[], $3::bigint[]))`,
+          [indentDate, pairs.map((p) => p[0]), pairs.map((p) => p[1])]
+        );
+        const existingSet = new Set(existingRes.rows.map((r) => `${r.warehouse_id}::${r.material_id}`));
+        for (const r of validatedRows) {
+          if (existingSet.has(`${r.warehouseId}::${r.matId}`)) {
+            errors.push({
+              row: r.rowNum,
+              error: `Already uploaded: facility '${r.facility_code}' + SKU '${r.sku_code}' already has an indent for ${indentDate}. Remove this line from the file and re-upload.`,
+            });
+          }
+        }
       }
 
       // If any row failed validation, reject the entire upload — nothing is inserted
