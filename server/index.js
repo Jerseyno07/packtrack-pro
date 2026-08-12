@@ -308,11 +308,16 @@ function formatZodErrors(issues) {
 
 function parseUploadedFile(file) {
   let rows;
-  if (file.originalname.toLowerCase().endsWith('.csv')) {
-    rows = parseCsv(file.buffer.toString('utf8'), { columns: true, skip_empty_lines: true, trim: true });
-  } else {
-    const wb = XLSX.read(file.buffer, { type: 'buffer' });
-    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+  try {
+    if (file.originalname.toLowerCase().endsWith('.csv')) {
+      rows = parseCsv(file.buffer.toString('utf8'), { columns: true, skip_empty_lines: true, trim: true });
+    } else {
+      const wb = XLSX.read(file.buffer, { type: 'buffer' });
+      rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+    }
+  } catch (e) {
+    throw new ApiError(400, 'FILE_PARSE_ERROR',
+      `Could not read "${file.originalname}" — make sure it's a valid, uncorrupted CSV or Excel (.xlsx) file (not password-protected). If it was exported from Excel, try re-saving it and uploading again. (${e.message})`);
   }
   return rows.map((row) => {
     const out = {};
@@ -646,11 +651,29 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
 
         const dupKey = `${d.po_no}::${mat.id}`;
         if (seenPoMaterialKeys.has(dupKey)) { errors.push({ row: rowNum, error: `PO '${d.po_no}' already has a line for material '${d.sku_code}' earlier in this file` }); continue; }
-        const dupCheck = await client.query('SELECT id FROM purchase_orders WHERE po_no = $1 AND material_id = $2', [d.po_no, mat.id]);
-        if (dupCheck.rows.length) { errors.push({ row: rowNum, error: `PO '${d.po_no}' already has a line for material '${d.sku_code}'` }); continue; }
         seenPoMaterialKeys.add(dupKey);
 
         validRows.push({ rowNum, d, mat, warehouseId, finalQty, poDate, expDelivery });
+      }
+
+      // Reject any row whose (po_no, material) already exists in purchase_orders —
+      // one batched query instead of one round-trip per row (avoids the same slow
+      // per-row-query pattern that caused a proxy timeout in SKU master upload).
+      if (validRows.length > 0) {
+        const poNos = [...new Set(validRows.map((r) => r.d.po_no))];
+        const existingRes = await client.query(
+          'SELECT po_no, material_id FROM purchase_orders WHERE po_no = ANY($1)',
+          [poNos]
+        );
+        const existingSet = new Set(existingRes.rows.map((r) => `${r.po_no}::${r.material_id}`));
+        for (const r of validRows) {
+          if (existingSet.has(`${r.d.po_no}::${r.mat.id}`)) {
+            errors.push({
+              row: r.rowNum,
+              error: `PO '${r.d.po_no}' already has a line for material '${r.d.sku_code}'. Remove this line from the file and re-upload.`,
+            });
+          }
+        }
       }
 
       // If any row failed, reject the entire upload
@@ -2247,6 +2270,12 @@ app.use((req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message
 app.use(Sentry.expressErrorHandler());
 app.use((err, req, res, next) => {
   if (err instanceof ApiError) return res.status(err.status).json({ error: { code: err.code, message: err.message, details: err.details } });
+  if (err instanceof multer.MulterError) {
+    const message = err.code === 'LIMIT_FILE_SIZE'
+      ? 'File is too large — max 10MB. Try removing unnecessary formatting/images from the Excel file, or split it into smaller files.'
+      : `File upload error: ${err.message}`;
+    return res.status(400).json({ error: { code: err.code, message } });
+  }
   console.error(err);
   if (process.env.SLACK_ERROR_WEBHOOK) {
     fetch(process.env.SLACK_ERROR_WEBHOOK, {
