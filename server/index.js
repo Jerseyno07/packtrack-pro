@@ -1604,7 +1604,7 @@ app.get('/api/v1/dashboard/po-schedule', authenticate, requireRole('PM_STORE_EXE
             po.pm_store_warehouse_id, w.name AS warehouse_name,
             po.po_qty, po.received_qty_cache,
             (po.po_qty - po.received_qty_cache) AS remaining_qty,
-            po.po_date, po.expected_delivery, po.status
+            po.po_date, po.expected_delivery, po.status, po.created_at
      FROM purchase_orders po
      JOIN materials  m ON m.id = po.material_id
      JOIN warehouses w ON w.id = po.pm_store_warehouse_id

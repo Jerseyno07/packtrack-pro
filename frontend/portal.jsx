@@ -411,12 +411,52 @@ function dashDispUnit(row) {
   return row.meters_per_unit ? 'rolls' : row.stickers_per_roll ? 'units' : row.pieces_per_kg ? 'Kg' : (row.unit ?? '');
 }
 
+// Click-to-sort table state: tracks which column + direction, sorts numerically when
+// both sides parse as numbers, otherwise falls back to string comparison.
+function useSortableRows(rows) {
+  const [sortKey, setSortKey] = useState(null);
+  const [sortDir, setSortDir] = useState('asc');
+  const sorted = useMemo(() => {
+    if (!sortKey) return rows;
+    return [...rows].sort((a, b) => {
+      const av = a[sortKey], bv = b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return -1;
+      if (bv == null) return 1;
+      const an = Number(av), bn = Number(bv);
+      const cmp = (av !== '' && bv !== '' && !isNaN(an) && !isNaN(bn))
+        ? an - bn
+        : String(av).localeCompare(String(bv));
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [rows, sortKey, sortDir]);
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir('asc'); }
+  };
+  return { sorted, sortKey, sortDir, toggleSort };
+}
+
+// Clickable, sortable <th> — pass the current { sortKey, sortDir, toggleSort } from useSortableRows.
+function SortTh({ children, sortField, sortKey, sortDir, toggleSort, align = 'left', className = '' }) {
+  const active = sortKey === sortField;
+  return (
+    <th
+      onClick={() => toggleSort(sortField)}
+      className={`px-4 py-2.5 cursor-pointer select-none hover:text-slate-700 ${align === 'right' ? 'text-right' : 'text-left'} ${className}`}
+    >
+      {children} <span className={active ? 'text-slate-700' : 'text-slate-300'}>{active ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}</span>
+    </th>
+  );
+}
+
 function DashboardSection({ token }) {
   const [tab, setTab] = useState('indents');
   const [indents, setIndents] = useState([]);
   const [pos, setPos] = useState([]);
   const [lowStock, setLowStock] = useState([]);
   const [loading, setLoading] = useState(true);
+  const poSort = useSortableRows(pos);
 
   useEffect(() => {
     if (!token) return;
@@ -497,18 +537,28 @@ function DashboardSection({ token }) {
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500 text-xs">
-              <tr><th className="text-left px-4 py-2.5">PO No</th><th className="text-left px-4 py-2.5">Vendor</th><th className="text-left px-4 py-2.5">SKU</th><th className="text-right px-4 py-2.5">PO Qty</th><th className="text-right px-4 py-2.5">Remaining</th><th className="text-left px-4 py-2.5">Expected</th><th className="text-left px-4 py-2.5">Status</th></tr>
+              <tr>
+                <SortTh sortField="po_no" {...poSort}>PO No</SortTh>
+                <SortTh sortField="vendor_name" {...poSort}>Vendor</SortTh>
+                <SortTh sortField="material_code" {...poSort}>SKU</SortTh>
+                <SortTh sortField="po_qty" align="right" {...poSort}>PO Qty</SortTh>
+                <SortTh sortField="remaining_qty" align="right" {...poSort}>Remaining</SortTh>
+                <SortTh sortField="expected_delivery" {...poSort}>Expected</SortTh>
+                <SortTh sortField="created_at" {...poSort}>Uploaded</SortTh>
+                <SortTh sortField="status" {...poSort}>Status</SortTh>
+              </tr>
             </thead>
             <tbody>
-              {pos.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400 text-sm">No open POs</td></tr>}
-              {pos.map((r, i) => (
+              {pos.length === 0 && <tr><td colSpan={8} className="px-4 py-6 text-center text-slate-400 text-sm">No open POs</td></tr>}
+              {poSort.sorted.map((r, i) => (
                 <tr key={i} className="border-t border-slate-100">
                   <td className="px-4 py-3 font-medium text-slate-800">{r.po_no}</td>
                   <td className="px-4 py-3 text-slate-600">{r.vendor_name}</td>
                   <td className="px-4 py-3 text-slate-600">{r.material_code}</td>
                   <td className="px-4 py-3 text-right text-slate-600">{dashDispQty(r, r.po_qty)} {dashDispUnit(r)}</td>
                   <td className="px-4 py-3 text-right font-bold text-blue-600">{dashDispQty(r, r.remaining_qty)} {dashDispUnit(r)}</td>
-                  <td className="px-4 py-3 text-slate-600">{r.expected_delivery ?? '—'}</td>
+                  <td className="px-4 py-3 text-slate-600">{r.expected_delivery?.slice(0, 10) ?? '—'}</td>
+                  <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{r.created_at ? new Date(r.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—'}</td>
                   <td className="px-4 py-3"><Badge tone={r.status === 'OPEN' ? 'blue' : 'amber'}>{r.status.replace('_', ' ')}</Badge></td>
                 </tr>
               ))}
@@ -579,6 +629,9 @@ function AdminPanel({ token, tabOverride }) {
 
   const [tab, setTab] = useState('pos');
   const [poFilter, setPoFilter] = useState('active');
+  const allPos = (overview?.purchase_orders ?? []).map((p) => ({ ...p, remaining_qty: p.remaining_qty ?? (p.po_qty - p.received_qty_cache) }));
+  const pos = poFilter === 'active' ? allPos.filter(p => !TERMINAL_PO.includes(p.status)) : allPos;
+  const poTableSort = useSortableRows(pos);
 
   useEffect(() => { if (tabOverride) setTab(tabOverride); }, [tabOverride]);
 
@@ -1036,8 +1089,6 @@ function AdminPanel({ token, tabOverride }) {
     </div>
   );
 
-  const allPos = overview?.purchase_orders ?? [];
-  const pos = poFilter === 'active' ? allPos.filter(p => !TERMINAL_PO.includes(p.status)) : allPos;
   const issues = overview?.stock_issues ?? [];
   const stock = overview?.current_stock ?? [];
   const lowStock = overview?.low_stock_alerts ?? [];
@@ -1077,24 +1128,26 @@ function AdminPanel({ token, tabOverride }) {
           <table className="w-full text-sm min-w-[700px]">
             <thead className="bg-slate-50 text-slate-500 text-xs">
               <tr>
-                <th className="text-left px-4 py-2.5">PO No</th>
-                <th className="text-left px-4 py-2.5">Vendor</th>
-                <th className="text-left px-4 py-2.5">SKU</th>
-                <th className="text-right px-4 py-2.5">PO Qty</th>
-                <th className="text-right px-4 py-2.5">Remaining</th>
-                <th className="text-left px-4 py-2.5">Status</th>
+                <SortTh sortField="po_no" {...poTableSort}>PO No</SortTh>
+                <SortTh sortField="vendor_name" {...poTableSort}>Vendor</SortTh>
+                <SortTh sortField="material_code" {...poTableSort}>SKU</SortTh>
+                <SortTh sortField="po_qty" align="right" {...poTableSort}>PO Qty</SortTh>
+                <SortTh sortField="remaining_qty" align="right" {...poTableSort}>Remaining</SortTh>
+                <SortTh sortField="created_at" {...poTableSort}>Uploaded</SortTh>
+                <SortTh sortField="status" {...poTableSort}>Status</SortTh>
                 <th className="px-4 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
-              {pos.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No purchase orders</td></tr>}
-              {pos.map((po) => (
+              {pos.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">No purchase orders</td></tr>}
+              {poTableSort.sorted.map((po) => (
                 <tr key={po.id} className="border-t border-slate-100 hover:bg-slate-50">
                   <td className="px-4 py-3 font-medium text-slate-800">{po.po_no}</td>
                   <td className="px-4 py-3 text-slate-600 max-w-[160px] truncate">{po.vendor_name}</td>
                   <td className="px-4 py-3 text-slate-600">{po.material_code}</td>
                   <td className="px-4 py-3 text-right text-slate-600">{dashDispQty(po, po.po_qty)} {dashDispUnit(po)}</td>
-                  <td className="px-4 py-3 text-right font-bold text-blue-600">{dashDispQty(po, po.remaining_qty ?? (po.po_qty - po.received_qty_cache))} {dashDispUnit(po)}</td>
+                  <td className="px-4 py-3 text-right font-bold text-blue-600">{dashDispQty(po, po.remaining_qty)} {dashDispUnit(po)}</td>
+                  <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{po.created_at ? new Date(po.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—'}</td>
                   <td className="px-4 py-3"><Badge tone={po.status === 'OPEN' ? 'blue' : po.status === 'CANCELLED' ? 'red' : po.status === 'CLOSED' ? 'green' : 'gray'}>{po.status.replace(/_/g, ' ')}</Badge></td>
                   <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
                     {!TERMINAL_PO.includes(po.status) && (
