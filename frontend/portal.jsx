@@ -303,6 +303,7 @@ function POUploadSection({ token }) {
         body: fd,
       });
       const data = await res.json();
+      if (res.status === 422 && data.errors) { setResult(data); return; }
       if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
       setResult(data);
     } catch (e) { setError(e.message || 'Upload failed. Please try again.'); } finally { setUploading(false); }
