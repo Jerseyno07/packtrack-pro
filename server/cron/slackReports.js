@@ -292,60 +292,38 @@ async function sendFCDispatchVsCCGRN() {
     return postSlack(`📦 *FC Dispatch → CC GRN Report*  |  ${dateLabel}\n_No dispatches recorded for today, and no pending items from earlier dates._`);
   }
 
-  // Group by CC facility
-  const byCc = new Map();
-  for (const r of rows) {
-    const key = r.cc_code;
-    if (!byCc.has(key)) byCc.set(key, { cc_name: r.cc_name, cc_code: r.cc_code, fc_name: r.fc_name, fc_code: r.fc_code, lines: [] });
-    byCc.get(key).lines.push(r);
-  }
+  // Crisp summary: headline counts only, full material-level detail moves to the CSV.
+  const todayCcSet = new Set(rows.map((r) => r.cc_code));
+  const todayStatusCounts = {};
+  for (const r of rows) todayStatusCounts[r.status] = (todayStatusCounts[r.status] || 0) + 1;
+  const todaySummary = Object.entries(todayStatusCounts).map(([s, n]) => `${n} ${ISSUE_STATUS_LABEL[s] || s}`).join(' · ');
 
-  let text = `📦 *FC Dispatch → CC GRN Report*  |  ${dateLabel}\n\n`;
-  let csv = 'FC,CC,Material,Unit,Status,Dispatched,Received,Shortage,Pending,Current Stock\n';
-
-  if (rows.length === 0) {
-    text += '_No dispatches recorded for today._\n\n';
-  }
-
-  for (const { cc_name, cc_code, fc_name, fc_code, lines } of byCc.values()) {
-    text += `*${cc_name} (${cc_code})* ← ${fc_name} (${fc_code})\n\`\`\``;
-    text += `${'MATERIAL'.padEnd(14)}${'STATUS'.padEnd(18)}${'DISPATCHED'.padEnd(14)}${'RECEIVED'.padEnd(14)}${'SHORTAGE'.padEnd(12)}${'PENDING'.padEnd(12)}CURR STOCK\n`;
-    for (const r of lines) {
-      const u = displayUnit(r);
-      const cell = (n) => `${fmt(n)} ${u}`.padEnd(14);
-      const cell12 = (n) => `${fmt(n)} ${u}`.padEnd(12);
-      const label = ISSUE_STATUS_LABEL[r.status] || r.status;
-      text += `${r.material_code.padEnd(14)}${label.padEnd(18)}${cell(r.issued_qty)}${cell(r.received_qty)}${cell12(r.shortage_qty)}${cell12(r.pending_qty)}${fmt(r.current_stock)} ${u}\n`;
-      csv += `"${fc_name} (${fc_code})","${cc_name} (${cc_code})","${r.material_code}","${u}","${label}",${r.issued_qty},${r.received_qty},${r.shortage_qty},${r.pending_qty},${r.current_stock}\n`;
-    }
-    text += '```\n';
-  }
+  let text = `📦 *FC Dispatch → CC GRN — ${dateLabel}*\n`;
+  text += rows.length > 0
+    ? `Today: ${rows.length} lines dispatched across ${todayCcSet.size} facilities · ${todaySummary}\n`
+    : `Today: no dispatches recorded.\n`;
 
   if (backlogRows.length > 0) {
-    const byCcBacklog = new Map();
-    for (const r of backlogRows) {
-      const key = r.cc_code;
-      if (!byCcBacklog.has(key)) byCcBacklog.set(key, { cc_name: r.cc_name, cc_code: r.cc_code, fc_name: r.fc_name, fc_code: r.fc_code, lines: [] });
-      byCcBacklog.get(key).lines.push(r);
-    }
-    text += `*Pending from earlier dates:*\n\n`;
-    for (const { cc_name, cc_code, fc_name, fc_code, lines } of byCcBacklog.values()) {
-      text += `*${cc_name} (${cc_code})* ← ${fc_name} (${fc_code})\n\`\`\``;
-      text += `${'MATERIAL'.padEnd(14)}${'STATUS'.padEnd(18)}${'PENDING'.padEnd(14)}SINCE\n`;
-      for (const r of lines) {
-        const u = displayUnit(r);
-        const label = ISSUE_STATUS_LABEL[r.status] || r.status;
-        const since = r.oldest_pending_since;
-        text += `${r.material_code.padEnd(14)}${label.padEnd(18)}${`${fmt(r.pending_qty)} ${u}`.padEnd(14)}${since}\n`;
-      }
-      text += '```\n';
-    }
+    const backlogCcSet = new Set(backlogRows.map((r) => r.cc_code));
+    const oldestSince = backlogRows.reduce((min, r) => (!min || r.oldest_pending_since < min ? r.oldest_pending_since : min), null);
+    text += `Backlog: ${backlogRows.length} lines still pending from earlier dates (oldest since ${oldestSince}) across ${backlogCcSet.size} facilities\n`;
+  }
+
+  text += `\nFull detail attached as CSV.`;
+
+  let csv = 'Bucket,FC,CC,Material,Unit,Status,Dispatched,Received,Shortage,Pending,Current Stock,Pending Since\n';
+  for (const r of rows) {
+    const u = displayUnit(r);
+    const label = ISSUE_STATUS_LABEL[r.status] || r.status;
+    csv += `"Today","${r.fc_name} (${r.fc_code})","${r.cc_name} (${r.cc_code})","${r.material_code}","${u}","${label}",${r.issued_qty},${r.received_qty},${r.shortage_qty},${r.pending_qty},${r.current_stock},\n`;
+  }
+  for (const r of backlogRows) {
+    const u = displayUnit(r);
+    const label = ISSUE_STATUS_LABEL[r.status] || r.status;
+    csv += `"Backlog","${r.fc_name} (${r.fc_code})","${r.cc_name} (${r.cc_code})","${r.material_code}","${u}","${label}",${r.issued_qty},${r.received_qty},${r.shortage_qty},${r.pending_qty},,${r.oldest_pending_since}\n`;
   }
 
   const dateSlug = today.replace(/-/g, '');
-  if (rows.length === 0) {
-    return postSlack(text);
-  }
   await sendReport(text, csv, `fc-dispatch-cc-grn-${dateSlug}.csv`, `FC Dispatch → CC GRN — ${dateLabel}`);
 }
 
@@ -376,23 +354,14 @@ async function sendIndentsUploadedReport() {
     ORDER BY name
   `, [today, BLR_FACILITIES]);
 
-  let text = `📋 *Indents Uploaded — ${dateLabel}*\n\n`;
+  const totalFacilities = uploaded.rows.length + missing.rows.length;
+  const totalLines = uploaded.rows.reduce((sum, r) => sum + r.line_count, 0);
 
-  if (uploaded.rows.length === 0) {
-    text += '_No indents uploaded yet for today._\n\n';
-  } else {
-    for (const r of uploaded.rows) {
-      const uploadTime = new Date(r.first_upload_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
-      text += `*${r.facility_name}* (${r.batch_refs.join(', ')}) — ${r.line_count} lines, ${r.material_count} materials, uploaded ${uploadTime}\n`;
-    }
-    text += '\n';
-  }
+  let text = `📋 *Indents Uploaded — ${dateLabel}*\n`;
+  text += `${missing.rows.length === 0 ? '✅' : '⚠️'} ${uploaded.rows.length}/${totalFacilities} facilities uploaded · ${totalLines} lines total\n`;
 
   if (missing.rows.length > 0) {
-    text += `*Not yet uploaded:*\n`;
-    for (const r of missing.rows) {
-      text += `• ${r.name} (${r.code})\n`;
-    }
+    text += `\n*Not yet uploaded:* ${missing.rows.map((r) => `${r.name} (${r.code})`).join(', ')}`;
   }
 
   return postSlack(text);
@@ -424,32 +393,45 @@ async function sendIndentFulfillmentReport() {
     return postSlack(`📈 *Indent Fulfillment Status*  |  ${dateLabel}\n_No indents found for today._`);
   }
 
+  // Crisp summary: overall + per-facility status counts, only calling out facilities
+  // that actually have Pending/Partial lines. Full material-level detail moves to CSV.
   const byWh = new Map();
+  let totalLines = 0;
+  const overallStatusCounts = {};
   for (const r of rows) {
     const key = r.facility_code;
-    if (!byWh.has(key)) byWh.set(key, { name: r.facility_name, code: r.facility_code, lines: [], statusCounts: {} });
-    const entry = byWh.get(key);
-    entry.lines.push(r);
-    entry.statusCounts[r.status] = (entry.statusCounts[r.status] || 0) + r.line_count;
+    if (!byWh.has(key)) byWh.set(key, { name: r.facility_name, code: r.facility_code, statusCounts: {} });
+    byWh.get(key).statusCounts[r.status] = (byWh.get(key).statusCounts[r.status] || 0) + r.line_count;
+    overallStatusCounts[r.status] = (overallStatusCounts[r.status] || 0) + r.line_count;
+    totalLines += r.line_count;
   }
 
-  let text = `📈 *Indent Fulfillment Status*  |  ${dateLabel}\n\n`;
+  const overallSummary = Object.entries(overallStatusCounts).map(([s, n]) => `${INDENT_STATUS_LABEL[s] || s}: ${n}`).join(' · ');
 
-  for (const { name, code, lines, statusCounts } of byWh.values()) {
-    text += `*${name} (${code})*\n\`\`\``;
-    text += `${'MATERIAL'.padEnd(14)}${'REQUESTED'.padEnd(14)}${'ISSUED'.padEnd(14)}${'PENDING'.padEnd(14)}STATUS\n`;
-    for (const r of lines) {
-      const u = displayUnit(r);
-      const cell = (n) => `${fmt(n)} ${u}`.padEnd(14);
-      const label = INDENT_STATUS_LABEL[r.status] || r.status;
-      text += `${r.material_code.padEnd(14)}${cell(r.requested_qty)}${cell(r.issued_qty)}${cell(r.pending_qty)}${label}\n`;
+  let text = `📈 *Indent Fulfillment Status — ${dateLabel}*\n`;
+  text += `${totalLines} lines across ${byWh.size} facilities: ${overallSummary}\n`;
+
+  const needsAttention = [...byWh.values()].filter((f) => (f.statusCounts.PENDING || 0) > 0 || (f.statusCounts.PARTIALLY_ISSUED || 0) > 0);
+  if (needsAttention.length > 0) {
+    text += `\n*Facilities needing attention:*\n`;
+    for (const f of needsAttention) {
+      const parts = [];
+      if (f.statusCounts.PENDING) parts.push(`${f.statusCounts.PENDING} pending`);
+      if (f.statusCounts.PARTIALLY_ISSUED) parts.push(`${f.statusCounts.PARTIALLY_ISSUED} partial`);
+      text += `• ${f.name} — ${parts.join(', ')}\n`;
     }
-    text += '```\n';
-    const summary = Object.entries(statusCounts).map(([s, n]) => `${INDENT_STATUS_LABEL[s] || s}: ${n}`).join(' · ');
-    text += `_${summary}_\n\n`;
+  }
+  text += `\nFull material-level breakdown attached as CSV.`;
+
+  let csv = 'Facility,Material,Unit,Requested,Issued,Pending,Status\n';
+  for (const r of rows) {
+    const u = displayUnit(r);
+    const label = INDENT_STATUS_LABEL[r.status] || r.status;
+    csv += `"${r.facility_name}","${r.material_code}","${u}",${r.requested_qty},${r.issued_qty},${r.pending_qty},"${label}"\n`;
   }
 
-  return postSlack(text);
+  const dateSlug = today.replace(/-/g, '');
+  await sendReport(text, csv, `indent-fulfillment-${dateSlug}.csv`, `Indent Fulfillment — ${dateLabel}`);
 }
 
 // ── Report 2: Daily Consumption Details (00:15 IST) ──────────────────────────
