@@ -2,3 +2,6 @@ node_modules/
 frontend/dist/
 server/.env
 .DS_Store
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/
