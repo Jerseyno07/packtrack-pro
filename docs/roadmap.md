@@ -21,6 +21,13 @@ Min stock levels are already configured per facility. We should fire an alert (S
 - Alert payload: facility, material, current qty, min threshold, deficit
 - **Effort:** ~2 hrs
 
+### GRN-01 — OCR Invoice Pre-Fill + PDF Upload Fix
+PM Store execs already attach one invoice per GRN (including partial GRNs — already works today). Two gaps found while scoping this:
+- **Bug:** frontend advertises PDF invoice upload but backend `fileFilter` rejects anything non-`image/*` — PDF attach silently fails (`server/index.js:809-812`)
+- **Feature:** let the exec upload just the invoice photo/PDF and have Claude's vision API pre-fill GRN fields (invoice no., date, etc. — kept configurable, field list undecided), fully editable before submit. No LLM integration exists in this codebase today — new capability, follows the existing R2 upload pattern rather than the legacy disk-storage path GRN images currently use
+- Full plan: `~/.claude/plans/in-pm-store-ops-recursive-boot.md`
+- **Effort:** ~1 day (R2 migration + PDF fix + new Anthropic API integration + frontend pre-fill UX)
+
 ### REPORT-01 — Export to CSV/Excel
 Consumption History and Store Stock views have no download option. CC/FC managers copy-paste to WhatsApp or Excel manually.
 - Add a download button to: Consumption History (admin + CC app), Store Stock tab (PM Store Ops), Audit Log
@@ -110,4 +117,4 @@ If other BUs or external clients want to use PackTrack, we'd need data isolation
 
 ---
 
-*Last updated: 2026-07-27*
+*Last updated: 2026-08-19*
