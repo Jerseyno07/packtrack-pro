@@ -152,6 +152,42 @@ async function writeAudit(client, { userId, action, entityTable, entityId, detai
   );
 }
 
+// ── Flash integration — notify when a facility clears all open receiving ──────
+// Push model: whenever a receipt/force-complete closes out the last open dispatch
+// to a facility, tell Flash so they can cache the "clear to GRN" state on their side
+// instead of calling us synchronously on every SKU-GRN attempt.
+// TODO(flash-integration): URL, payload shape, and auth header are placeholders
+// until the Flash team shares their actual API contract — fill in once received.
+function notifyFlashFacilityCleared(facilityCode) {
+  if (!process.env.FLASH_OUTBOUND_URL) return;
+  fetch(process.env.FLASH_OUTBOUND_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(process.env.FLASH_OUTBOUND_API_KEY ? { 'x-api-key': process.env.FLASH_OUTBOUND_API_KEY } : {}),
+    },
+    body: JSON.stringify({ facility_code: facilityCode, cleared_at: new Date().toISOString() }),
+  }).catch(() => {});
+}
+
+// Checks whether `warehouseId` now has zero open dispatches (DISPATCHED/PARTIALLY_RECEIVED)
+// and, if so, fires the Flash notification. Call after COMMIT, with the same client
+// (still open until the caller's `finally` releases it) — errors here must never affect
+// the API response, since the underlying receipt/force-complete already succeeded.
+async function checkAndNotifyFlashIfFacilityClear(client, warehouseId) {
+  try {
+    const r = await client.query(
+      `SELECT w.code,
+              (SELECT COUNT(*) FROM stock_issues si WHERE si.to_warehouse_id = w.id AND si.status IN ('DISPATCHED','PARTIALLY_RECEIVED')) AS open_count
+       FROM warehouses w WHERE w.id = $1`,
+      [warehouseId]
+    );
+    if (r.rows.length && Number(r.rows[0].open_count) === 0) {
+      notifyFlashFacilityCleared(r.rows[0].code);
+    }
+  } catch (_) { /* never block the response on this check */ }
+}
+
 async function postLedgerEntry(client, { warehouseId, materialId, movementType, qtyDelta, unitCost, refTable, refId, movementDate }) {
   await client.query(
     `INSERT INTO stock_ledger (warehouse_id, material_id, movement_type, qty_delta, unit_cost, ref_table, ref_id, movement_date)
@@ -1171,6 +1207,7 @@ app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC
       await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUE_FORCE_COMPLETED', entityTable: 'stock_issues', entityId: issue.id, detail: { reason: d.force_complete_reason, via_receipt: receiptRef } });
     }
     await client.query('COMMIT');
+    await checkAndNotifyFlashIfFacilityClear(client, issue.to_warehouse_id);
     res.status(201).json({ receipt_id: receiptId, receipt_ref: receiptRef, status: d.force_complete_reason ? 'FORCE_COMPLETED' : 'POSTED' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
@@ -1243,6 +1280,7 @@ app.post('/api/v1/stock-issues/:id/force-complete', authenticate, requireRole('C
     );
     await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUE_FORCE_COMPLETED', entityTable: 'stock_issues', entityId: issue.id, detail: { reason: parsed.data.reason } });
     await client.query('COMMIT');
+    await checkAndNotifyFlashIfFacilityClear(client, issue.to_warehouse_id);
     res.json({ ok: true, issue_id: issue.id, status: 'FORCE_COMPLETED' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));

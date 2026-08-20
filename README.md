@@ -260,6 +260,10 @@ SLACK_REPORTS_WEBHOOK=https://hooks.slack.com/... # Daily reports to #packtrack-
 REDASH_API_KEY=your_redash_key
 REDASH_FC_QUERY_ID=your_fc_query_id
 REDASH_CC_QUERY_ID=your_cc_query_id
+
+# Flash integration (leave unset to disable, see "External Integrations" below)
+FLASH_OUTBOUND_URL=https://flash.example.com/api/...
+FLASH_OUTBOUND_API_KEY=your_flash_key
 ```
 
 ---
@@ -317,6 +321,19 @@ The Express server serves the built frontend from `../frontend/dist` as static f
 - `SLACK_ERROR_WEBHOOK` (optional)
 - `SLACK_REPORTS_WEBHOOK` (optional)
 - `REDASH_API_KEY`, `REDASH_FC_QUERY_ID`, `REDASH_CC_QUERY_ID`
+- `FLASH_OUTBOUND_URL`, `FLASH_OUTBOUND_API_KEY` (optional — required only for the Flash integration below)
+
+---
+
+## External Integrations
+
+### Flash — SKU-GRN receiving blocker (push model)
+
+A separate internal app, "Flash," does SKU-level GRN at CC/FC facilities and needs to know whether a facility still has un-received packaging-material dispatches from PM Store before allowing a GRN. Rather than Flash calling PackTrack synchronously on every SKU-GRN attempt (rejected — too much request volume for a real-time check), PackTrack pushes a notification to Flash only when a facility transitions to fully clear, and Flash caches that state on their own side.
+
+**Trigger:** whenever `POST /api/v1/stock-receipts` or `POST /api/v1/stock-issues/:id/force-complete` closes out what turns out to be the last open dispatch (`stock_issues.status IN ('DISPATCHED','PARTIALLY_RECEIVED')`) to a facility, `checkAndNotifyFlashIfFacilityClear()` (`server/index.js`) fires an outbound call to `FLASH_OUTBOUND_URL` with `{ facility_code, cleared_at }`.
+
+**Status: placeholder.** Flash's actual endpoint URL, payload shape, and auth header are not yet defined — `FLASH_OUTBOUND_URL`/`FLASH_OUTBOUND_API_KEY` are wired up and the trigger point is live, but the call is a no-op until `FLASH_OUTBOUND_URL` is set. Update the request in `notifyFlashFacilityCleared()` once Flash shares their API contract.
 
 ---
 
