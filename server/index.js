@@ -158,16 +158,36 @@ async function writeAudit(client, { userId, action, entityTable, entityId, detai
 // instead of calling us synchronously on every SKU-GRN attempt.
 // TODO(flash-integration): URL, payload shape, and auth header are placeholders
 // until the Flash team shares their actual API contract — fill in once received.
-function notifyFlashFacilityCleared(facilityCode) {
+//
+// Every call attempt is logged to audit_log (action FLASH_NOTIFY_CALLED) with the
+// response status/body or error — this is data leaving PackTrack, so every call
+// and its outcome must be traceable, not just fire-and-forget. Logging itself uses
+// `pool` (not the caller's transaction `client`), since this runs detached from the
+// request/transaction lifecycle and must never affect the API response either way.
+async function notifyFlashFacilityCleared(facilityCode, warehouseId) {
   if (!process.env.FLASH_OUTBOUND_URL) return;
-  fetch(process.env.FLASH_OUTBOUND_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(process.env.FLASH_OUTBOUND_API_KEY ? { 'x-api-key': process.env.FLASH_OUTBOUND_API_KEY } : {}),
-    },
-    body: JSON.stringify({ facility_code: facilityCode, cleared_at: new Date().toISOString() }),
-  }).catch(() => {});
+  const payload = { facility_code: facilityCode, cleared_at: new Date().toISOString() };
+  let responseStatus = null, responseBody = null, errorMessage = null;
+  try {
+    const res = await fetch(process.env.FLASH_OUTBOUND_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.FLASH_OUTBOUND_API_KEY ? { 'x-api-key': process.env.FLASH_OUTBOUND_API_KEY } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    responseStatus = res.status;
+    responseBody = (await res.text().catch(() => '')).slice(0, 2000);
+  } catch (e) {
+    errorMessage = e.message;
+  }
+  pool.query(
+    `INSERT INTO audit_log (user_id, action, entity_table, entity_id, detail) VALUES (NULL, $1, $2, $3, $4)`,
+    ['FLASH_NOTIFY_CALLED', 'warehouses', warehouseId || null, JSON.stringify({
+      url: process.env.FLASH_OUTBOUND_URL, payload, response_status: responseStatus, response_body: responseBody, error: errorMessage,
+    })]
+  ).catch(() => {});
 }
 
 // Checks whether `warehouseId` now has zero open dispatches (DISPATCHED/PARTIALLY_RECEIVED)
@@ -183,7 +203,7 @@ async function checkAndNotifyFlashIfFacilityClear(client, warehouseId) {
       [warehouseId]
     );
     if (r.rows.length && Number(r.rows[0].open_count) === 0) {
-      notifyFlashFacilityCleared(r.rows[0].code);
+      notifyFlashFacilityCleared(r.rows[0].code, warehouseId);
     }
   } catch (_) { /* never block the response on this check */ }
 }
