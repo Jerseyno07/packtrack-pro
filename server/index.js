@@ -232,6 +232,19 @@ const authenticate = asyncHandler(async (req, res, next) => {
   next();
 });
 
+// Static API-key auth for inbound machine-to-machine calls (e.g. Flash).
+// Independent of the sessions table — no PackTrack user/role attached to these callers.
+function authenticateService(req, res, next) {
+  const key = req.header('x-api-key');
+  const expected = process.env.FLASH_API_KEY;
+  const keyBuf = Buffer.from(key || '');
+  const expectedBuf = Buffer.from(expected || '');
+  if (!expected || !key || keyBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(keyBuf, expectedBuf)) {
+    throw new ApiError(401, 'UNAUTHORIZED', 'Invalid or missing API key');
+  }
+  next();
+}
+
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) return next(new ApiError(403, 'FORBIDDEN', `Role ${req.user.role} cannot perform this action`));
@@ -1678,6 +1691,30 @@ app.get('/api/v1/warehouses', authenticate, asyncHandler(async (req, res) => {
     `SELECT id, code, name, city, warehouse_type FROM warehouses ${where} ORDER BY name`, params
   );
   res.json({ data: r.rows });
+}));
+
+// ─────────────────────────────────────────────────────────────────────────
+// External integrations (machine-to-machine, no PackTrack session)
+// ─────────────────────────────────────────────────────────────────────────
+
+app.get('/api/v1/external/receiving-status', authenticateService, asyncHandler(async (req, res) => {
+  const { facility_code } = req.query;
+  if (!facility_code) throw new ApiError(400, 'VALIDATION_ERROR', 'facility_code is required');
+
+  const whRes = await pool.query('SELECT id FROM warehouses WHERE code = $1 AND is_active', [facility_code]);
+  if (!whRes.rows.length) throw new ApiError(404, 'FACILITY_NOT_FOUND', `No active facility with code ${facility_code}`);
+
+  const r = await pool.query(
+    `SELECT COUNT(*) AS open_count
+     FROM stock_issues si
+     JOIN warehouses tw ON tw.id = si.to_warehouse_id
+     WHERE tw.code = $1
+       AND tw.is_active
+       AND si.status IN ('DISPATCHED', 'PARTIALLY_RECEIVED')`,
+    [facility_code]
+  );
+  const openCount = Number(r.rows[0].open_count);
+  res.json({ facility_code, blocked: openCount > 0, open_dispatch_count: openCount });
 }));
 
 app.get('/api/v1/materials', authenticate, asyncHandler(async (req, res) => {
