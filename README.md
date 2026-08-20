@@ -260,30 +260,7 @@ SLACK_REPORTS_WEBHOOK=https://hooks.slack.com/... # Daily reports to #packtrack-
 REDASH_API_KEY=your_redash_key
 REDASH_FC_QUERY_ID=your_fc_query_id
 REDASH_CC_QUERY_ID=your_cc_query_id
-
-# Flash integration (leave unset to disable, see "External Integrations" below)
-FLASH_API_KEY=your_generated_key
 ```
-
----
-
-## External Integrations
-
-### Flash — SKU-GRN receiving blocker
-
-`GET /api/v1/external/receiving-status?facility_code=<code>` — machine-to-machine endpoint (no PackTrack session/role) that "Flash," the separate SKU-level GRN app, calls before allowing a CC/FC to GRN a SKU. It blocks GRN if that facility still has un-received packaging-material dispatches from PM Store.
-
-**Auth:** static API key, sent as header `x-api-key: <FLASH_API_KEY>`. Not tied to any PackTrack user — rotate by changing the `FLASH_API_KEY` env var and redeploying.
-
-**Request:** `facility_code` = the facility's `warehouses.code` (works for both CC and FC warehouses).
-
-**Response:**
-```json
-{ "facility_code": "9924", "blocked": true, "open_dispatch_count": 3 }
-```
-`blocked` is true when the facility has any `stock_issues` in `DISPATCHED` or `PARTIALLY_RECEIVED` status (no date filter — a stale backlog dispatch still blocks). `FORCE_COMPLETED` and `CANCELLED` dispatches count as resolved and don't block.
-
-**Errors:** `401` on missing/invalid `x-api-key`; `404` if `facility_code` doesn't resolve to an active warehouse; `400` if `facility_code` is missing.
 
 ---
 
@@ -340,7 +317,6 @@ The Express server serves the built frontend from `../frontend/dist` as static f
 - `SLACK_ERROR_WEBHOOK` (optional)
 - `SLACK_REPORTS_WEBHOOK` (optional)
 - `REDASH_API_KEY`, `REDASH_FC_QUERY_ID`, `REDASH_CC_QUERY_ID`
-- `FLASH_API_KEY` (optional — required only for the Flash receiving-status integration)
 
 ---
 
