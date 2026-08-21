@@ -156,8 +156,9 @@ async function writeAudit(client, { userId, action, entityTable, entityId, detai
 // Push model: whenever a receipt/force-complete closes out the last open dispatch
 // to a facility, tell Flash so they can cache the "clear to GRN" state on their side
 // instead of calling us synchronously on every SKU-GRN attempt.
-// TODO(flash-integration): URL, payload shape, and auth header are placeholders
-// until the Flash team shares their actual API contract — fill in once received.
+// Endpoint contract (POST {facilityId, deliveryDate, keyParam: 'GRN_ALLOWED', valueParam: '1'},
+// HTTP Basic auth) confirmed by the Flash team 2026-08-21 — see FLASH_OUTBOUND_URL /
+// FLASH_OUTBOUND_USERNAME / FLASH_OUTBOUND_PASSWORD in .env.example.
 //
 // Every call attempt is logged to audit_log (action FLASH_NOTIFY_CALLED) with the
 // response status/body or error — this is data leaving PackTrack, so every call
@@ -166,14 +167,25 @@ async function writeAudit(client, { userId, action, entityTable, entityId, detai
 // request/transaction lifecycle and must never affect the API response either way.
 async function notifyFlashFacilityCleared(facilityCode, warehouseId) {
   if (!process.env.FLASH_OUTBOUND_URL) return;
-  const payload = { facility_code: facilityCode, cleared_at: new Date().toISOString() };
+  // Flash's contract: facilityId is numeric (their Flipkart facility id, same value as our
+  // warehouses.code for these facilities), deliveryDate is the IST calendar date (server runs
+  // in UTC — see CLAUDE.md's IST-offset rule), keyParam/valueParam are a fixed pair per Flash's spec.
+  const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  const payload = {
+    facilityId: Number(facilityCode),
+    deliveryDate: nowIst.toISOString().slice(0, 10),
+    keyParam: 'GRN_ALLOWED',
+    valueParam: '1',
+  };
   let responseStatus = null, responseBody = null, errorMessage = null;
   try {
     const res = await fetch(process.env.FLASH_OUTBOUND_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(process.env.FLASH_OUTBOUND_API_KEY ? { 'x-api-key': process.env.FLASH_OUTBOUND_API_KEY } : {}),
+        ...(process.env.FLASH_OUTBOUND_USERNAME && process.env.FLASH_OUTBOUND_PASSWORD
+          ? { 'Authorization': `Basic ${Buffer.from(`${process.env.FLASH_OUTBOUND_USERNAME}:${process.env.FLASH_OUTBOUND_PASSWORD}`).toString('base64')}` }
+          : {}),
       },
       body: JSON.stringify(payload),
     });
