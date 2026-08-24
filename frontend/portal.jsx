@@ -714,6 +714,38 @@ function AdminPanel({ token, tabOverride }) {
     }
   }, [tab]);
 
+  const [transitRows, setTransitRows] = useState([]);
+  const [transitLoading, setTransitLoading] = useState(false);
+  const [transitFrom, setTransitFrom] = useState(thirtyDaysAgo);
+  const [transitTo, setTransitTo] = useState(today);
+  const [transitFacility, setTransitFacility] = useState('');
+  const [transitWarehouses, setTransitWarehouses] = useState([]);
+
+  const fetchTransitDiff = useCallback(async () => {
+    setTransitLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (transitFrom) params.set('date_from', transitFrom);
+      if (transitTo) params.set('date_to', transitTo);
+      if (transitFacility) params.set('to_warehouse_id', transitFacility);
+      const res = await fetch(`${BASE_URL}/api/v1/admin/transit-differences?${params}`, { headers: hdrs });
+      const data = await res.json();
+      setTransitRows(data.data ?? []);
+    } catch (_) {}
+    finally { setTransitLoading(false); }
+  }, [transitFrom, transitTo, transitFacility, token]);
+
+  useEffect(() => {
+    if (tab !== 'transit-diff') return;
+    fetchTransitDiff();
+    if (transitWarehouses.length === 0) {
+      fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs })
+        .then((r) => r.json())
+        .then((d) => setTransitWarehouses((d.data ?? d).filter((w) => w.type !== 'PM_STORE').sort((a, b) => a.name.localeCompare(b.name))))
+        .catch(() => {});
+    }
+  }, [tab]);
+
   const [mslWarehouses, setMslWarehouses] = useState([]);
   const [mslMaterials, setMslMaterials] = useState([]);
   const [mslLevels, setMslLevels] = useState({});
@@ -1063,6 +1095,7 @@ function AdminPanel({ token, tabOverride }) {
   const TABS = [
     { id: 'pos', label: 'Purchase Orders' },
     { id: 'issues', label: 'Stock Issues' },
+    { id: 'transit-diff', label: 'Transit Difference' },
     { id: 'stock', label: 'Current Stock' },
     { id: 'audit', label: 'Audit Log' },
     { id: 'materials', label: 'Materials' },
@@ -1263,6 +1296,93 @@ function AdminPanel({ token, tabOverride }) {
             </table>
           </div>
           <p className="text-xs text-slate-400 text-right">{issueRows.length} record{issueRows.length !== 1 ? 's' : ''}</p>
+        </div>
+      )}
+
+      {tab === 'transit-diff' && (
+        <div className="space-y-3">
+          {/* Filters */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">From</label>
+              <input type="date" value={transitFrom} onChange={(e) => setTransitFrom(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">To</label>
+              <input type="date" value={transitTo} onChange={(e) => setTransitTo(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Facility</label>
+              <select value={transitFacility} onChange={(e) => setTransitFacility(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                <option value="">All Facilities</option>
+                {transitWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name} ({w.code})</option>
+                ))}
+              </select>
+            </div>
+            <button onClick={fetchTransitDiff} disabled={transitLoading}
+              className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-60">
+              <RefreshCw size={14} className={transitLoading ? 'animate-spin' : ''} /> Apply
+            </button>
+            <button
+              onClick={() => downloadCSV(
+                `transit-differences-${transitFrom}-to-${transitTo}.csv`,
+                [
+                  ['Issue Ref', 'Material Code', 'Material Name', 'From Facility', 'To Facility', 'Issued Qty', 'Received Qty', 'Shortage Qty', 'Damage Qty', 'Delta', 'Unit', 'Issue Date', 'Status', 'Force Complete Reason', 'Indent Ref'],
+                  ...transitRows.map((si) => [si.issue_ref, si.material_code, si.material_name, si.from_warehouse_name, si.to_warehouse_name, dashDispQty(si, si.issued_qty), dashDispQty(si, si.received_qty_sum), dashDispQty(si, si.shortage_qty_sum), dashDispQty(si, si.damage_qty_sum), dashDispQty(si, si.delta_qty), dashDispUnit(si), si.issue_date, issueStatusLabel(si), si.force_complete_reason ?? '', si.indent_ref]),
+                ]
+              )}
+              disabled={transitRows.length === 0}
+              className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 disabled:opacity-40">
+              <Download size={14} /> Export CSV
+            </button>
+          </div>
+
+          {/* Table */}
+          <div data-tour="transit-diff-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm min-w-[820px]">
+              <thead className="bg-slate-50 text-slate-500 text-xs">
+                <tr>
+                  <th className="text-left px-4 py-2.5">Issue Ref</th>
+                  <th className="text-left px-4 py-2.5">SKU</th>
+                  <th className="text-left px-4 py-2.5">From → To</th>
+                  <th className="text-right px-4 py-2.5">Issued Qty</th>
+                  <th className="text-right px-4 py-2.5">Received Qty</th>
+                  <th className="text-right px-4 py-2.5">Delta</th>
+                  <th className="text-left px-4 py-2.5">Date</th>
+                  <th className="text-left px-4 py-2.5">Status</th>
+                  <th className="text-left px-4 py-2.5">Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {transitLoading && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</td></tr>}
+                {!transitLoading && transitRows.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No transit differences for the selected filters — every closed dispatch was fully accounted for.</td></tr>}
+                {!transitLoading && transitRows.map((si) => (
+                  <tr key={si.id} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-3 font-medium text-slate-800">{si.issue_ref}</td>
+                    <td className="px-4 py-3 text-slate-600">{si.material_code}</td>
+                    <td className="px-4 py-3 text-slate-500 text-xs">{si.from_warehouse_name} → {si.to_warehouse_name}</td>
+                    <td className="px-4 py-3 text-right font-bold text-slate-800">
+                      {dashDispQty(si, si.issued_qty)} {dashDispUnit(si)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-slate-600">
+                      {Number(si.received_qty_sum) > 0 ? `${dashDispQty(si, si.received_qty_sum)} ${dashDispUnit(si)}` : '—'}
+                    </td>
+                    <td className={`px-4 py-3 text-right font-bold ${Number(si.delta_qty) > 0 ? 'text-red-600' : 'text-amber-600'}`}>
+                      {Number(si.delta_qty) > 0 ? '−' : '+'}{dashDispQty(si, Math.abs(si.delta_qty))} {dashDispUnit(si)}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">{si.issue_date?.slice(0, 10)}</td>
+                    <td className="px-4 py-3"><Badge tone={issueStatusTone(si)}>{issueStatusLabel(si)}</Badge></td>
+                    <td className="px-4 py-3 text-slate-500 text-xs max-w-[220px] truncate" title={si.force_complete_reason || ''}>{si.force_complete_reason || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-slate-400 text-right">{transitRows.length} discrepanc{transitRows.length !== 1 ? 'ies' : 'y'}</p>
         </div>
       )}
 
@@ -2517,11 +2637,12 @@ export default function App() {
             { target: 'po-upload-btn', title: 'Upload Purchase Orders', body: 'After filling the CSV, upload it here. A single po_no can span multiple rows — one row per material under the same PO number.' },
             { target: 'ledger-filter', title: 'Stock Ledger', body: 'View all stock movements for any facility — GRNs, dispatches, consumption, and adjustments. Select a facility and date range, then hit View. Use Export to download the results as CSV.', onEnter: () => setSection('ledger') },
             { target: 'downloads-section', title: 'Downloads', body: 'Every indent and PO file uploaded to the system is stored here. Click Download on any row to get a fresh pre-signed link — links expire after 1 hour.', onEnter: () => setSection('downloads') },
-            { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 10 tabs: Purchase Orders, Stock Issues, Current Stock, Audit Log, Materials, SKU Master, Consumption Runs, Consumption History, Min Stock Levels, and Users.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
+            { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 11 tabs: Purchase Orders, Stock Issues, Transit Difference, Current Stock, Audit Log, Materials, SKU Master, Consumption Runs, Consumption History, Min Stock Levels, and Users.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
             { target: 'admin-refresh', title: 'Refresh', body: 'Re-fetches all data from the server without a full page reload. Use this after making changes in another session.' },
             { target: 'po-filter', title: 'Active / All Toggle', body: 'Active shows only open and partially received POs. Switch to All to include closed, cancelled, and force-completed POs too.', onEnter: () => setAdminTabForTour('pos') },
             { target: 'po-table', title: 'Purchase Orders Table', body: 'Each row is a PO line. The Cancel button withdraws an active PO; Reverse Force Complete (visible on force-completed POs) undoes an accidental close — both require a written reason.' },
             { target: 'issues-table', title: 'Stock Issues', body: 'Every dispatch from the PM Store to an FC or CC facility appears here. The Cancel button removes a pending dispatch before it is received at the destination.', onEnter: () => setAdminTabForTour('issues') },
+            { target: 'transit-diff-table', title: 'Transit Difference', body: 'Flags dispatches that closed (fully received or force-completed) with a mismatch between what was issued and what was actually accounted for at the destination. Red = short-received, amber = over-received. Only closed dispatches appear here — an in-progress one might still be topped up.', onEnter: () => setAdminTabForTour('transit-diff') },
             { target: 'audit-pagination', title: 'Audit Log', body: 'Every system action is recorded here — GRNs, force completes, password resets, cancellations. Use Prev and Next to page through 50 records at a time.', onEnter: () => setAdminTabForTour('audit') },
             { target: 'sku-section', title: 'SKU Packaging Master', body: 'Maps each FSN (Ninjacart product code) to its packaging materials. The daily consumption scraper uses this mapping to deduct PM stock when units are packed at FC/CC.', onEnter: () => setAdminTabForTour('sku') },
             { target: 'sku-sample', title: 'Download SKU Sample', body: 'Download the sample to see required columns: FSN ID, SKU Name, Packing Material, plus optional secondary/tertiary columns for multi-material SKUs.' },

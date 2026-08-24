@@ -1168,6 +1168,40 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   res.json({ data: result.rows });
 }));
 
+// Discrepancy report: dispatches that finished (RECEIVED or FORCE_COMPLETED) with a
+// nonzero gap between what was issued and what was actually accounted for at the
+// destination (received + shortage + damage). Open dispatches (DISPATCHED /
+// PARTIALLY_RECEIVED) are excluded on purpose — the gap there isn't final yet, it may
+// still be topped up by a later receipt.
+app.get('/api/v1/admin/transit-differences', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { to_warehouse_id, date_from, date_to } = req.query;
+  const conditions = [`si.status IN ('RECEIVED','FORCE_COMPLETED')`, `(si.issued_qty - COALESCE(r.accounted_qty,0)) != 0`];
+  const params = [];
+  if (to_warehouse_id) { params.push(to_warehouse_id); conditions.push(`si.to_warehouse_id = $${params.length}`); }
+  if (date_from) { params.push(date_from); conditions.push(`si.issue_date >= $${params.length}`); }
+  if (date_to) { params.push(date_to); conditions.push(`si.issue_date <= $${params.length}`); }
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const result = await pool.query(
+    `SELECT si.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
+            fw.name AS from_warehouse_name, tw.name AS to_warehouse_name, il.indent_ref, il.requested_qty,
+            COALESCE(r.received_qty_sum,0) AS received_qty_sum, COALESCE(r.shortage_qty_sum,0) AS shortage_qty_sum,
+            COALESCE(r.damage_qty_sum,0) AS damage_qty_sum, COALESCE(r.accounted_qty,0) AS accounted_qty,
+            (si.issued_qty - COALESCE(r.accounted_qty,0)) AS delta_qty
+     FROM stock_issues si
+     JOIN materials m ON m.id = si.material_id
+     JOIN warehouses fw ON fw.id = si.from_warehouse_id
+     JOIN warehouses tw ON tw.id = si.to_warehouse_id
+     JOIN indent_lines il ON il.id = si.indent_line_id
+     LEFT JOIN LATERAL (
+       SELECT SUM(sr.received_qty) AS received_qty_sum, SUM(sr.shortage_qty) AS shortage_qty_sum,
+              SUM(sr.damage_qty) AS damage_qty_sum, SUM(sr.received_qty + sr.shortage_qty + sr.damage_qty) AS accounted_qty
+       FROM stock_receipts sr WHERE sr.stock_issue_id = si.id
+     ) r ON true
+     ${where} ORDER BY si.issue_date DESC`, params
+  );
+  res.json({ data: result.rows });
+}));
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE 5: RECEIVE ISSUED STOCK AT CC/FC
 // ═══════════════════════════════════════════════════════════════════════════
