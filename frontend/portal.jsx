@@ -21,50 +21,7 @@ function downloadCSV(filename, rows) {
 //        -> GET /api/v1/dashboard/indents-to-process
 //        -> GET /api/v1/dashboard/po-schedule
 //        -> GET /api/v1/dashboard/low-stock-alerts
-//
-// This artifact uses mock data/login so you can click through the full flow.
-// Replace MOCK_API calls with real fetch() against your Express server —
-// request/response shapes match the API built alongside this portal exactly.
 // ═══════════════════════════════════════════════════════════════════════════
-
-const MOCK_USERS = {
-  'pmstore@packtrack.local': { password: 'demo1234', name: 'Kiran Kumar', role: 'PM_STORE_EXEC' },
-  'ccexec@packtrack.local': { password: 'demo1234', name: 'Jagadish H', role: 'CC_EXEC' },
-  'admin@packtrack.local': { password: 'demo1234', name: 'Admin', role: 'ADMIN' },
-};
-
-const MOCK_INDENT_TO_PROCESS = [
-  { warehouse_name: 'Bangalore CC', material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', unit: 'Pcs', total_requested: 800, total_issued: 300, pending_qty: 500, line_count: 3 },
-  { warehouse_name: 'Bangalore CC', material_code: 'NTRLL-01', material_name: 'Net Roll', unit: 'Roll', total_requested: 60, total_issued: 0, pending_qty: 60, line_count: 1 },
-  { warehouse_name: 'Bangalore FC', material_code: 'WXRB-01', material_name: 'Wax Ribbon', unit: 'Roll', total_requested: 20, total_issued: 14, pending_qty: 6, line_count: 2 },
-];
-
-const MOCK_PO_SCHEDULE = [
-  { po_no: 'PO-2026-0091', vendor_name: 'Shree Plastics Pvt Ltd', material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', warehouse_name: 'Central PM Store — Bangalore', po_qty: 2000, received_qty_cache: 0, remaining_qty: 2000, expected_delivery: '2026-07-02', status: 'OPEN' },
-  { po_no: 'PO-2026-0092', vendor_name: 'Karnataka Packaging Co', material_code: 'NTRLL-01', material_name: 'Net Roll', warehouse_name: 'Central PM Store — Bangalore', po_qty: 150, received_qty_cache: 50, remaining_qty: 100, expected_delivery: '2026-06-30', status: 'PARTIALLY_RECEIVED' },
-];
-
-const MOCK_LOW_STOCK = [
-  { warehouse_name: 'Bangalore CC', warehouse_type: 'CC', material_code: 'WXRB-01', material_name: 'Wax Ribbon', on_hand_qty: 4, min_qty: 10 },
-  { warehouse_name: 'Bangalore FC', warehouse_type: 'FC', material_code: 'LDPE-06', material_name: 'LDPE Cover 6 Kg', on_hand_qty: 60, min_qty: 100 },
-];
-
-const MOCK_API = {
-  async login(email, password) {
-    await new Promise((r) => setTimeout(r, 400));
-    const u = MOCK_USERS[email];
-    if (!u || u.password !== password) throw new Error('Invalid email or password');
-    return { token: 'mock-token', user: { name: u.name, role: u.role, email } };
-  },
-  async uploadIndent(file, indentDate) {
-    await new Promise((r) => setTimeout(r, 700));
-    return { batch_ref: 'INDB-2026-7F2A', status: 'VALIDATED', total_rows: 14, valid_rows: 13, error_rows: 1, errors: [{ row: 9, error: "Unknown sku_code 'XYZ-99'" }] };
-  },
-  async uploadPO(file) {
-    await new Promise((r) => setTimeout(r, 700));
-    return { batch_ref: 'POB-2026-9C1D', status: 'VALIDATED', total_rows: 8, valid_rows: 8, error_rows: 0, errors: [] };
-  },
-};
 
 function Badge({ children, tone = 'gray' }) {
   const tones = { gray: 'bg-slate-100 text-slate-600', blue: 'bg-blue-100 text-blue-700', amber: 'bg-amber-100 text-amber-700', green: 'bg-green-100 text-green-700', red: 'bg-red-100 text-red-700' };
