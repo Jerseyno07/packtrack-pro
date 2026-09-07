@@ -1250,7 +1250,17 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   const { to_warehouse_id, status, date_from, date_to } = req.query;
   const conditions = []; const params = [];
   if (to_warehouse_id) { params.push(to_warehouse_id); conditions.push(`si.to_warehouse_id = $${params.length}`); }
-  if (status) { params.push(status); conditions.push(`si.status = $${params.length}`); }
+  if (status) {
+    // Accept a comma-separated list of statuses (e.g. "DISPATCHED,PARTIALLY_RECEIVED")
+    // as well as a single value -- was previously `si.status = $N` with the raw
+    // string, which threw a Postgres enum-cast error for any comma-separated value.
+    // Bug pre-dates Stock Transfer but was only ever exercised once
+    // IncomingTransfersScreen started calling listPendingIssues() with a real
+    // comma-separated status filter.
+    const statuses = status.split(',').map((s) => s.trim()).filter(Boolean);
+    const placeholders = statuses.map((s) => { params.push(s); return `$${params.length}`; }).join(',');
+    conditions.push(`si.status IN (${placeholders})`);
+  }
   if (date_from) { params.push(date_from); conditions.push(`si.issue_date >= $${params.length}`); }
   if (date_to) { params.push(date_to); conditions.push(`si.issue_date <= $${params.length}`); }
   if (['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP'].includes(req.user.role)) {
