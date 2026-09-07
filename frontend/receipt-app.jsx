@@ -25,6 +25,7 @@ function useInstallPrompt() {
 }
 import AuditScreen from './AuditScreen.jsx';
 import TourOverlay from './TourOverlay.jsx';
+import TransferSendScreen from './TransferSendScreen.jsx';
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 
@@ -69,6 +70,9 @@ function api(token) {
     confirmReceipt: (payload) => request('POST', '/api/v1/stock-receipts', payload),
     forceComplete: (issueId, reason) =>
       request('POST', `/api/v1/stock-issues/${issueId}/force-complete`, { reason }),
+    listWarehouses: () => request('GET', '/api/v1/warehouses'),
+    listMaterials: () => request('GET', '/api/v1/materials'),
+    createTransfer: (payload) => request('POST', '/api/v1/stock-issues/transfer', payload),
   };
 }
 
@@ -187,7 +191,7 @@ function IssueListItem({ issue, onSelect }) {
         </div>
         <div className="text-xs text-slate-500">{issue.issue_ref} · from {issue.from_warehouse_name}</div>
         <div className="text-xs text-slate-400 mt-0.5">
-          Indent {issue.indent_ref} · {issue.issue_date?.slice(0, 10)}
+          {issue.indent_ref ? `Indent ${issue.indent_ref}` : 'Direct Transfer'} · {issue.issue_date?.slice(0, 10)}
           {issue.created_at && ` · ${new Date(issue.created_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}`}
         </div>
       </div>
@@ -600,6 +604,8 @@ export default function ReceiptApp() {
 
   if (!token) return <LoginScreen onLogin={handleLogin} />;
 
+  const client = api(token);
+
   return (
     <div className="min-h-screen bg-slate-50 max-w-md mx-auto">
       <div className="bg-white border-b border-slate-200 px-4 py-4 sticky top-0 z-10">
@@ -620,11 +626,12 @@ export default function ReceiptApp() {
       </div>
 
       {/* Tab bar */}
-      <div data-tour="receipt-tabs" className="flex gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
-        <button onClick={() => setTab('receive')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
-        <button onClick={() => setTab('stock')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>My Stock</button>
-        <button onClick={() => setTab('consumption')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'consumption' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Consumption</button>
-        <button onClick={() => setTab('audit')} className={`flex-1 py-3 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
+      <div data-tour="receipt-tabs" className="flex flex-wrap gap-1 bg-slate-100 rounded-lg p-1 mx-4 mt-3">
+        <button onClick={() => setTab('receive')} className={`flex-1 min-w-[70px] py-3 rounded-md text-sm font-medium ${tab === 'receive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Receive</button>
+        <button onClick={() => setTab('send')} className={`flex-1 min-w-[70px] py-3 rounded-md text-sm font-medium ${tab === 'send' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Send</button>
+        <button onClick={() => setTab('stock')} className={`flex-1 min-w-[70px] py-3 rounded-md text-sm font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>My Stock</button>
+        <button onClick={() => setTab('consumption')} className={`flex-1 min-w-[70px] py-3 rounded-md text-sm font-medium ${tab === 'consumption' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Consumption</button>
+        <button onClick={() => setTab('audit')} className={`flex-1 min-w-[70px] py-3 rounded-md text-sm font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
       </div>
 
       <div className="p-4 space-y-3">
@@ -634,6 +641,8 @@ export default function ReceiptApp() {
           <ConsumptionHistory token={token} warehouseIds={user?.warehouse_ids} />
         ) : tab === 'stock' ? (
           <StockView token={token} warehouseId={user?.warehouse_ids?.[0]} />
+        ) : tab === 'send' ? (
+          <TransferSendScreen api={client} sourceWarehouseId={user?.warehouse_ids?.[0]} />
         ) : successInfo ? (
           <SuccessScreen receiptInfo={successInfo} onDone={() => { setSuccessInfo(null); setSelected(null); refresh(); }} />
         ) : selected ? (

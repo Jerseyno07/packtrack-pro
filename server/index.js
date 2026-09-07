@@ -1150,6 +1150,102 @@ app.post('/api/v1/stock-issues/adhoc', authenticate, requireRole('PM_STORE_EXEC'
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
+// Stock Transfer: direct facility-to-facility movement with no indent, for
+// PM<->PM, CC/FC<->CC/FC, and CC/FC->PM Store. Deliberately separate from
+// the Adhoc route above (which stays PM Store -> CC/FC only) — this route
+// must never allow PM -> CC/FC, since that has to keep going through an
+// indent (or Adhoc) or it defeats the purpose of indents entirely.
+app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const transferSchema = z.object({
+    from_warehouse_id: z.coerce.number().int().positive(),
+    to_warehouse_id: z.coerce.number().int().positive(),
+    issue_date: z.string().min(1),
+    vehicle_no: z.string().optional(),
+    items: z.array(z.object({
+      material_id: z.coerce.number().int().positive(),
+      issued_qty: z.coerce.number().positive(),
+    })).min(1),
+  });
+  const parsed = transferSchema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid transfer payload', parsed.error.issues);
+  const { from_warehouse_id, to_warehouse_id, issue_date, vehicle_no, items } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Source-facility ownership: a non-ADMIN can only transfer from a facility
+    // they're mapped to. Note ADMIN must be bypassed explicitly here, not
+    // relied on via warehouse_ids — at login (see the /auth/login handler)
+    // an ADMIN with no user_warehouses rows gets warehouse_ids defaulted to
+    // all active PM_STORE ids only, not "all warehouses". Without this
+    // explicit bypass an ADMIN transferring from a CC/FC would be wrongly
+    // rejected.
+    if (req.user.role !== 'ADMIN') {
+      const allowedIds = req.user.warehouse_ids.map(String);
+      if (!allowedIds.includes(String(from_warehouse_id))) {
+        throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to the source warehouse for this transfer');
+      }
+    }
+
+    const whRes = await client.query('SELECT id, warehouse_type FROM warehouses WHERE id = ANY($1)', [[from_warehouse_id, to_warehouse_id]]);
+    const whMap = new Map(whRes.rows.map((r) => [Number(r.id), r]));
+    const fromWh = whMap.get(from_warehouse_id);
+    const toWh = whMap.get(to_warehouse_id);
+    if (!fromWh) throw new ApiError(404, 'WAREHOUSE_NOT_FOUND', `Warehouse ${from_warehouse_id} not found`);
+    if (!toWh) throw new ApiError(404, 'WAREHOUSE_NOT_FOUND', `Warehouse ${to_warehouse_id} not found`);
+    if (from_warehouse_id === to_warehouse_id) throw new ApiError(422, 'INVALID_DEST', 'Source and destination warehouse cannot be the same');
+    if (fromWh.warehouse_type === 'PM_STORE' && toWh.warehouse_type !== 'PM_STORE') {
+      throw new ApiError(422, 'INVALID_DEST', 'PM Store can only transfer to another PM Store via Stock Transfer — use an indent or Adhoc dispatch for PM Store to CC/FC movement');
+    }
+
+    const materialIds = items.map((i) => i.material_id);
+    const matsRes = await client.query('SELECT id, code, unit FROM materials WHERE id = ANY($1)', [materialIds]);
+    const matMap = new Map(matsRes.rows.map((r) => [Number(r.id), r]));
+    for (const item of items) {
+      if (!matMap.get(item.material_id)) throw new ApiError(404, 'MATERIAL_NOT_FOUND', `Material ${item.material_id} not found`);
+    }
+
+    const materialTotals = new Map();
+    for (const item of items) materialTotals.set(item.material_id, (materialTotals.get(item.material_id) || 0) + item.issued_qty);
+
+    for (const [materialId, totalQty] of materialTotals) {
+      const onHand = await getOnHandQty(client, from_warehouse_id, materialId);
+      if (totalQty > onHand) {
+        const mat = matMap.get(materialId);
+        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${mat.code}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
+      }
+    }
+
+    const avgCosts = new Map();
+    for (const materialId of materialTotals.keys()) {
+      const costRes = await client.query(
+        `SELECT COALESCE(SUM(qty_delta*unit_cost),0) / NULLIF(SUM(CASE WHEN qty_delta>0 THEN qty_delta ELSE 0 END),0) AS avg_cost FROM stock_ledger WHERE warehouse_id=$1 AND material_id=$2`,
+        [from_warehouse_id, materialId]
+      );
+      avgCosts.set(materialId, Number(costRes.rows[0].avg_cost || 0));
+    }
+
+    const issueRefs = [];
+    for (const item of items) {
+      const unitCost = avgCosts.get(item.material_id);
+      const issueRef = genRef('ISS');
+      const issueIns = await client.query(
+        `INSERT INTO stock_issues (issue_ref, indent_line_id, from_warehouse_id, to_warehouse_id, material_id, issued_qty, expected_qty, unit_cost_snapshot, issue_date, dispatched_by_user_id, vehicle_no)
+         VALUES ($1,NULL,$2,$3,$4,$5,$5,$6,$7,$8,$9) RETURNING id`,
+        [issueRef, from_warehouse_id, to_warehouse_id, item.material_id, item.issued_qty, unitCost, issue_date, req.user.id, vehicle_no || null]
+      );
+      const issueId = issueIns.rows[0].id;
+      await postLedgerEntry(client, { warehouseId: from_warehouse_id, materialId: item.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
+      await writeAudit(client, { userId: req.user.id, action: 'STOCK_TRANSFER_DISPATCHED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, material_id: item.material_id, qty: item.issued_qty, from_warehouse_id, to_warehouse_id } });
+      issueRefs.push(issueRef);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
 app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
   const { to_warehouse_id, status, date_from, date_to } = req.query;
   const conditions = []; const params = [];
@@ -1168,7 +1264,7 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
             COALESCE((SELECT SUM(received_qty) FROM stock_receipts sr WHERE sr.stock_issue_id = si.id),0) AS received_qty_sum,
             (si.issued_qty - COALESCE((SELECT SUM(received_qty+shortage_qty+damage_qty) FROM stock_receipts sr WHERE sr.stock_issue_id = si.id),0)) AS pending_qty
      FROM stock_issues si JOIN materials m ON m.id = si.material_id JOIN warehouses fw ON fw.id = si.from_warehouse_id
-     JOIN warehouses tw ON tw.id = si.to_warehouse_id JOIN indent_lines il ON il.id = si.indent_line_id
+     JOIN warehouses tw ON tw.id = si.to_warehouse_id LEFT JOIN indent_lines il ON il.id = si.indent_line_id
      ${where} ORDER BY si.issue_date DESC`, params
   );
   res.json({ data: result.rows });
@@ -1197,7 +1293,7 @@ app.get('/api/v1/admin/transit-differences', authenticate, requireRole('ADMIN'),
      JOIN materials m ON m.id = si.material_id
      JOIN warehouses fw ON fw.id = si.from_warehouse_id
      JOIN warehouses tw ON tw.id = si.to_warehouse_id
-     JOIN indent_lines il ON il.id = si.indent_line_id
+     LEFT JOIN indent_lines il ON il.id = si.indent_line_id
      LEFT JOIN LATERAL (
        SELECT SUM(sr.received_qty) AS received_qty_sum, SUM(sr.shortage_qty) AS shortage_qty_sum,
               SUM(sr.damage_qty) AS damage_qty_sum, SUM(sr.received_qty + sr.shortage_qty + sr.damage_qty) AS accounted_qty
@@ -1232,7 +1328,7 @@ app.get('/api/v1/stock-issues/:id/receipt-defaults', authenticate, asyncHandler(
   res.json({ expected_qty: expectedQty, suggested_received_qty: expectedQty });
 }));
 
-app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
+app.post('/api/v1/stock-receipts', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
   const parsed = receiptSchema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid receipt payload', parsed.error.issues);
   const d = parsed.data;
@@ -1333,7 +1429,7 @@ app.post('/api/v1/indent-lines/:id/force-complete', authenticate, requireRole('P
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
-app.post('/api/v1/stock-issues/:id/force-complete', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
+app.post('/api/v1/stock-issues/:id/force-complete', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
   const parsed = forceCompleteSchema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'reason is required', parsed.error.issues);
   const client = await pool.connect();

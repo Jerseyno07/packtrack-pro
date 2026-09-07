@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone } from 'lucide-react';
+import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone, Clock } from 'lucide-react';
 
 function useInstallPrompt() {
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
@@ -25,6 +25,7 @@ function useInstallPrompt() {
 }
 import AuditScreen from './AuditScreen.jsx';
 import TourOverlay from './TourOverlay.jsx';
+import TransferSendScreen from './TransferSendScreen.jsx';
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 
@@ -62,10 +63,16 @@ function makeApi(token) {
     pendingByFacility: () => req('GET', '/api/v1/indents/pending-by-facility'),
     batchIssue: (payload) => req('POST', '/api/v1/stock-issues/batch', payload),
     adhocIssue: (payload) => req('POST', '/api/v1/stock-issues/adhoc', payload),
+    createTransfer: (payload) => req('POST', '/api/v1/stock-issues/transfer', payload),
     listWarehouses: () => req('GET', '/api/v1/warehouses'),
     listMaterials: () => req('GET', '/api/v1/materials'),
     postGRN: (payload) => req('POST', '/api/v1/goods-receipts', payload),
     postIssue: (payload) => req('POST', '/api/v1/stock-issues', payload),
+    listPendingIssues: (warehouseId) =>
+      req('GET', `/api/v1/stock-issues?to_warehouse_id=${warehouseId}&status=DISPATCHED,PARTIALLY_RECEIVED`),
+    receiptDefaults: (issueId) => req('GET', `/api/v1/stock-issues/${issueId}/receipt-defaults`),
+    confirmReceipt: (payload) => req('POST', '/api/v1/stock-receipts', payload),
+    forceComplete: (issueId, reason) => req('POST', `/api/v1/stock-issues/${issueId}/force-complete`, { reason }),
     forcePO: (id, reason) => req('POST', `/api/v1/purchase-orders/${id}/force-complete`, { reason }),
     forceIndent: (id, reason) => req('POST', `/api/v1/indent-lines/${id}/force-complete`, { reason }),
     uploadGrnImage: async (grnId, imageFile) => {
@@ -1179,6 +1186,287 @@ function AdhocIssueScreen({ api }) {
   );
 }
 
+// ── Incoming Transfers screen (receive a Stock Transfer sent to this PM Store) ──
+// Ported from receipt-app.jsx's pending-list/receive pattern rather than shared —
+// the two PWAs have no existing shared stateful-form precedent, and the two
+// screens' conventions (raw token vs. pre-built api client) already diverge.
+function issueDispFactor(issue) {
+  if (issue.meters_per_unit) return Number(issue.meters_per_unit);
+  if (issue.stickers_per_roll) return Number(issue.stickers_per_roll);
+  if (issue.pieces_per_kg) return Number(issue.pieces_per_kg);
+  return 1;
+}
+function issueDispUnit(issue) {
+  return issue.meters_per_unit ? 'rolls' : issue.stickers_per_roll ? 'units' : issue.pieces_per_kg ? 'Kg' : (issue.unit ?? '');
+}
+function issueToDisp(issue, baseQty) {
+  const factor = issueDispFactor(issue);
+  return factor > 1 ? parseFloat((Number(baseQty) / factor).toFixed(2)) : Number(baseQty);
+}
+
+function IncomingIssueListItem({ issue, onSelect }) {
+  const isPartial = issue.status === 'PARTIALLY_RECEIVED';
+  return (
+    <button
+      onClick={() => onSelect(issue)}
+      className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left active:bg-slate-50 transition-colors"
+    >
+      <div className={`w-11 h-11 rounded-lg flex items-center justify-center flex-shrink-0 ${isPartial ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'}`}>
+        <Truck size={20} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="font-semibold text-sm text-slate-900 truncate">{issue.material_name}</span>
+          {isPartial && <Badge tone="amber">Partial</Badge>}
+        </div>
+        <div className="text-xs text-slate-500">{issue.issue_ref} · from {issue.from_warehouse_name}</div>
+        <div className="text-xs text-slate-400 mt-0.5">
+          {issue.indent_ref ? `Indent ${issue.indent_ref}` : 'Direct Transfer'} · {issue.issue_date?.slice(0, 10)}
+        </div>
+      </div>
+      <div className="text-right flex-shrink-0">
+        <div className="font-bold text-slate-900">{issueToDisp(issue, issue.pending_qty ?? issue.issued_qty)}</div>
+        <div className="text-xs text-slate-400">of {issueToDisp(issue, issue.issued_qty)} {issueDispUnit(issue)}</div>
+      </div>
+      <ChevronRight size={18} className="text-slate-300 flex-shrink-0" />
+    </button>
+  );
+}
+
+function IncomingReceiptForm({ issue, api, onBack, onSubmitted }) {
+  const [defaults, setDefaults] = useState(null);
+  const [receivedQty, setReceivedQty] = useState('');
+  const [receiptDate, setReceiptDate] = useState(new Date().toISOString().slice(0, 10));
+  const [fcReason, setFcReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const dispFactor = issueDispFactor(issue);
+  const unit = issueDispUnit(issue);
+  const expectedQtyBase = Number(defaults?.expected_qty ?? issue.pending_qty ?? issue.issued_qty);
+  const expectedQty = issueToDisp(issue, expectedQtyBase);
+
+  useEffect(() => {
+    api.receiptDefaults(issue.id).then((d) => {
+      setDefaults(d);
+      setReceivedQty(String(issueToDisp(issue, d.suggested_received_qty ?? issue.pending_qty ?? issue.issued_qty)));
+    }).catch(() => {
+      setReceivedQty(String(issueToDisp(issue, issue.pending_qty ?? issue.issued_qty)));
+    });
+  }, [issue.id]);
+
+  const qty = Number(receivedQty) || 0;
+  const hasEntry = receivedQty !== '';
+  const isZero = hasEntry && qty === 0;
+  const isExact = hasEntry && !isZero && Math.abs(qty - expectedQty) < 0.001;
+  const isUnder = hasEntry && qty > 0 && qty < expectedQty - 0.001;
+  const isOver = hasEntry && qty > expectedQty + 0.001;
+  const needsRemark = hasEntry && !isExact;
+  const canSubmit = hasEntry && (isExact || fcReason.trim()) && !submitting;
+
+  async function handleSubmit() {
+    setError('');
+    setSubmitting(true);
+    try {
+      const payload = {
+        stock_issue_id: issue.id,
+        received_qty: Math.round(qty * dispFactor),
+        shortage_qty: 0,
+        damage_qty: 0,
+        receipt_date: receiptDate,
+        expected_qty: Math.round(expectedQty * dispFactor),
+      };
+      if (!isExact) payload.force_complete_reason = fcReason.trim();
+      const res = await api.confirmReceipt(payload);
+      onSubmitted({ ...res, closed: !isExact });
+    } catch (e) {
+      setError(e.message || 'Failed to submit receipt. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4 pb-6">
+      <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-500 font-medium">
+        <ArrowLeft size={16} /> Back to incoming list
+      </button>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
+            <Package size={18} />
+          </div>
+          <div>
+            <div className="font-semibold text-slate-900">{issue.material_name}</div>
+            <div className="text-xs text-slate-500">{issue.material_code} · {issue.issue_ref}</div>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-center pt-3 border-t border-slate-100">
+          <div className="bg-slate-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-slate-400 mb-0.5">Dispatched</div>
+            <div className="font-bold text-slate-900">{issueToDisp(issue, issue.issued_qty)} {unit}</div>
+          </div>
+          <div className="bg-slate-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-slate-400 mb-0.5">From</div>
+            <div className="font-bold text-slate-900 text-xs leading-tight">{issue.from_warehouse_name}</div>
+          </div>
+          <div className="bg-blue-50 rounded-lg py-2.5 px-2">
+            <div className="text-xs text-blue-600 mb-0.5">Expected</div>
+            <div className="font-bold text-blue-800">{expectedQty} {unit}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">
+            Actual Received Qty ({unit}) <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="number" min={0} inputMode="decimal" step="any"
+            value={receivedQty} onChange={(e) => setReceivedQty(e.target.value)}
+            className={`w-full px-3 py-2.5 border rounded-lg text-base font-medium focus:outline-none focus:ring-2 ${
+              isExact ? 'border-green-400 bg-green-50 focus:ring-green-400 text-green-700'
+              : needsRemark ? 'border-amber-400 bg-amber-50 focus:ring-amber-400 text-amber-700'
+              : 'border-slate-300 focus:ring-blue-500'
+            }`}
+          />
+          {isExact && <p className="text-xs text-green-700 mt-1">Qty matches dispatched amount.</p>}
+          {isZero && <p className="text-xs text-amber-700 mt-1">Zero received — add a remark below. Issue will be closed with no stock credited.</p>}
+          {isOver && <p className="text-xs text-amber-700 mt-1">Qty exceeds dispatched — add a remark below. Issue will be closed at this qty.</p>}
+          {isUnder && <p className="text-xs text-amber-700 mt-1">Qty is less than dispatched — add a remark below. Issue will be closed at this qty.</p>}
+        </div>
+
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">Receipt Date</label>
+          <input
+            type="date" value={receiptDate} onChange={(e) => setReceiptDate(e.target.value)}
+            className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        {needsRemark && (
+          <div>
+            <label className="text-xs font-medium text-amber-700 mb-1 block">
+              Remark <span className="text-red-500">*</span> <span className="text-slate-400 font-normal">(required — qty differs from dispatched)</span>
+            </label>
+            <textarea
+              rows={2} value={fcReason} onChange={(e) => setFcReason(e.target.value)}
+              placeholder="e.g. Material damaged in transit, excess received vs challan"
+              className="w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+            />
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+            <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+      </div>
+
+      <button onClick={handleSubmit} disabled={!canSubmit}
+        className={`w-full py-4 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 ${needsRemark ? 'bg-amber-600' : 'bg-blue-600'}`}>
+        {submitting ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+        {isZero ? 'Confirm Zero Receipt & Close' : needsRemark ? 'Confirm Receipt & Close' : 'Confirm Receipt'}
+      </button>
+    </div>
+  );
+}
+
+function IncomingTransfersScreen({ api, warehouseId }) {
+  const [issues, setIssues] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [successInfo, setSuccessInfo] = useState(null);
+  const [fetchError, setFetchError] = useState('');
+
+  const refresh = useCallback(async () => {
+    if (!warehouseId) return;
+    setLoading(true);
+    setFetchError('');
+    try {
+      const data = await api.listPendingIssues(warehouseId);
+      const rows = data.data ?? [];
+      setIssues(rows.filter((i) => ['DISPATCHED', 'PARTIALLY_RECEIVED'].includes(i.status)));
+    } catch (e) {
+      setFetchError(e.message || 'Failed to load incoming transfers');
+    } finally {
+      setLoading(false);
+    }
+  }, [api, warehouseId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  if (!warehouseId) {
+    return <div className="text-sm text-slate-400 py-8 text-center">No facility mapped to your account — contact an admin.</div>;
+  }
+
+  if (successInfo) {
+    return (
+      <div className="flex flex-col items-center justify-center text-center py-12 space-y-4">
+        <div className={`w-16 h-16 rounded-full flex items-center justify-center ${successInfo.closed ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
+          <CheckCircle2 size={32} />
+        </div>
+        <div>
+          <div className="font-bold text-lg text-slate-900">{successInfo.closed ? 'Receipt Confirmed & Closed' : 'Receipt Confirmed'}</div>
+          {successInfo.receipt_ref && <div className="text-sm text-slate-500 mt-1">{successInfo.receipt_ref}</div>}
+        </div>
+        <button onClick={() => { setSuccessInfo(null); setSelected(null); refresh(); }} className="mt-4 px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium">
+          Back to Incoming List
+        </button>
+      </div>
+    );
+  }
+
+  if (selected) {
+    return (
+      <IncomingReceiptForm
+        issue={selected}
+        api={api}
+        onBack={() => setSelected(null)}
+        onSubmitted={(info) => setSuccessInfo(info)}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-blue-600 rounded-xl p-4 text-white flex items-center justify-between">
+        <div>
+          <div className="text-xs text-blue-100 mb-0.5">Pending receipt</div>
+          <div className="text-2xl font-bold">{issues.length} transfer{issues.length === 1 ? '' : 's'}</div>
+        </div>
+        <Clock size={28} className="text-blue-200" />
+      </div>
+
+      {fetchError && (
+        <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+          <span>{fetchError}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center text-sm text-slate-400 py-12">Loading incoming transfers…</div>
+      ) : issues.length === 0 ? (
+        <div className="text-center py-12">
+          <CheckCircle2 size={32} className="text-green-400 mx-auto mb-2" />
+          <div className="text-sm text-slate-500">All caught up — nothing pending receipt.</div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {issues.map((issue) => (
+            <IncomingIssueListItem key={issue.id} issue={issue} onSelect={setSelected} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PMStoreOps() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
@@ -1233,18 +1521,22 @@ export default function PMStoreOps() {
         </div>
       </div>
 
-      <div data-tour="pmstore-tabs" className="flex gap-1 bg-slate-100 rounded-xl p-1 mx-4 mt-3">
-        <button onClick={() => setTab('grn')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>GRN</button>
-        <button onClick={() => setTab('issue')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue</button>
-        <button onClick={() => setTab('adhoc')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'adhoc' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Adhoc</button>
-        <button onClick={() => setTab('stock')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Stock</button>
-        <button onClick={() => setTab('audit')} className={`flex-1 py-2.5 rounded-lg text-xs font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
+      <div data-tour="pmstore-tabs" className="flex flex-wrap gap-1 bg-slate-100 rounded-xl p-1 mx-4 mt-3">
+        <button onClick={() => setTab('grn')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>GRN</button>
+        <button onClick={() => setTab('issue')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue</button>
+        <button onClick={() => setTab('adhoc')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'adhoc' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Adhoc</button>
+        <button onClick={() => setTab('transfer')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'transfer' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Transfer</button>
+        <button onClick={() => setTab('incoming')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'incoming' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Incoming</button>
+        <button onClick={() => setTab('stock')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Stock</button>
+        <button onClick={() => setTab('audit')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
       </div>
 
       <div className="px-4 pt-3 pb-8">
         {tab === 'grn' && <GRNScreen api={client} />}
         {tab === 'issue' && <IssueScreen api={client} />}
         {tab === 'adhoc' && <AdhocIssueScreen api={client} />}
+        {tab === 'transfer' && <TransferSendScreen api={client} sourceWarehouseId={user?.warehouse_ids?.[0]} />}
+        {tab === 'incoming' && <IncomingTransfersScreen api={client} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'stock' && <StoreStockView token={token} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'audit' && <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />}
       </div>
