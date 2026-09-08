@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone, Clock } from 'lucide-react';
+import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone } from 'lucide-react';
 
 function useInstallPrompt() {
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
@@ -62,7 +62,6 @@ function makeApi(token) {
     listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN,PARTIALLY_RECEIVED'),
     pendingByFacility: () => req('GET', '/api/v1/indents/pending-by-facility'),
     batchIssue: (payload) => req('POST', '/api/v1/stock-issues/batch', payload),
-    adhocIssue: (payload) => req('POST', '/api/v1/stock-issues/adhoc', payload),
     createTransfer: (payload) => req('POST', '/api/v1/stock-issues/transfer', payload),
     listWarehouses: () => req('GET', '/api/v1/warehouses'),
     listMaterials: () => req('GET', '/api/v1/materials'),
@@ -201,11 +200,19 @@ function ForceCompletePanel({ onForce, submitting, error, hint }) {
 }
 
 // ── GRN screen ───────────────────────────────────────────────────────────────
-function GRNScreen({ api }) {
+// Unified receiving inbox: vendor POs (Post GRN) and incoming Stock
+// Transfers (from another PM Store, or a CC/FC) both land here, since both
+// are "something a PM Store exec needs to receive" — filterable, with a
+// distinct color marker per type so they're never confused at a glance.
+function GRNScreen({ api, warehouseId }) {
   const [openPOs, setOpenPOs] = useState([]);
+  const [transferIssues, setTransferIssues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
+  const [filter, setFilter] = useState('all'); // 'all' | 'po' | 'transfer'
   const [selectedPO, setSelectedPO] = useState(null);
+  const [selectedTransfer, setSelectedTransfer] = useState(null);
+  const [transferSuccess, setTransferSuccess] = useState(null);
   const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
   const [invoiceNo, setInvoiceNo] = useState('');
   const [inwardQty, setInwardQty] = useState('');
@@ -216,20 +223,28 @@ function GRNScreen({ api }) {
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(null);
 
-  const loadPOs = useCallback(async () => {
+  const loadAll = useCallback(async () => {
     setLoading(true);
     setFetchError('');
     try {
-      const data = await api.listOpenPOs();
-      setOpenPOs(Array.isArray(data) ? data : data.data ?? data.rows ?? []);
+      const [poData, issueData] = await Promise.all([
+        api.listOpenPOs(),
+        warehouseId ? api.listPendingIssues(warehouseId) : Promise.resolve({ data: [] }),
+      ]);
+      setOpenPOs(Array.isArray(poData) ? poData : poData.data ?? poData.rows ?? []);
+      const rows = issueData.data ?? [];
+      setTransferIssues(rows.filter((i) => ['DISPATCHED', 'PARTIALLY_RECEIVED'].includes(i.status)));
     } catch (e) {
       setFetchError(e.message || 'Failed to load open POs');
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, warehouseId]);
 
-  useEffect(() => { loadPOs(); }, [loadPOs]);
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  function selectTransfer(issue) { setSelectedTransfer(issue); }
+  function resetTransferView() { setTransferSuccess(null); setSelectedTransfer(null); loadAll(); }
 
   function selectPO(po) {
     setSelectedPO(po);
@@ -251,7 +266,7 @@ function GRNScreen({ api }) {
     setInvoiceImage(null);
     setInvoiceNo('');
     setError('');
-    loadPOs();
+    loadAll();
   }
 
   async function submitGRN(shouldClose = false) {
@@ -289,42 +304,111 @@ function GRNScreen({ api }) {
     );
   }
 
+  if (transferSuccess) {
+    return (
+      <div className="flex flex-col items-center justify-center text-center py-16 space-y-4">
+        <div className={`w-16 h-16 rounded-full flex items-center justify-center ${transferSuccess.closed ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
+          <CheckCircle2 size={32} />
+        </div>
+        <div>
+          <div className="font-bold text-lg text-slate-900">{transferSuccess.closed ? 'Receipt Confirmed & Closed' : 'Receipt Confirmed'}</div>
+          {transferSuccess.receipt_ref && <div className="text-sm text-slate-500 mt-1">{transferSuccess.receipt_ref}</div>}
+        </div>
+        <button onClick={resetTransferView} className="mt-1 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
+          Back to GRN List
+        </button>
+      </div>
+    );
+  }
+
+  if (selectedTransfer) {
+    return (
+      <IncomingReceiptForm
+        issue={selectedTransfer}
+        api={api}
+        onBack={() => setSelectedTransfer(null)}
+        onSubmitted={(info) => setTransferSuccess(info)}
+      />
+    );
+  }
+
   if (!selectedPO) {
+    const showPOs = filter !== 'transfer';
+    const showTransfers = filter !== 'po';
+    const nothingAtAll = openPOs.length === 0 && transferIssues.length === 0;
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <div><h2 className="text-lg font-bold text-slate-900">Post GRN</h2><p className="text-sm text-slate-500">Select a PO line to receive stock against. A PO with multiple materials appears as one card per material.</p></div>
-          <button onClick={loadPOs} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+          <div><h2 className="text-lg font-bold text-slate-900">Post GRN</h2><p className="text-sm text-slate-500">Receive against a vendor PO, or a Stock Transfer sent to this facility.</p></div>
+          <button onClick={loadAll} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
         </div>
+
+        <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+          {[['all', 'All'], ['po', 'POs'], ['transfer', 'Stock Transfers']].map(([val, label]) => (
+            <button key={val} onClick={() => setFilter(val)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${filter === val ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+              {label} ({val === 'all' ? openPOs.length + transferIssues.length : val === 'po' ? openPOs.length : transferIssues.length})
+            </button>
+          ))}
+        </div>
+
         {fetchError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{fetchError}</div>}
-        {loading ? <div className="text-center text-sm text-slate-400 py-8">Loading open POs…</div> : (
-          <div data-tour="grn-po-list" className="space-y-2">
-            {openPOs.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No open POs found.</div>}
-            {openPOs.map((po) => {
-              const remaining = poToDisp(po, Number(po.remaining_qty ?? po.po_qty));
-              const unit = poDispUnit(po);
-              const isPartial = po.status === 'PARTIALLY_RECEIVED';
-              const cardCls = isPartial
-                ? 'w-full bg-amber-50 rounded-xl border border-amber-200 p-4 flex items-center gap-3 text-left hover:border-amber-400 transition-colors'
-                : 'w-full bg-green-50 rounded-xl border border-green-200 p-4 flex items-center gap-3 text-left hover:border-green-400 transition-colors';
-              const iconCls = isPartial
-                ? 'w-10 h-10 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center flex-shrink-0'
-                : 'w-10 h-10 rounded-lg bg-green-100 text-green-600 flex items-center justify-center flex-shrink-0';
-              return (
-                <button key={po.id} onClick={() => selectPO(po)} className={cardCls}>
-                  <div className={iconCls}><Truck size={18} /></div>
-                  <div className="flex-1">
-                    <div className="font-semibold text-sm text-slate-900">{po.po_no} <span className="text-slate-400">· {po.vendor_name}</span></div>
-                    <div className="text-xs text-slate-500">{po.material_code} — {po.material_name}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-bold text-slate-900">{remaining} {unit}</div>
-                    <div className="text-xs text-slate-400">remaining of {poToDisp(po, po.po_qty)} {unit}</div>
-                  </div>
-                  <ChevronRight size={16} className="text-slate-300" />
-                </button>
-              );
-            })}
+
+        {loading ? <div className="text-center text-sm text-slate-400 py-8">Loading…</div> : (
+          <div data-tour="grn-po-list" className="space-y-4">
+            {filter === 'all' && nothingAtAll && (
+              <div className="text-center text-sm text-slate-500 py-8">Nothing to receive right now.</div>
+            )}
+
+            {showPOs && (openPOs.length > 0 || filter === 'po') && (
+              <div className="space-y-2">
+                {filter === 'all' && openPOs.length > 0 && (
+                  <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-0.5">Purchase Orders</div>
+                )}
+                {openPOs.length === 0 && filter === 'po' && (
+                  <div className="text-center text-sm text-slate-500 py-8">No open POs found.</div>
+                )}
+                {openPOs.map((po) => {
+                  const remaining = poToDisp(po, Number(po.remaining_qty ?? po.po_qty));
+                  const unit = poDispUnit(po);
+                  const isPartial = po.status === 'PARTIALLY_RECEIVED';
+                  const cardCls = isPartial
+                    ? 'w-full bg-amber-50 rounded-xl border border-amber-200 p-4 flex items-center gap-3 text-left hover:border-amber-400 transition-colors'
+                    : 'w-full bg-green-50 rounded-xl border border-green-200 p-4 flex items-center gap-3 text-left hover:border-green-400 transition-colors';
+                  const iconCls = isPartial
+                    ? 'w-10 h-10 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center flex-shrink-0'
+                    : 'w-10 h-10 rounded-lg bg-green-100 text-green-600 flex items-center justify-center flex-shrink-0';
+                  return (
+                    <button key={po.id} onClick={() => selectPO(po)} className={cardCls}>
+                      <div className={iconCls}><Truck size={18} /></div>
+                      <div className="flex-1">
+                        <div className="font-semibold text-sm text-slate-900">{po.po_no} <span className="text-slate-400">· {po.vendor_name}</span></div>
+                        <div className="text-xs text-slate-500">{po.material_code} — {po.material_name}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-slate-900">{remaining} {unit}</div>
+                        <div className="text-xs text-slate-400">remaining of {poToDisp(po, po.po_qty)} {unit}</div>
+                      </div>
+                      <ChevronRight size={16} className="text-slate-300" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {showTransfers && (transferIssues.length > 0 || filter === 'transfer') && (
+              <div className="space-y-2">
+                {filter === 'all' && transferIssues.length > 0 && (
+                  <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-0.5 mt-2">Stock Transfers</div>
+                )}
+                {transferIssues.length === 0 && filter === 'transfer' && (
+                  <div className="text-center text-sm text-slate-500 py-8">No incoming Stock Transfers.</div>
+                )}
+                {transferIssues.map((issue) => (
+                  <IncomingIssueListItem key={issue.id} issue={issue} onSelect={selectTransfer} />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -946,246 +1030,6 @@ function StoreStockView({ token, warehouseId }) {
   );
 }
 
-// ── Adhoc Issue screen ────────────────────────────────────────────────────────
-function AdhocIssueScreen({ api }) {
-  const todayIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const [facilities, setFacilities] = useState([]);
-  const [materials, setMaterials] = useState([]);
-  const [toWarehouseId, setToWarehouseId] = useState('');
-  const [facilitySearch, setFacilitySearch] = useState('');
-  const [showFacilityDd, setShowFacilityDd] = useState(false);
-  const [search, setSearch] = useState('');
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [items, setItems] = useState([]);
-  const [issueDate, setIssueDate] = useState(todayIst);
-  const [vehicleNo, setVehicleNo] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [result, setResult] = useState(null);
-  const matSearchRef = useRef(null);
-
-  useEffect(() => {
-    api.listWarehouses()
-      .then(d => setFacilities((d.data || []).filter(w => w.warehouse_type !== 'PM_STORE').sort((a, b) => a.name.localeCompare(b.name))))
-      .catch(() => {});
-    api.listMaterials()
-      .then(d => setMaterials(d.data || []))
-      .catch(() => {});
-  }, []);
-
-  const selectedFacility = facilities.find(f => String(f.id) === String(toWarehouseId)) || null;
-  const filteredFacilities = facilities.filter(f => {
-    const q = facilitySearch.toLowerCase();
-    return !q || f.name.toLowerCase().includes(q) || (f.code || '').toLowerCase().includes(q);
-  });
-
-  const filtered = materials.filter(m =>
-    m.code.toLowerCase().includes(search.toLowerCase()) || m.name.toLowerCase().includes(search.toLowerCase())
-  );
-
-  function selectFacility(f) {
-    setToWarehouseId(String(f.id));
-    setFacilitySearch('');
-    setShowFacilityDd(false);
-  }
-
-  function clearFacility() {
-    setToWarehouseId('');
-    setFacilitySearch('');
-  }
-
-  function toggleItem(mat) {
-    const isSelected = !!items.find(i => i.material_id === mat.id);
-    if (isSelected) {
-      setItems(prev => prev.filter(i => i.material_id !== mat.id));
-    } else {
-      setItems(prev => [...prev, { material_id: mat.id, material: mat, qty_disp: '' }]);
-    }
-    setTimeout(() => matSearchRef.current?.focus(), 0);
-  }
-
-  function removeItem(materialId) {
-    setItems(prev => prev.filter(i => i.material_id !== materialId));
-  }
-
-  function setQty(materialId, val) {
-    setItems(prev => prev.map(i => i.material_id === materialId ? { ...i, qty_disp: val } : i));
-  }
-
-  async function handleDispatch() {
-    setError('');
-    setLoading(true);
-    try {
-      const payload = {
-        to_warehouse_id: Number(toWarehouseId),
-        issue_date: issueDate,
-        vehicle_no: vehicleNo || undefined,
-        items: items.map(i => ({ material_id: i.material_id, issued_qty: toBase(i.material, i.qty_disp) })),
-      };
-      const data = await api.adhocIssue(payload);
-      setResult(data);
-    } catch (err) {
-      setError(err.message || 'Dispatch failed');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function reset() {
-    setToWarehouseId('');
-    setFacilitySearch('');
-    setItems([]);
-    setIssueDate(todayIst);
-    setVehicleNo('');
-    setError('');
-    setResult(null);
-    setSearch('');
-  }
-
-  if (result) {
-    return (
-      <div className="space-y-4 pt-2">
-        <div className="bg-green-50 border border-green-200 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-green-700 font-semibold mb-2"><CheckCircle2 size={18} /> Dispatched</div>
-          <div className="text-sm text-green-700 space-y-1">
-            {result.issue_refs.map(ref => <div key={ref} className="font-mono">{ref}</div>)}
-          </div>
-        </div>
-        <button onClick={reset} className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm">Dispatch Another</button>
-      </div>
-    );
-  }
-
-  const canSubmit = toWarehouseId && items.length > 0 && items.every(i => Number(i.qty_disp) > 0) && !loading;
-
-  return (
-    <div className="space-y-4 pt-2 pb-6">
-      {/* Facility search */}
-      <div className="relative">
-        <label className="block text-xs font-medium text-slate-500 mb-1">Facility</label>
-        {selectedFacility ? (
-          <div className="flex items-center gap-2 w-full border border-blue-300 bg-blue-50 rounded-xl px-3 py-3">
-            <span className="flex-1 text-sm font-medium text-blue-800">{selectedFacility.name}
-              {selectedFacility.code && <span className="ml-1.5 text-xs font-normal text-blue-500">({selectedFacility.code})</span>}
-            </span>
-            <button onClick={clearFacility} className="text-blue-400 hover:text-blue-700 text-lg leading-none">×</button>
-          </div>
-        ) : (
-          <>
-            <input
-              type="text"
-              value={facilitySearch}
-              onChange={e => { setFacilitySearch(e.target.value); setShowFacilityDd(true); }}
-              onFocus={() => setShowFacilityDd(true)}
-              onBlur={() => setTimeout(() => setShowFacilityDd(false), 150)}
-              placeholder="Search facility by name or code…"
-              className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm"
-            />
-            {showFacilityDd && filteredFacilities.length > 0 && (
-              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
-                {filteredFacilities.map(f => (
-                  <button key={f.id} onMouseDown={() => selectFacility(f)}
-                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-slate-50 border-b border-slate-100 last:border-0">
-                    <span className="font-medium text-slate-800">{f.name}</span>
-                    {f.code && <span className="ml-2 text-xs text-slate-400">{f.code}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-            {showFacilityDd && facilitySearch.length > 0 && filteredFacilities.length === 0 && (
-              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 px-3 py-2.5 text-sm text-slate-400">No facilities found</div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Material multi-search */}
-      <div className="relative">
-        <label className="block text-xs font-medium text-slate-500 mb-1">
-          Add Materials <span className="text-slate-300 font-normal">(search and select multiple)</span>
-        </label>
-        <input
-          ref={matSearchRef}
-          type="text"
-          value={search}
-          onChange={e => { setSearch(e.target.value); setShowDropdown(true); }}
-          onFocus={() => setShowDropdown(true)}
-          onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
-          placeholder="Search by code or name…"
-          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm"
-        />
-        {showDropdown && search.length > 0 && filtered.length > 0 && (
-          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
-            {filtered.slice(0, 20).map(m => {
-              const isSelected = !!items.find(i => i.material_id === m.id);
-              return (
-                <button key={m.id} onMouseDown={() => toggleItem(m)}
-                  className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2.5 border-b border-slate-100 last:border-0 ${isSelected ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
-                  <span className={`flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center text-white text-[10px] font-bold ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-slate-300'}`}>
-                    {isSelected && '✓'}
-                  </span>
-                  <span className="font-mono font-medium text-blue-700">{m.code}</span>
-                  <span className="text-slate-500 truncate">{m.name}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {showDropdown && search.length > 0 && filtered.length === 0 && (
-          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 px-3 py-2.5 text-sm text-slate-400">No materials found</div>
-        )}
-      </div>
-
-      {/* Items list */}
-      {items.length > 0 && (
-        <div className="space-y-2">
-          {items.map(item => (
-            <div key={item.material_id} className="bg-white border border-slate-200 rounded-xl px-3 py-2.5 flex items-center gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-mono font-medium text-blue-700">{item.material.code}</div>
-                <div className="text-xs text-slate-500 truncate">{item.material.name}</div>
-              </div>
-              <input
-                type="number"
-                min="0"
-                step={item.material.pieces_per_kg ? '0.001' : '1'}
-                value={item.qty_disp}
-                onChange={e => setQty(item.material_id, e.target.value)}
-                placeholder="0"
-                className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right"
-              />
-              <span className="text-xs text-slate-400 w-8">{dispUnit(item.material)}</span>
-              <button onClick={() => removeItem(item.material_id)} className="text-slate-300 hover:text-red-400 text-lg leading-none">×</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Date + Vehicle */}
-      <div className="flex gap-2">
-        <div className="flex-1">
-          <label className="block text-xs font-medium text-slate-500 mb-1">Issue Date</label>
-          <input type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)}
-            className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
-        </div>
-        <div className="flex-1">
-          <label className="block text-xs font-medium text-slate-500 mb-1">Vehicle No <span className="text-slate-300">(optional)</span></label>
-          <input type="text" value={vehicleNo} onChange={e => setVehicleNo(e.target.value)}
-            placeholder="KA01AB1234"
-            className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
-        </div>
-      </div>
-
-      {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-3 py-2">{error}</div>}
-
-      <button onClick={handleDispatch} disabled={!canSubmit}
-        className={`w-full py-3.5 rounded-xl font-semibold text-sm ${canSubmit ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-        {loading ? 'Dispatching…' : `Dispatch ${items.length > 0 ? `(${items.length} item${items.length > 1 ? 's' : ''})` : ''}`}
-      </button>
-    </div>
-  );
-}
-
 // ── Incoming Transfers screen (receive a Stock Transfer sent to this PM Store) ──
 // Ported from receipt-app.jsx's pending-list/receive pattern rather than shared —
 // the two PWAs have no existing shared stateful-form precedent, and the two
@@ -1204,14 +1048,17 @@ function issueToDisp(issue, baseQty) {
   return factor > 1 ? parseFloat((Number(baseQty) / factor).toFixed(2)) : Number(baseQty);
 }
 
+// Distinct purple marker regardless of status -- color marks "this is a
+// Stock Transfer, not a PO", the amber badge separately marks "partial",
+// consistent with how badges already carry status elsewhere in this app.
 function IncomingIssueListItem({ issue, onSelect }) {
   const isPartial = issue.status === 'PARTIALLY_RECEIVED';
   return (
     <button
       onClick={() => onSelect(issue)}
-      className="w-full bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3 text-left active:bg-slate-50 transition-colors"
+      className="w-full bg-white rounded-xl border border-purple-100 p-4 flex items-center gap-3 text-left hover:border-purple-300 transition-colors"
     >
-      <div className={`w-11 h-11 rounded-lg flex items-center justify-center flex-shrink-0 ${isPartial ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'}`}>
+      <div className="w-11 h-11 rounded-lg flex items-center justify-center flex-shrink-0 bg-purple-50 text-purple-600">
         <Truck size={20} />
       </div>
       <div className="flex-1 min-w-0">
@@ -1219,10 +1066,8 @@ function IncomingIssueListItem({ issue, onSelect }) {
           <span className="font-semibold text-sm text-slate-900 truncate">{issue.material_name}</span>
           {isPartial && <Badge tone="amber">Partial</Badge>}
         </div>
-        <div className="text-xs text-slate-500">{issue.issue_ref} · from {issue.from_warehouse_name}</div>
-        <div className="text-xs text-slate-400 mt-0.5">
-          {issue.indent_ref ? `Indent ${issue.indent_ref}` : 'Direct Transfer'} · {issue.issue_date?.slice(0, 10)}
-        </div>
+        <div className="text-xs text-purple-700 font-medium">Stock Transfer from {issue.from_warehouse_name}</div>
+        <div className="text-xs text-slate-400 mt-0.5">{issue.issue_ref} · {issue.issue_date?.slice(0, 10)}</div>
       </div>
       <div className="text-right flex-shrink-0">
         <div className="font-bold text-slate-900">{issueToDisp(issue, issue.pending_qty ?? issue.issued_qty)}</div>
@@ -1376,97 +1221,6 @@ function IncomingReceiptForm({ issue, api, onBack, onSubmitted }) {
   );
 }
 
-function IncomingTransfersScreen({ api, warehouseId }) {
-  const [issues, setIssues] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState(null);
-  const [successInfo, setSuccessInfo] = useState(null);
-  const [fetchError, setFetchError] = useState('');
-
-  const refresh = useCallback(async () => {
-    if (!warehouseId) return;
-    setLoading(true);
-    setFetchError('');
-    try {
-      const data = await api.listPendingIssues(warehouseId);
-      const rows = data.data ?? [];
-      setIssues(rows.filter((i) => ['DISPATCHED', 'PARTIALLY_RECEIVED'].includes(i.status)));
-    } catch (e) {
-      setFetchError(e.message || 'Failed to load incoming transfers');
-    } finally {
-      setLoading(false);
-    }
-  }, [api, warehouseId]);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  if (!warehouseId) {
-    return <div className="text-sm text-slate-400 py-8 text-center">No facility mapped to your account — contact an admin.</div>;
-  }
-
-  if (successInfo) {
-    return (
-      <div className="flex flex-col items-center justify-center text-center py-12 space-y-4">
-        <div className={`w-16 h-16 rounded-full flex items-center justify-center ${successInfo.closed ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
-          <CheckCircle2 size={32} />
-        </div>
-        <div>
-          <div className="font-bold text-lg text-slate-900">{successInfo.closed ? 'Receipt Confirmed & Closed' : 'Receipt Confirmed'}</div>
-          {successInfo.receipt_ref && <div className="text-sm text-slate-500 mt-1">{successInfo.receipt_ref}</div>}
-        </div>
-        <button onClick={() => { setSuccessInfo(null); setSelected(null); refresh(); }} className="mt-4 px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium">
-          Back to Incoming List
-        </button>
-      </div>
-    );
-  }
-
-  if (selected) {
-    return (
-      <IncomingReceiptForm
-        issue={selected}
-        api={api}
-        onBack={() => setSelected(null)}
-        onSubmitted={(info) => setSuccessInfo(info)}
-      />
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="bg-blue-600 rounded-xl p-4 text-white flex items-center justify-between">
-        <div>
-          <div className="text-xs text-blue-100 mb-0.5">Pending receipt</div>
-          <div className="text-2xl font-bold">{issues.length} transfer{issues.length === 1 ? '' : 's'}</div>
-        </div>
-        <Clock size={28} className="text-blue-200" />
-      </div>
-
-      {fetchError && (
-        <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
-          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
-          <span>{fetchError}</span>
-        </div>
-      )}
-
-      {loading ? (
-        <div className="text-center text-sm text-slate-400 py-12">Loading incoming transfers…</div>
-      ) : issues.length === 0 ? (
-        <div className="text-center py-12">
-          <CheckCircle2 size={32} className="text-green-400 mx-auto mb-2" />
-          <div className="text-sm text-slate-500">All caught up — nothing pending receipt.</div>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {issues.map((issue) => (
-            <IncomingIssueListItem key={issue.id} issue={issue} onSelect={setSelected} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function PMStoreOps() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
@@ -1489,8 +1243,8 @@ export default function PMStoreOps() {
   const client = makeApi(token);
 
   const tourSteps = [
-    { target: 'pmstore-tabs', title: 'Welcome to PM Store Ops', body: 'Five sections: Post GRN (inward from vendors), Issue Against Indent (dispatch to FC/CC), Adhoc (direct dispatch without indent), Store Stock (current on-hand), and Audit (movement history).' },
-    { target: 'grn-po-list', title: 'Post GRN — Open POs', body: 'Green cards are POs not yet inwarded; amber are partially inwarded with remaining qty shown on the right. Tap a card to start a GRN.', onEnter: () => setTab('grn') },
+    { target: 'pmstore-tabs', title: 'Welcome to PM Store Ops', body: 'Five sections: Post GRN (receive vendor POs and incoming Stock Transfers in one inbox), Issue Against Indent (dispatch to FC/CC), Transfer (send stock to any facility — another PM Store, or a CC/FC), Store Stock (current on-hand), and Audit (movement history).' },
+    { target: 'grn-po-list', title: 'Post GRN — Receiving Inbox', body: 'Green/amber cards are vendor POs (amber = partially received); purple cards are incoming Stock Transfers from another facility. Use the filter pill above to show just one type. Tap a card to receive it.', onEnter: () => setTab('grn') },
     { target: null, title: 'Entering Inward Quantity', body: 'After tapping a PO card, enter the quantity received in this shipment. Partial quantities are fine — the PO stays open for the next delivery.' },
     { target: null, title: 'Invoice Number', body: 'Enter the vendor\'s invoice number. Used for reconciliation and audit trail. Optional but recommended.' },
     { target: null, title: 'Attach Invoice Image', body: 'Attach the vendor\'s physical invoice as JPG, PNG, or PDF. Gives a paper trail for every delivery and is useful during audits.' },
@@ -1524,19 +1278,15 @@ export default function PMStoreOps() {
       <div data-tour="pmstore-tabs" className="flex flex-wrap gap-1 bg-slate-100 rounded-xl p-1 mx-4 mt-3">
         <button onClick={() => setTab('grn')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'grn' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>GRN</button>
         <button onClick={() => setTab('issue')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'issue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Issue</button>
-        <button onClick={() => setTab('adhoc')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'adhoc' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Adhoc</button>
         <button onClick={() => setTab('transfer')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'transfer' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Transfer</button>
-        <button onClick={() => setTab('incoming')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'incoming' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Incoming</button>
         <button onClick={() => setTab('stock')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Stock</button>
         <button onClick={() => setTab('audit')} className={`flex-1 min-w-[60px] py-2.5 rounded-lg text-xs font-medium ${tab === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Audit</button>
       </div>
 
       <div className="px-4 pt-3 pb-8">
-        {tab === 'grn' && <GRNScreen api={client} />}
+        {tab === 'grn' && <GRNScreen api={client} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'issue' && <IssueScreen api={client} />}
-        {tab === 'adhoc' && <AdhocIssueScreen api={client} />}
         {tab === 'transfer' && <TransferSendScreen api={client} sourceWarehouseId={user?.warehouse_ids?.[0]} />}
-        {tab === 'incoming' && <IncomingTransfersScreen api={client} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'stock' && <StoreStockView token={token} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'audit' && <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />}
       </div>

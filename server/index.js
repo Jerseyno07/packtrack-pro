@@ -1077,84 +1077,15 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
-app.post('/api/v1/stock-issues/adhoc', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
-  const adhocSchema = z.object({
-    to_warehouse_id: z.coerce.number().int().positive(),
-    issue_date: z.string().min(1),
-    vehicle_no: z.string().optional(),
-    items: z.array(z.object({
-      material_id: z.coerce.number().int().positive(),
-      issued_qty: z.coerce.number().positive(),
-    })).min(1),
-  });
-  const parsed = adhocSchema.safeParse(req.body);
-  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid adhoc issue payload', parsed.error.issues);
-  const { to_warehouse_id, issue_date, vehicle_no, items } = parsed.data;
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const pmWhRes = await client.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
-    const fromWhId = pmWhRes.rows[0]?.id;
-    if (!fromWhId) throw new ApiError(422, 'NO_PM_STORE', 'No active PM Store warehouse configured');
-
-    const destRes = await client.query('SELECT id, warehouse_type FROM warehouses WHERE id = $1', [to_warehouse_id]);
-    if (!destRes.rows.length) throw new ApiError(404, 'WAREHOUSE_NOT_FOUND', `Warehouse ${to_warehouse_id} not found`);
-    if (destRes.rows[0].warehouse_type === 'PM_STORE') throw new ApiError(422, 'INVALID_DEST', 'Cannot issue to PM Store itself');
-
-    const materialIds = items.map((i) => i.material_id);
-    const matsRes = await client.query('SELECT id, code, unit FROM materials WHERE id = ANY($1)', [materialIds]);
-    const matMap = new Map(matsRes.rows.map((r) => [Number(r.id), r]));
-    for (const item of items) {
-      if (!matMap.get(item.material_id)) throw new ApiError(404, 'MATERIAL_NOT_FOUND', `Material ${item.material_id} not found`);
-    }
-
-    const materialTotals = new Map();
-    for (const item of items) materialTotals.set(item.material_id, (materialTotals.get(item.material_id) || 0) + item.issued_qty);
-
-    for (const [materialId, totalQty] of materialTotals) {
-      const onHand = await getOnHandQty(client, fromWhId, materialId);
-      if (totalQty > onHand) {
-        const mat = matMap.get(materialId);
-        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${mat.code}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
-      }
-    }
-
-    const avgCosts = new Map();
-    for (const materialId of materialTotals.keys()) {
-      const costRes = await client.query(
-        `SELECT COALESCE(SUM(qty_delta*unit_cost),0) / NULLIF(SUM(CASE WHEN qty_delta>0 THEN qty_delta ELSE 0 END),0) AS avg_cost FROM stock_ledger WHERE warehouse_id=$1 AND material_id=$2`,
-        [fromWhId, materialId]
-      );
-      avgCosts.set(materialId, Number(costRes.rows[0].avg_cost || 0));
-    }
-
-    const issueRefs = [];
-    for (const item of items) {
-      const unitCost = avgCosts.get(item.material_id);
-      const issueRef = genRef('ISS');
-      const issueIns = await client.query(
-        `INSERT INTO stock_issues (issue_ref, indent_line_id, from_warehouse_id, to_warehouse_id, material_id, issued_qty, expected_qty, unit_cost_snapshot, issue_date, dispatched_by_user_id, vehicle_no)
-         VALUES ($1,NULL,$2,$3,$4,$5,$5,$6,$7,$8,$9) RETURNING id`,
-        [issueRef, fromWhId, to_warehouse_id, item.material_id, item.issued_qty, unitCost, issue_date, req.user.id, vehicle_no || null]
-      );
-      const issueId = issueIns.rows[0].id;
-      await postLedgerEntry(client, { warehouseId: fromWhId, materialId: item.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
-      await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED_ADHOC', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, material_id: item.material_id, qty: item.issued_qty, to_warehouse_id } });
-      issueRefs.push(issueRef);
-    }
-
-    await client.query('COMMIT');
-    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs });
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-}));
-
-// Stock Transfer: direct facility-to-facility movement with no indent, for
-// PM<->PM, CC/FC<->CC/FC, and CC/FC->PM Store. Deliberately separate from
-// the Adhoc route above (which stays PM Store -> CC/FC only) — this route
-// must never allow PM -> CC/FC, since that has to keep going through an
-// indent (or Adhoc) or it defeats the purpose of indents entirely.
+// Stock Transfer: direct facility-to-facility movement with no indent —
+// PM<->PM, CC/FC<->CC/FC, CC/FC<->PM Store, and PM->CC/FC all go through
+// this one route. (Previously PM->CC/FC had its own separate "Adhoc" route
+// with its own destination restriction, kept apart from this one on the
+// theory that indent-vs-no-indent was the meaningful split. It isn't: the
+// PnL-relevant split is purely from.warehouse_type='PM_STORE' AND
+// to.warehouse_type!='PM_STORE' vs not, which doesn't care which route a
+// PM->CC/FC movement came through. The old Adhoc route was retired in
+// favor of one unified endpoint.)
 app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
   const transferSchema = z.object({
     from_warehouse_id: z.coerce.number().int().positive(),
@@ -1195,9 +1126,6 @@ app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EX
     if (!fromWh) throw new ApiError(404, 'WAREHOUSE_NOT_FOUND', `Warehouse ${from_warehouse_id} not found`);
     if (!toWh) throw new ApiError(404, 'WAREHOUSE_NOT_FOUND', `Warehouse ${to_warehouse_id} not found`);
     if (from_warehouse_id === to_warehouse_id) throw new ApiError(422, 'INVALID_DEST', 'Source and destination warehouse cannot be the same');
-    if (fromWh.warehouse_type === 'PM_STORE' && toWh.warehouse_type !== 'PM_STORE') {
-      throw new ApiError(422, 'INVALID_DEST', 'PM Store can only transfer to another PM Store via Stock Transfer — use an indent or Adhoc dispatch for PM Store to CC/FC movement');
-    }
 
     const materialIds = items.map((i) => i.material_id);
     const matsRes = await client.query('SELECT id, code, unit FROM materials WHERE id = ANY($1)', [materialIds]);
