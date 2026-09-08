@@ -191,7 +191,7 @@ function IssueListItem({ issue, onSelect }) {
         </div>
         <div className="text-xs text-slate-500">{issue.issue_ref} · from {issue.from_warehouse_name}</div>
         <div className="text-xs text-slate-400 mt-0.5">
-          {issue.indent_ref ? `Indent ${issue.indent_ref}` : 'Direct Transfer'} · {issue.issue_date?.slice(0, 10)}
+          {issue.indent_ref ? `Indent ${issue.indent_ref}` : issue.from_warehouse_type === 'PM_STORE' ? 'Adhoc Issue' : 'Stock Transfer'} · {issue.issue_date?.slice(0, 10)}
           {issue.created_at && ` · ${new Date(issue.created_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}`}
         </div>
       </div>
