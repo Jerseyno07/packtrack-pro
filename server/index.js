@@ -706,6 +706,7 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
           finalQty = d.no_of_rolls * mat.stickers_per_roll;
         } else if (mat.unit === 'Roll') {
           if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${d.sku_code}' requires no_of_rolls column` }); continue; }
+          if (!mat.meters_per_unit) { errors.push({ row: rowNum, error: `Material '${d.sku_code}' is missing its meters_per_unit configuration — set it on the Materials tab before uploading` }); continue; }
           finalQty = d.no_of_rolls * Number(mat.meters_per_unit);
         } else if (mat.pieces_per_kg) {
           if (!d.po_qty) { errors.push({ row: rowNum, error: `'${d.sku_code}' requires po_qty column (enter quantity in kg)` }); continue; }

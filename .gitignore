@@ -5,3 +5,6 @@ server/.env
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 graft/
+
+# Vendor API docs dropped in for reference — may contain live credentials, never commit.
+DICE_ERP_*.docx
