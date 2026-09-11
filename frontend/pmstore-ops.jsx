@@ -1280,7 +1280,7 @@ export default function PMStoreOps() {
     { target: 'indent-list', title: 'Issue Against Indent — Pending Indents', body: 'Each card is an approved material request from an FC or CC facility waiting to be fulfilled. Shows facility, material, and pending qty.', onEnter: () => setTab('issue') },
     { target: null, title: 'Dispatch Details', body: 'Qty defaults to the indent\'s pending amount — adjust only for partial dispatches. Vehicle No is the transport vehicle carrying the goods (optional).' },
     { target: null, title: 'Confirm Issue', body: 'Records the dispatch, deducts from PM Store stock, and notifies the receiving FC/CC exec to acknowledge receipt in their app.' },
-    { target: null, title: 'Store Stock', body: 'The Store Stock tab shows current on-hand quantities at this PM Store. Check here before issuing against an indent to confirm sufficient stock is available.', onEnter: () => setTab('stock') },
+    { target: null, title: 'Store Stock', body: 'The Store Stock tab shows current on-hand quantities at this PM Store. Check here before issuing against an indent to confirm sufficient stock is available. Use the download icon to export the current view as a CSV.', onEnter: () => setTab('stock') },
     { target: 'tour-btn-pmstore', title: "You're all set!", body: 'Hit the ? button at the bottom-right any time to replay this tour.' },
   ];
 
