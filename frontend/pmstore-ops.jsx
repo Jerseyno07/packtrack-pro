@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone } from 'lucide-react';
+import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone, Download } from 'lucide-react';
 
 function useInstallPrompt() {
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
@@ -983,11 +983,37 @@ function StoreStockView({ token, warehouseId }) {
 
   useEffect(() => { load(); }, [load]);
 
+  function exportCsv() {
+    const exportDate = new Date().toISOString().slice(0, 10);
+    const header = ['Item Code', 'Item Name', 'Qty', 'Unit', 'Facility Name', 'Facility Code', 'Date'];
+    const rows = stock.map((s) => [
+      s.material_code,
+      s.material_name,
+      toDisp(s, s.on_hand_qty),
+      dispUnit(s),
+      s.warehouse_name,
+      s.warehouse_code,
+      exportDate,
+    ]);
+    const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const facName = (stock[0]?.warehouse_name || 'facility').replace(/\s+/g, '_');
+    const facCode = stock[0]?.warehouse_code || 'NA';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${facName}_${facCode}_${exportDate}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   return (
     <div className="space-y-3 max-w-2xl">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold text-slate-900">Store Stock</h2>
-        <button onClick={load} className="p-2 text-slate-400 hover:text-slate-600"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+        <div className="flex items-center gap-1">
+          <button onClick={exportCsv} disabled={stock.length === 0} className="p-2 text-slate-400 hover:text-slate-600 disabled:opacity-30 disabled:cursor-not-allowed" title="Export CSV"><Download size={16} /></button>
+          <button onClick={load} className="p-2 text-slate-400 hover:text-slate-600"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+        </div>
       </div>
       {error && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{error}</div>}
       {loading ? <div className="text-center text-sm text-slate-400 py-10">Loading…</div> : (
