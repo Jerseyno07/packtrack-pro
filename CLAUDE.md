@@ -30,3 +30,20 @@ After every session that makes changes, ensure:
 
 If the user ends the session without explicitly asking to log, do it anyway.
 Each changelog entry should include: what changed, why, commit hash(es).
+
+## Any frontend change must update the guide and the tour
+
+Whenever a frontend change adds, removes, or changes a button, tab, field, or
+flow (`frontend/portal.jsx`, `frontend/pmstore-ops.jsx`, `frontend/receipt-app.jsx`,
+and shared components), check both of these and update them if they now
+describe stale behavior — don't skip this even for a "small" UI change:
+
+1. **The in-app tour** (`TourOverlay.jsx`-driven step arrays in each app,
+   e.g. `pmstore-ops.jsx`'s `tourSteps`) — any step describing the
+   changed element's location or behavior.
+2. **`~/Documents/ninjacart/PackTrack Pro/07 - UI Guide.md`** — the row(s)
+   documenting the changed screen/element.
+
+This was missed once (2026-09-11, CSV export added to PM Store Ops' Store
+Stock tab, caught only because the user asked) — treat it as a required
+step alongside the commit/changelog logging above, not an afterthought.
