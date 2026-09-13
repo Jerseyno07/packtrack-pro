@@ -11,6 +11,10 @@ const transporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)
   ? nodemailer.createTransport({
       service: 'gmail',
       auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+      // Railway's container resolves smtp.gmail.com to an IPv6 address that isn't
+      // actually routable there (ENETUNREACH), a known Node 18 DNS-ordering issue
+      // on hosts without real IPv6 egress. Forcing IPv4 avoids it entirely.
+      family: 4,
     })
   : null;
 
