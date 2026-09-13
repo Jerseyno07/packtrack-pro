@@ -1,9 +1,18 @@
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
 // Fire-and-log outbound email, same convention as notifyFlashFacilityCleared in
 // index.js: never blocks or fails the caller's request on the email call, always
 // records the outcome via the audit_log writer passed in.
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+//
+// Sends via Gmail SMTP using an App Password on an existing Google account
+// (no domain/DNS verification needed, unlike Resend/SES) — GMAIL_USER is the
+// sending address, GMAIL_APP_PASSWORD the 16-character app password.
+const transporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)
+  ? nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    })
+  : null;
 
 const ROLE_LABEL = {
   ADMIN: 'Admin',
@@ -11,17 +20,16 @@ const ROLE_LABEL = {
 };
 
 async function sendInviteEmail({ toEmail, role, invitedUserId, writeAudit, pool }) {
-  if (!resend) return; // RESEND_API_KEY unset — integration disabled, matches FLASH_OUTBOUND_URL convention
+  if (!transporter) return; // GMAIL_USER/GMAIL_APP_PASSWORD unset — integration disabled, matches FLASH_OUTBOUND_URL convention
 
   const appUrl = process.env.FRONTEND_ORIGIN || '';
   const roleLabel = ROLE_LABEL[role] || role;
-  const from = process.env.RESEND_FROM_EMAIL || 'PackTrack Pro <onboarding@resend.dev>';
 
-  let responseId = null;
+  let messageId = null;
   let errorMessage = null;
   try {
-    const result = await resend.emails.send({
-      from,
+    const result = await transporter.sendMail({
+      from: `PackTrack Pro <${process.env.GMAIL_USER}>`,
       to: toEmail,
       subject: "You've been added to PackTrack Pro",
       html: `
@@ -33,8 +41,7 @@ async function sendInviteEmail({ toEmail, role, invitedUserId, writeAudit, pool 
         <p>— PackTrack Pro</p>
       `,
     });
-    if (result.error) errorMessage = result.error.message;
-    else responseId = result.data?.id || null;
+    messageId = result.messageId || null;
   } catch (e) {
     errorMessage = e.message;
   }
@@ -44,7 +51,7 @@ async function sendInviteEmail({ toEmail, role, invitedUserId, writeAudit, pool 
     action: errorMessage ? 'INVITE_EMAIL_FAILED' : 'INVITE_EMAIL_SENT',
     entityTable: 'users',
     entityId: invitedUserId,
-    detail: { to: toEmail, role, resend_id: responseId, error: errorMessage },
+    detail: { to: toEmail, role, message_id: messageId, error: errorMessage },
   }).catch(() => {});
 }
 
