@@ -112,6 +112,14 @@ app.use(helmet({
       'img-src':     ["'self'", 'data:', 'https://*.clarity.ms'],
     },
   },
+  // helmet's default 'same-origin' severs window.opener between this page and any
+  // popup it opens — including Google Identity Services' Sign-In popup. Without
+  // this override, the popup completes but can't call back to report the
+  // credential or close itself, leaving a permanently blank page on Google's
+  // internal completion URL (accounts.google.com/gsi/transform). This value still
+  // isolates us from cross-origin popups opening *us*, it only allows the
+  // popups *we* open to talk back.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
 }));
 // Fail closed in production if FRONTEND_ORIGIN isn't set — the old fallback
 // (`|| true`) reflected any Origin header back as allowed, which combined
