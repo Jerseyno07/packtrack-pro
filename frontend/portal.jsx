@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from 'react';
 import { Upload, FileSpreadsheet, Package, AlertTriangle, CheckCircle2, Clock, TrendingUp, LogOut, ChevronRight, Truck, Box, Calendar, Download, Shield, RefreshCw, X, Zap, Users, BookOpen, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import TourOverlay from './TourOverlay.jsx';
 
@@ -43,11 +43,37 @@ function StatCard({ icon: Icon, label, value, sub, tone }) {
 }
 
 // ── LOGIN ───────────────────────────────────────────────────────────────────
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+
+// Loads the Google Identity Services script once and renders a "Sign in with
+// Google" button into `buttonRef`. `onCredential` receives the raw ID token.
+function useGoogleSignIn(buttonRef, onCredential) {
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) return;
+    function render() {
+      if (!window.google?.accounts?.id || !buttonRef.current) return;
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        hd: 'ninjacart.com',
+        callback: (response) => onCredential(response.credential),
+      });
+      window.google.accounts.id.renderButton(buttonRef.current, { theme: 'outline', size: 'large', width: 296 });
+    }
+    if (window.google?.accounts?.id) { render(); return; }
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.onload = render;
+    document.head.appendChild(script);
+  }, [buttonRef, onCredential]);
+}
+
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const googleButtonRef = useRef(null);
 
   async function submit() {
     setError(''); setLoading(true);
@@ -63,6 +89,22 @@ function LoginScreen({ onLogin }) {
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
 
+  const handleGoogleCredential = useCallback(async (idToken) => {
+    setError('');
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/auth/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id_token: idToken }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Google sign-in failed');
+      onLogin(data.token, data.user);
+    } catch (e) { setError(e.message); }
+  }, [onLogin]);
+
+  useGoogleSignIn(googleButtonRef, handleGoogleCredential);
+
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl p-8 w-full max-w-sm shadow-2xl">
@@ -71,6 +113,17 @@ function LoginScreen({ onLogin }) {
           <span className="font-bold text-lg text-slate-900">PackTrack Portal</span>
         </div>
         <p className="text-sm text-slate-500 mb-6">Indent & PO management</p>
+
+        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3">{error}</div>}
+
+        {GOOGLE_CLIENT_ID && (
+          <div className="mb-4">
+            <div ref={googleButtonRef} className="flex justify-center" />
+            <div className="flex items-center gap-2 my-4">
+              <div className="flex-1 h-px bg-slate-200" /><span className="text-xs text-slate-400">or</span><div className="flex-1 h-px bg-slate-200" />
+            </div>
+          </div>
+        )}
 
         <div className="space-y-3">
           <div>
@@ -81,7 +134,6 @@ function LoginScreen({ onLogin }) {
             <label className="text-xs font-medium text-slate-500 mb-1 block">Password</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
-          {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
           <button onClick={submit} disabled={loading} className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-60">
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
@@ -721,6 +773,15 @@ function AdminPanel({ token, tabOverride }) {
   const [resetSubmitting, setResetSubmitting] = useState(false);
   const [resetError, setResetError] = useState('');
 
+  const [pmStoreWarehouses, setPmStoreWarehouses] = useState([]);
+  const [inviteForm, setInviteForm] = useState({ email: '', role: 'PM_STORE_EXEC', warehouse_ids: [] });
+  const [inviteSubmitting, setInviteSubmitting] = useState(false);
+  const [inviteError, setInviteError] = useState('');
+  const [inviteSuccess, setInviteSuccess] = useState('');
+  const [editUserModal, setEditUserModal] = useState(null); // { id, role, warehouse_ids, is_active }
+  const [editUserSubmitting, setEditUserSubmitting] = useState(false);
+  const [editUserError, setEditUserError] = useState('');
+
   const hdrs = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   const fetchOverview = useCallback(async () => {
@@ -932,6 +993,76 @@ function AdminPanel({ token, tabOverride }) {
     finally { setUsersLoading(false); }
   }, [token]);
 
+  const fetchPmStoreWarehouses = useCallback(async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs });
+      const data = await res.json();
+      if (res.ok) setPmStoreWarehouses((data.data ?? []).filter((w) => w.warehouse_type === 'PM_STORE').map((w) => ({ ...w, id: Number(w.id) })));
+    } catch { /* silent */ }
+  }, [token]);
+
+  async function submitInvite() {
+    setInviteError(''); setInviteSuccess('');
+    if (!inviteForm.email.trim()) { setInviteError('Email is required.'); return; }
+    if (inviteForm.role === 'PM_STORE_EXEC' && inviteForm.warehouse_ids.length === 0) {
+      setInviteError('Select at least one PM Store facility.'); return;
+    }
+    setInviteSubmitting(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/users`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({
+          email: inviteForm.email.trim(),
+          role: inviteForm.role,
+          warehouse_ids: inviteForm.role === 'PM_STORE_EXEC' ? inviteForm.warehouse_ids : [],
+          auth_provider: 'GOOGLE',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Invite failed');
+      setInviteSuccess(`Invited ${data.user.email} — they can now sign in with Google at this URL.`);
+      setInviteForm({ email: '', role: 'PM_STORE_EXEC', warehouse_ids: [] });
+      fetchUsers();
+    } catch (e) {
+      setInviteError(e.message);
+    } finally {
+      setInviteSubmitting(false);
+    }
+  }
+
+  async function submitEditUser() {
+    if (!editUserModal) return;
+    setEditUserError('');
+    if (editUserModal.role === 'PM_STORE_EXEC' && editUserModal.warehouse_ids.length === 0) {
+      setEditUserError('Select at least one PM Store facility.'); return;
+    }
+    setEditUserSubmitting(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/users/${editUserModal.id}`, {
+        method: 'PATCH', headers: hdrs,
+        body: JSON.stringify({ role: editUserModal.role, warehouse_ids: editUserModal.warehouse_ids, is_active: editUserModal.is_active }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Update failed');
+      setEditUserModal(null);
+      fetchUsers();
+    } catch (e) {
+      setEditUserError(e.message);
+    } finally {
+      setEditUserSubmitting(false);
+    }
+  }
+
+  async function toggleUserActive(u) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/users/${u.id}`, {
+        method: 'PATCH', headers: hdrs,
+        body: JSON.stringify({ is_active: !u.is_active }),
+      });
+      if (res.ok) fetchUsers();
+    } catch { /* silent */ }
+  }
+
   async function submitResetPassword() {
     if (!resetPassword) { setResetError('New password is required.'); return; }
     if (resetPassword.length < 8) { setResetError('Password must be at least 8 characters.'); return; }
@@ -1017,7 +1148,7 @@ function AdminPanel({ token, tabOverride }) {
         .catch(() => {});
     }
   }, [tab]);
-  useEffect(() => { if (tab === 'users') fetchUsers(); }, [tab, fetchUsers]);
+  useEffect(() => { if (tab === 'users') { fetchUsers(); fetchPmStoreWarehouses(); } }, [tab, fetchUsers, fetchPmStoreWarehouses]);
 
   async function submitReverse() {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
@@ -1239,6 +1370,9 @@ function AdminPanel({ token, tabOverride }) {
                           {new Date(si.created_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}
                         </div>
                       )}
+                      {si.dispatched_by_name && (
+                        <div className="text-xs text-slate-400">by {si.dispatched_by_name}</div>
+                      )}
                     </td>
                     <td className="px-4 py-3"><Badge tone={issueStatusTone(si)}>{issueStatusLabel(si)}</Badge></td>
                     <td className="px-4 py-3 text-right">
@@ -1450,6 +1584,7 @@ function AdminPanel({ token, tabOverride }) {
               <thead className="bg-slate-50 text-slate-500 text-xs">
                 <tr>
                   <th className="text-left px-4 py-2.5">Time</th>
+                  <th className="text-left px-4 py-2.5">User</th>
                   <th className="text-left px-4 py-2.5">Action</th>
                   <th className="text-left px-4 py-2.5">Entity</th>
                   <th className="text-left px-4 py-2.5">Detail</th>
@@ -1457,11 +1592,12 @@ function AdminPanel({ token, tabOverride }) {
                 </tr>
               </thead>
               <tbody>
-                {auditLoading && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
-                {!auditLoading && auditRows.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No audit entries</td></tr>}
+                {auditLoading && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400"><RefreshCw size={14} className="animate-spin inline mr-1" />Loading…</td></tr>}
+                {!auditLoading && auditRows.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">No audit entries</td></tr>}
                 {auditRows.map((r, i) => (
                   <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-2.5 text-slate-400 text-xs whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-700" title={r.user_email || ''}>{r.user_name || 'System'}</td>
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-700">{r.action}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500">{r.entity_table} #{r.entity_id}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500 max-w-[200px] truncate">{typeof r.detail === 'object' ? JSON.stringify(r.detail) : r.detail}</td>
@@ -2103,55 +2239,224 @@ function AdminPanel({ token, tabOverride }) {
         </div>
       )}
 
-      {tab === 'users' && (
-        <div className="space-y-3">
+      {tab === 'users' && (() => {
+        const googleUsers = usersList.filter((u) => u.auth_provider === 'GOOGLE');
+        const passwordUsers = usersList.filter((u) => u.auth_provider !== 'GOOGLE');
+        return (
+        <div className="space-y-8">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="font-semibold text-slate-800">User Accounts</h3>
-              <p className="text-xs text-slate-500 mt-0.5">Reset passwords for any user account.</p>
+              <p className="text-xs text-slate-500 mt-0.5">Invite people to sign in with Google, or manage password-based accounts.</p>
             </div>
             <button onClick={fetchUsers} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
               <RefreshCw size={14} />
             </button>
           </div>
-          {usersLoading ? (
-            <div className="py-12 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
-          ) : (
-            <div data-tour="users-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-              <table className="w-full text-sm min-w-[500px]">
-                <thead className="bg-slate-50 text-slate-500 text-xs">
-                  <tr>
-                    <th className="text-left px-4 py-2.5">Email</th>
-                    <th className="text-left px-4 py-2.5">Name</th>
-                    <th className="text-left px-4 py-2.5">Role</th>
-                    <th className="text-left px-4 py-2.5">Status</th>
-                    <th className="px-4 py-2.5"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {usersList.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No users</td></tr>}
-                  {usersList.map((u) => (
-                    <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
-                      <td className="px-4 py-3 text-slate-800 font-medium">{u.email}</td>
-                      <td className="px-4 py-3 text-slate-600">{u.name}</td>
-                      <td className="px-4 py-3"><Badge tone="gray">{u.role.replace(/_/g, ' ')}</Badge></td>
-                      <td className="px-4 py-3">
-                        <Badge tone={u.is_active ? 'green' : 'red'}>{u.is_active ? 'Active' : 'Inactive'}</Badge>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => { setResetModal(u); setResetPassword(''); setResetConfirm(''); setResetError(''); }}
-                          className="text-xs px-2 py-1 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium"
-                        >
-                          Reset Password
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+
+          {/* ── Section A: Invite User (Google sign-in — ADMIN / PM_STORE_EXEC) ── */}
+          <div className="space-y-3">
+            <div>
+              <h4 className="font-semibold text-slate-800 text-sm">Invite User</h4>
+              <p className="text-xs text-slate-500 mt-0.5">Adds an email + role. That person signs in with their Ninjacart Google account — no password to set or share.</p>
             </div>
-          )}
+            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3 max-w-xl">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">Email <span className="text-red-500">*</span></label>
+                  <input type="email" value={inviteForm.email} onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))}
+                    placeholder="name@ninjacart.com"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">Role <span className="text-red-500">*</span></label>
+                  <select value={inviteForm.role} onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value, warehouse_ids: [] }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="PM_STORE_EXEC">PM Store Exec</option>
+                    <option value="ADMIN">Admin</option>
+                  </select>
+                </div>
+              </div>
+              {inviteForm.role === 'PM_STORE_EXEC' && (
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">PM Store Facility <span className="text-red-500">*</span></label>
+                  <div className="flex flex-wrap gap-2">
+                    {pmStoreWarehouses.map((w) => {
+                      const checked = inviteForm.warehouse_ids.includes(w.id);
+                      return (
+                        <button key={w.id} type="button"
+                          onClick={() => setInviteForm((p) => ({
+                            ...p,
+                            warehouse_ids: checked ? p.warehouse_ids.filter((id) => id !== w.id) : [...p.warehouse_ids, w.id],
+                          }))}
+                          className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium ${checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-600'}`}
+                        >
+                          {w.name}
+                        </button>
+                      );
+                    })}
+                    {pmStoreWarehouses.length === 0 && <span className="text-xs text-slate-400">No PM Store facilities found.</span>}
+                  </div>
+                </div>
+              )}
+              {inviteError && (
+                <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                  <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{inviteError}
+                </div>
+              )}
+              {inviteSuccess && (
+                <div className="flex items-start gap-2 text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2">
+                  <CheckCircle2 size={15} className="mt-0.5 flex-shrink-0" />{inviteSuccess}
+                </div>
+              )}
+              <button onClick={submitInvite} disabled={inviteSubmitting}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {inviteSubmitting ? 'Inviting…' : 'Invite'}
+              </button>
+            </div>
+
+            {usersLoading ? (
+              <div className="py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
+            ) : (
+              <div data-tour="users-table" className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+                <table className="w-full text-sm min-w-[500px]">
+                  <thead className="bg-slate-50 text-slate-500 text-xs">
+                    <tr>
+                      <th className="text-left px-4 py-2.5">Email</th>
+                      <th className="text-left px-4 py-2.5">Name</th>
+                      <th className="text-left px-4 py-2.5">Role</th>
+                      <th className="text-left px-4 py-2.5">Status</th>
+                      <th className="px-4 py-2.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {googleUsers.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No invited users yet</td></tr>}
+                    {googleUsers.map((u) => (
+                      <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
+                        <td className="px-4 py-3 text-slate-800 font-medium">{u.email}</td>
+                        <td className="px-4 py-3 text-slate-600">{u.name}</td>
+                        <td className="px-4 py-3"><Badge tone="gray">{u.role.replace(/_/g, ' ')}</Badge></td>
+                        <td className="px-4 py-3">
+                          {!u.is_active ? <Badge tone="red">Inactive</Badge>
+                            : u.has_signed_in ? <Badge tone="green">Active</Badge>
+                            : <Badge tone="amber">Invited — awaiting first sign-in</Badge>}
+                        </td>
+                        <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                          <button
+                            onClick={() => setEditUserModal({ id: u.id, role: u.role, warehouse_ids: (u.warehouse_ids ?? []).map(Number), is_active: u.is_active })}
+                            className="text-xs px-2 py-1 rounded-md bg-slate-50 text-slate-600 hover:bg-slate-100 font-medium"
+                          >Edit</button>
+                          <button
+                            onClick={() => toggleUserActive(u)}
+                            className={`text-xs px-2 py-1 rounded-md font-medium ${u.is_active ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'}`}
+                          >{u.is_active ? 'Deactivate' : 'Activate'}</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* ── Section B: Password Accounts (receipt-app roles + admin@packtrack.local) ── */}
+          <div className="space-y-3">
+            <div>
+              <h4 className="font-semibold text-slate-800 text-sm">Password Accounts</h4>
+              <p className="text-xs text-slate-500 mt-0.5">CC/FC facility accounts and the local test admin account. Not moving to Google sign-in this phase — reset passwords here.</p>
+            </div>
+            {usersLoading ? (
+              <div className="py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
+            ) : (
+              <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+                <table className="w-full text-sm min-w-[500px]">
+                  <thead className="bg-slate-50 text-slate-500 text-xs">
+                    <tr>
+                      <th className="text-left px-4 py-2.5">Email</th>
+                      <th className="text-left px-4 py-2.5">Name</th>
+                      <th className="text-left px-4 py-2.5">Role</th>
+                      <th className="text-left px-4 py-2.5">Status</th>
+                      <th className="px-4 py-2.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {passwordUsers.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No users</td></tr>}
+                    {passwordUsers.map((u) => (
+                      <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
+                        <td className="px-4 py-3 text-slate-800 font-medium">{u.email}</td>
+                        <td className="px-4 py-3 text-slate-600">{u.name}</td>
+                        <td className="px-4 py-3"><Badge tone="gray">{u.role.replace(/_/g, ' ')}</Badge></td>
+                        <td className="px-4 py-3">
+                          <Badge tone={u.is_active ? 'green' : 'red'}>{u.is_active ? 'Active' : 'Inactive'}</Badge>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => { setResetModal(u); setResetPassword(''); setResetConfirm(''); setResetError(''); }}
+                            className="text-xs px-2 py-1 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium"
+                          >
+                            Reset Password
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+        );
+      })()}
+
+      {editUserModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="font-bold text-slate-900">Edit User</div>
+              <button onClick={() => setEditUserModal(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Role</label>
+              <select value={editUserModal.role} onChange={(e) => setEditUserModal((p) => ({ ...p, role: e.target.value, warehouse_ids: [] }))}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="PM_STORE_EXEC">PM Store Exec</option>
+                <option value="ADMIN">Admin</option>
+              </select>
+            </div>
+            {editUserModal.role === 'PM_STORE_EXEC' && (
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">PM Store Facility</label>
+                <div className="flex flex-wrap gap-2">
+                  {pmStoreWarehouses.map((w) => {
+                    const checked = editUserModal.warehouse_ids.includes(w.id);
+                    return (
+                      <button key={w.id} type="button"
+                        onClick={() => setEditUserModal((p) => ({
+                          ...p,
+                          warehouse_ids: checked ? p.warehouse_ids.filter((id) => id !== w.id) : [...p.warehouse_ids, w.id],
+                        }))}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium ${checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-600'}`}
+                      >
+                        {w.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {editUserError && (
+              <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{editUserError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditUserModal(null)} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Cancel</button>
+              <button onClick={submitEditUser} disabled={editUserSubmitting}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {editUserSubmitting ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -2291,6 +2596,7 @@ function DownloadsSection({ token }) {
                 <th className="text-left px-4 py-2.5">Batch Ref</th>
                 <th className="text-left px-4 py-2.5">Filename</th>
                 <th className="text-left px-4 py-2.5">Uploaded</th>
+                <th className="text-left px-4 py-2.5">Uploaded By</th>
                 <th className="text-right px-4 py-2.5">Rows</th>
                 <th className="px-4 py-2.5"></th>
               </tr>
@@ -2304,6 +2610,7 @@ function DownloadsSection({ token }) {
                   <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.batch_ref}</td>
                   <td className="px-4 py-3 text-slate-700 max-w-xs truncate" title={row.source_filename}>{row.source_filename}</td>
                   <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{new Date(row.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td className="px-4 py-3 text-slate-500">{row.uploaded_by_name || '—'}</td>
                   <td className="px-4 py-3 text-right text-slate-600">{row.valid_rows}</td>
                   <td className="px-4 py-3 text-right">
                     <button onClick={() => handleDownload(row)}
@@ -2600,14 +2907,14 @@ export default function App() {
             { target: 'po-table', title: 'Purchase Orders Table', body: 'Each row is a PO line. The Cancel button withdraws an active PO; Reverse Force Complete (visible on force-completed POs) undoes an accidental close — both require a written reason.' },
             { target: 'issues-table', title: 'Stock Issues', body: 'Every dispatch from the PM Store to an FC or CC facility appears here. The Cancel button removes a pending dispatch before it is received at the destination.', onEnter: () => setAdminTabForTour('issues') },
             { target: 'transit-diff-table', title: 'Transit Difference', body: 'Flags dispatches that closed (fully received or force-completed) with a mismatch between what was issued and what was actually accounted for at the destination. Red = short-received, amber = over-received. Only closed dispatches appear here — an in-progress one might still be topped up.', onEnter: () => setAdminTabForTour('transit-diff') },
-            { target: 'audit-pagination', title: 'Audit Log', body: 'Every system action is recorded here — GRNs, force completes, password resets, cancellations. Use Prev and Next to page through 50 records at a time.', onEnter: () => setAdminTabForTour('audit') },
+            { target: 'audit-pagination', title: 'Audit Log', body: 'Every system action is recorded here with the real user who did it — GRNs, force completes, password resets, cancellations. Use Prev and Next to page through 50 records at a time.', onEnter: () => setAdminTabForTour('audit') },
             { target: 'sku-section', title: 'SKU Packaging Master', body: 'Maps each FSN (Ninjacart product code) to its packaging materials. The daily consumption scraper uses this mapping to deduct PM stock when units are packed at FC/CC.', onEnter: () => setAdminTabForTour('sku') },
             { target: 'sku-sample', title: 'Download SKU Sample', body: 'Download the sample to see required columns: FSN ID, SKU Name, Packing Material, plus optional secondary/tertiary columns for multi-material SKUs.' },
             { target: 'sku-upload-btn', title: 'Upload SKU Master', body: 'Upload your filled SKU master CSV here. Existing FSN rows are updated; new ones are inserted. Re-upload whenever the packaging mapping changes.' },
             { target: 'run-now', title: 'Run Consumption Scraper', body: 'Triggers the daily scraper immediately without waiting for the 5am schedule. Use after uploading a new SKU master or if yesterday\'s run failed.', onEnter: () => setAdminTabForTour('consumption') },
             { target: 'msl-filter', title: 'Min Stock Levels — Filter', body: 'Narrows the threshold grid to PM Store, FC, or CC facilities so you can focus edits on one type at a time.', onEnter: () => setAdminTabForTour('msl') },
             { target: null, title: 'Min Stock Levels — Save', body: 'Edit any threshold cell inline — it highlights amber. A Save button appears top-right once edits exist. Hit it to commit all changes at once.' },
-            { target: 'users-table', title: 'User Accounts', body: 'Lists every login account with role and status. Hit Reset Password on any row to set a new password — minimum 8 characters, confirmation required. The action is logged in the audit trail.', onEnter: () => setAdminTabForTour('users') },
+            { target: 'users-table', title: 'User Accounts', body: 'Two sections: Invite User adds an email + role for Admin/PM Store Exec — that person signs in with their Ninjacart Google account, no password involved. Password Accounts (further down) covers CC/FC facility logins and the local test admin account — Reset Password there still works exactly as before. Every invite, role change, and password reset is logged in the audit trail.', onEnter: () => setAdminTabForTour('users') },
             { target: 'tour-btn-portal', title: "You're all set!", body: 'Hit this ? button at the bottom-right any time to replay the tour.' },
           ]}
         />

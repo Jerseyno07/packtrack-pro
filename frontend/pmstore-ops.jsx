@@ -59,6 +59,7 @@ function makeApi(token) {
   }
   return {
     login: (email, password) => req('POST', '/api/v1/auth/login', { email, password }),
+    googleLogin: (idToken) => req('POST', '/api/v1/auth/google', { id_token: idToken }),
     listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN,PARTIALLY_RECEIVED'),
     pendingByFacility: () => req('GET', '/api/v1/indents/pending-by-facility'),
     batchIssue: (payload) => req('POST', '/api/v1/stock-issues/batch', payload),
@@ -94,12 +95,38 @@ function Badge({ children, tone = 'gray' }) {
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${tones[tone]}`}>{children}</span>;
 }
 
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+
+// Loads the Google Identity Services script once and renders a "Sign in with
+// Google" button into `buttonRef`. `onCredential` receives the raw ID token.
+function useGoogleSignIn(buttonRef, onCredential) {
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) return;
+    function render() {
+      if (!window.google?.accounts?.id || !buttonRef.current) return;
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        hd: 'ninjacart.com',
+        callback: (response) => onCredential(response.credential),
+      });
+      window.google.accounts.id.renderButton(buttonRef.current, { theme: 'outline', size: 'large', width: 296 });
+    }
+    if (window.google?.accounts?.id) { render(); return; }
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.onload = render;
+    document.head.appendChild(script);
+  }, [buttonRef, onCredential]);
+}
+
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const { canInstall, install, showInstructions, setShowInstructions } = useInstallPrompt();
+  const googleButtonRef = useRef(null);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -115,6 +142,18 @@ function LoginScreen({ onLogin }) {
     }
   }
 
+  const handleGoogleCredential = useCallback(async (idToken) => {
+    setError('');
+    try {
+      const data = await makeApi(null).googleLogin(idToken);
+      onLogin(data.token, data.user);
+    } catch (err) {
+      setError(err.message || 'Google sign-in failed');
+    }
+  }, [onLogin]);
+
+  useGoogleSignIn(googleButtonRef, handleGoogleCredential);
+
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
@@ -125,6 +164,19 @@ function LoginScreen({ onLogin }) {
           <div className="font-bold text-xl text-slate-900">PM Store Ops</div>
           <div className="text-sm text-slate-500 mt-1">PackTrack Pro</div>
         </div>
+        {error && (
+          <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2 mb-4">
+            <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" /><span>{error}</span>
+          </div>
+        )}
+        {GOOGLE_CLIENT_ID && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-4">
+            <div ref={googleButtonRef} className="flex justify-center" />
+            <div className="flex items-center gap-2 mt-4">
+              <div className="flex-1 h-px bg-slate-200" /><span className="text-xs text-slate-400">or</span><div className="flex-1 h-px bg-slate-200" />
+            </div>
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">Email</label>
@@ -136,11 +188,6 @@ function LoginScreen({ onLogin }) {
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
               className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
-          {error && (
-            <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
-              <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" /><span>{error}</span>
-            </div>
-          )}
           <button type="submit" disabled={loading}
             className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
             {loading ? <RefreshCw size={16} className="animate-spin" /> : <LogIn size={16} />}

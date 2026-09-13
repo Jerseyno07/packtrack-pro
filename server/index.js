@@ -62,6 +62,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const helmet = require('helmet');
 const cors = require('cors');
+const { OAuth2Client } = require('google-auth-library');
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
@@ -99,11 +100,15 @@ app.use(helmet({
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
       // 'unsafe-inline' needed for inline scripts in index.html (PWA manifest switcher, Clarity tag)
       // *.clarity.ms needed because Clarity dynamically loads a second script from c.clarity.ms
-      'script-src': ["'self'", "'unsafe-inline'", 'https://*.clarity.ms'],
+      // accounts.google.com needed for Google Identity Services (Sign in with Google, /ops + admin portal only)
+      'script-src': ["'self'", "'unsafe-inline'", 'https://*.clarity.ms', 'https://accounts.google.com'],
       // Clarity spins up a blob: web worker for off-thread data processing
       'worker-src': ["'self'", 'blob:'],
-      // Clarity sends session data to e.clarity.ms; Sentry sends error reports to ingest.sentry.io
-      'connect-src': ["'self'", 'https://*.clarity.ms', 'https://*.sentry.io'],
+      // Clarity sends session data to e.clarity.ms; Sentry sends error reports to ingest.sentry.io;
+      // accounts.google.com is Google Identity Services' token/prompt endpoint
+      'connect-src': ["'self'", 'https://*.clarity.ms', 'https://*.sentry.io', 'https://accounts.google.com'],
+      // Google Identity Services renders its One Tap/button UI in an iframe
+      'frame-src':   ["'self'", 'https://accounts.google.com'],
       'img-src':     ["'self'", 'data:', 'https://*.clarity.ms'],
     },
   },
@@ -245,18 +250,9 @@ async function getOnHandQty(client, warehouseId, materialId) {
 
 const SESSION_TTL_HOURS = 12;
 
-app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
-  const schema = z.object({ email: z.string().email(), password: z.string().min(1) });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'email and password are required');
-
-  const userRes = await pool.query('SELECT * FROM users WHERE email = $1 AND is_active', [parsed.data.email.toLowerCase()]);
-  if (!userRes.rows.length) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
-  const user = userRes.rows[0];
-
-  const ok = await bcrypt.compare(parsed.data.password, user.password_hash);
-  if (!ok) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
-
+// Shared by /auth/login and /auth/google — mints our own session for an already-
+// authenticated `users` row, regardless of how that authentication happened.
+async function issueSession(user) {
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + SESSION_TTL_HOURS * 3600 * 1000);
   await pool.query('INSERT INTO sessions (token, user_id, expires_at) VALUES ($1,$2,$3)', [token, user.id, expiresAt]);
@@ -274,11 +270,71 @@ app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
   }
   const warehouse_ids = whRes.rows.map((r) => Number(r.warehouse_id));
 
-  res.json({
+  return {
     token,
     expires_at: expiresAt,
     user: { id: user.id, name: user.name, email: user.email, role: user.role, warehouse_ids },
-  });
+  };
+}
+
+app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
+  const schema = z.object({ email: z.string().email(), password: z.string().min(1) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'email and password are required');
+
+  const userRes = await pool.query('SELECT * FROM users WHERE email = $1 AND is_active', [parsed.data.email.toLowerCase()]);
+  if (!userRes.rows.length) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
+  const user = userRes.rows[0];
+
+  if (!user.password_hash) throw new ApiError(401, 'GOOGLE_AUTH_REQUIRED', 'This account signs in with Google, not a password');
+  const ok = await bcrypt.compare(parsed.data.password, user.password_hash);
+  if (!ok) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
+
+  res.json(await issueSession(user));
+}));
+
+// Google Identity Services ID-token login — Admin Portal and PM Store Ops only
+// (phase 1). Google only proves who the person is; PackTrack's own `users` table
+// (email -> role) still decides whether they're allowed in and what they can do.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_WORKSPACE_DOMAIN = process.env.GOOGLE_WORKSPACE_DOMAIN;
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+const GOOGLE_AUTH_ROLES = ['ADMIN', 'PM_STORE_EXEC']; // phase-1 scope only
+
+app.post('/api/v1/auth/google', asyncHandler(async (req, res) => {
+  if (!googleClient) throw new ApiError(503, 'GOOGLE_AUTH_NOT_CONFIGURED', 'Google sign-in is not configured on this server');
+  const schema = z.object({ id_token: z.string().min(1) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'id_token is required');
+
+  let payload;
+  try {
+    const ticket = await googleClient.verifyIdToken({ idToken: parsed.data.id_token, audience: GOOGLE_CLIENT_ID });
+    payload = ticket.getPayload();
+  } catch (e) {
+    throw new ApiError(401, 'INVALID_GOOGLE_TOKEN', 'Could not verify Google sign-in');
+  }
+  if (!payload?.email || !payload.email_verified) throw new ApiError(401, 'INVALID_GOOGLE_TOKEN', 'Google account email is not verified');
+  // Never trust a client-side domain restriction alone — re-check the hosted-domain
+  // claim server-side, since the token itself (not the requesting client) is the
+  // only thing we can't tamper-check.
+  if (GOOGLE_WORKSPACE_DOMAIN && payload.hd !== GOOGLE_WORKSPACE_DOMAIN) {
+    throw new ApiError(403, 'DOMAIN_NOT_ALLOWED', `Google account must belong to ${GOOGLE_WORKSPACE_DOMAIN}`);
+  }
+
+  const userRes = await pool.query('SELECT * FROM users WHERE email = $1 AND is_active', [payload.email.toLowerCase()]);
+  if (!userRes.rows.length) throw new ApiError(403, 'NOT_PROVISIONED', 'This Google account isn\'t registered in PackTrack — contact an admin');
+  const user = userRes.rows[0];
+  if (!GOOGLE_AUTH_ROLES.includes(user.role)) throw new ApiError(403, 'FORBIDDEN', 'Google sign-in isn\'t available for this account\'s role yet');
+
+  if (!user.google_sub || user.google_sub !== payload.sub) {
+    // First real sign-in: bind the stable Google subject id and pull in their
+    // real name (invite-time name was just a placeholder from the email).
+    await pool.query('UPDATE users SET google_sub = $1, auth_provider = $2, name = COALESCE($3, name) WHERE id = $4', [payload.sub, 'GOOGLE', payload.name || null, user.id]);
+    user.name = payload.name || user.name;
+  }
+
+  res.json(await issueSession(user));
 }));
 
 app.post('/api/v1/auth/logout', asyncHandler(async (req, res) => {
@@ -332,30 +388,83 @@ app.post('/api/v1/auth/bootstrap-admin', asyncHandler(async (req, res) => {
 // Admin creates other users (PM Store exec, CC/FC exec)
 app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const schema = z.object({
-    name: z.string().min(1),
+    name: z.string().min(1).optional(),
     email: z.string().email(),
-    password: z.string().min(8),
+    password: z.string().min(8).optional(),
     role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP']),
-    warehouse_ids: z.array(z.number().int().positive()).optional().default([]),
+    warehouse_ids: z.array(z.coerce.number().int().positive()).optional().default([]),
+    auth_provider: z.enum(['LOCAL', 'GOOGLE']).optional().default('LOCAL'),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid user payload', parsed.error.issues);
   const d = parsed.data;
+  const isGoogle = d.auth_provider === 'GOOGLE';
+  // Google sign-in is phase-1 scoped to ADMIN/PM_STORE_EXEC — enforced here, not just in the UI.
+  if (isGoogle && !GOOGLE_AUTH_ROLES.includes(d.role)) {
+    throw new ApiError(422, 'GOOGLE_AUTH_ROLE_RESTRICTED', 'Google sign-in is only available for ADMIN and PM_STORE_EXEC roles in this phase');
+  }
+  if (!isGoogle && !d.password) throw new ApiError(400, 'VALIDATION_ERROR', 'password (min 8 chars) is required for password-based accounts');
+  if (!isGoogle && !d.name) throw new ApiError(400, 'VALIDATION_ERROR', 'name is required for password-based accounts');
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const hash = await bcrypt.hash(d.password, 10);
+    const hash = isGoogle ? null : await bcrypt.hash(d.password, 10);
+    // Google invites: no name is collected upfront — the real name arrives from
+    // their Google profile and overwrites this on first sign-in (see /auth/google).
+    const name = d.name?.trim() || d.email.split('@')[0];
     const userIns = await client.query(
-      `INSERT INTO users (name, email, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING id, name, email, role`,
-      [d.name, d.email.toLowerCase(), hash, d.role]
+      `INSERT INTO users (name, email, password_hash, role, auth_provider) VALUES ($1,$2,$3,$4,$5) RETURNING id, name, email, role, auth_provider`,
+      [name, d.email.toLowerCase(), hash, d.role, d.auth_provider]
     );
     const userId = userIns.rows[0].id;
     for (const whId of d.warehouse_ids) {
       await client.query('INSERT INTO user_warehouses (user_id, warehouse_id) VALUES ($1,$2)', [userId, whId]);
     }
-    await writeAudit(client, { userId: req.user.id, action: 'USER_CREATED', entityTable: 'users', entityId: userId, detail: { email: d.email, role: d.role } });
+    await writeAudit(client, { userId: req.user.id, action: isGoogle ? 'USER_INVITED' : 'USER_CREATED', entityTable: 'users', entityId: userId, detail: { email: d.email, role: d.role, auth_provider: d.auth_provider } });
     await client.query('COMMIT');
     res.status(201).json({ user: userIns.rows[0] });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+app.patch('/api/v1/admin/users/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const schema = z.object({
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP']).optional(),
+    warehouse_ids: z.array(z.coerce.number().int().positive()).optional(),
+    is_active: z.boolean().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid payload', parsed.error.issues);
+  const d = parsed.data;
+  if (d.role === undefined && d.warehouse_ids === undefined && d.is_active === undefined) {
+    throw new ApiError(400, 'NO_FIELDS', 'No editable fields provided');
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const prevRes = await client.query('SELECT * FROM users WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!prevRes.rows.length) throw new ApiError(404, 'NOT_FOUND', 'User not found');
+    const prev = prevRes.rows[0];
+    if (prev.auth_provider === 'GOOGLE' && d.role && !GOOGLE_AUTH_ROLES.includes(d.role)) {
+      throw new ApiError(422, 'GOOGLE_AUTH_ROLE_RESTRICTED', 'Google-authed accounts can only hold ADMIN or PM_STORE_EXEC in this phase');
+    }
+    const sets = []; const vals = [];
+    if (d.role !== undefined) { vals.push(d.role); sets.push(`role=$${vals.length}`); }
+    if (d.is_active !== undefined) { vals.push(d.is_active); sets.push(`is_active=$${vals.length}`); }
+    if (sets.length) {
+      vals.push(req.params.id);
+      await client.query(`UPDATE users SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+    }
+    if (d.warehouse_ids !== undefined) {
+      await client.query('DELETE FROM user_warehouses WHERE user_id=$1', [req.params.id]);
+      for (const whId of d.warehouse_ids) {
+        await client.query('INSERT INTO user_warehouses (user_id, warehouse_id) VALUES ($1,$2)', [req.params.id, whId]);
+      }
+    }
+    const action = d.is_active === false ? 'USER_DEACTIVATED' : (d.role !== undefined ? 'USER_ROLE_CHANGED' : 'USER_UPDATED');
+    await writeAudit(client, { userId: req.user.id, action, entityTable: 'users', entityId: Number(req.params.id), detail: { changes: d, previous: { role: prev.role, is_active: prev.is_active } } });
+    await client.query('COMMIT');
+    res.json({ ok: true });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
@@ -1201,10 +1310,12 @@ app.get('/api/v1/stock-issues', authenticate, asyncHandler(async (req, res) => {
     `SELECT si.*, m.code AS material_code, m.name AS material_name, m.unit, m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
             fw.name AS from_warehouse_name, fw.warehouse_type AS from_warehouse_type,
             tw.name AS to_warehouse_name, tw.warehouse_type AS to_warehouse_type, il.indent_ref, il.requested_qty,
+            u.name AS dispatched_by_name,
             COALESCE((SELECT SUM(received_qty) FROM stock_receipts sr WHERE sr.stock_issue_id = si.id),0) AS received_qty_sum,
             (si.issued_qty - COALESCE((SELECT SUM(received_qty+shortage_qty+damage_qty) FROM stock_receipts sr WHERE sr.stock_issue_id = si.id),0)) AS pending_qty
      FROM stock_issues si JOIN materials m ON m.id = si.material_id JOIN warehouses fw ON fw.id = si.from_warehouse_id
      JOIN warehouses tw ON tw.id = si.to_warehouse_id LEFT JOIN indent_lines il ON il.id = si.indent_line_id
+     LEFT JOIN users u ON u.id = si.dispatched_by_user_id
      ${where} ORDER BY si.issue_date DESC`, params
   );
   res.json({ data: result.rows });
@@ -1650,11 +1761,13 @@ app.get('/api/v1/ledger', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), a
 
 app.get('/api/v1/admin/downloads', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const { rows } = await pool.query(`
-    SELECT 'indent' AS type, batch_ref, source_filename, created_at, total_rows, valid_rows
-    FROM indent_batches WHERE source_file_key IS NOT NULL
+    SELECT 'indent' AS type, ib.batch_ref, ib.source_filename, ib.created_at, ib.total_rows, ib.valid_rows, u.name AS uploaded_by_name
+    FROM indent_batches ib LEFT JOIN users u ON u.id = ib.uploaded_by_user_id
+    WHERE ib.source_file_key IS NOT NULL
     UNION ALL
-    SELECT 'po' AS type, batch_ref, source_filename, created_at, total_rows, valid_rows
-    FROM po_batches WHERE source_file_key IS NOT NULL
+    SELECT 'po' AS type, pb.batch_ref, pb.source_filename, pb.created_at, pb.total_rows, pb.valid_rows, u.name AS uploaded_by_name
+    FROM po_batches pb LEFT JOIN users u ON u.id = pb.uploaded_by_user_id
+    WHERE pb.source_file_key IS NOT NULL
     ORDER BY created_at DESC
   `);
   res.json(rows);
@@ -1675,12 +1788,20 @@ app.get('/api/v1/admin/audit-log', authenticate, requireRole('ADMIN'), asyncHand
     return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
   };
 
-  const aw = buildWhere('');
-  const rw = buildWhere('', 'entity_id', 'admin_user_id');
+  const aw = buildWhere('al.');
+  const rw = buildWhere('ar.', 'entity_id', 'admin_user_id');
 
   const [auditRows, reversalRows] = await Promise.all([
-    pool.query(`SELECT 'audit' AS source, id, user_id, action, entity_table, entity_id, detail, created_at FROM audit_log ${aw.where} ORDER BY created_at DESC`, aw.params),
-    pool.query(`SELECT 'reversal' AS source, id, admin_user_id AS user_id, action, entity_table, entity_id, reason AS detail, created_at FROM admin_reversals ${rw.where} ORDER BY created_at DESC`, rw.params),
+    pool.query(
+      `SELECT 'audit' AS source, al.id, al.user_id, u.name AS user_name, u.email AS user_email,
+              al.action, al.entity_table, al.entity_id, al.detail, al.created_at
+       FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
+       ${aw.where} ORDER BY al.created_at DESC`, aw.params),
+    pool.query(
+      `SELECT 'reversal' AS source, ar.id, ar.admin_user_id AS user_id, u.name AS user_name, u.email AS user_email,
+              ar.action, ar.entity_table, ar.entity_id, ar.reason AS detail, ar.created_at
+       FROM admin_reversals ar LEFT JOIN users u ON u.id = ar.admin_user_id
+       ${rw.where} ORDER BY ar.created_at DESC`, rw.params),
   ]);
 
   const merged = [...auditRows.rows, ...reversalRows.rows]
@@ -2392,7 +2513,10 @@ app.put('/api/v1/admin/min-stock-levels', authenticate, requireRole('ADMIN'), as
 // ── Admin: User Management ────────────────────────────────────────────────
 app.get('/api/v1/admin/users', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const r = await pool.query(
-    'SELECT id, name, email, role, is_active, created_at FROM users ORDER BY role, email'
+    `SELECT u.id, u.name, u.email, u.role, u.is_active, u.auth_provider, (u.google_sub IS NOT NULL) AS has_signed_in, u.created_at,
+            COALESCE(array_agg(uw.warehouse_id) FILTER (WHERE uw.warehouse_id IS NOT NULL), '{}') AS warehouse_ids
+     FROM users u LEFT JOIN user_warehouses uw ON uw.user_id = u.id
+     GROUP BY u.id ORDER BY u.role, u.email`
   );
   res.json({ users: r.rows });
 }));
@@ -2401,8 +2525,9 @@ app.put('/api/v1/admin/users/:id/reset-password', authenticate, requireRole('ADM
   const { newPassword } = req.body;
   if (!newPassword || typeof newPassword !== 'string') throw new ApiError(400, 'VALIDATION_ERROR', 'newPassword is required');
   if (newPassword.length < 8) throw new ApiError(400, 'VALIDATION_ERROR', 'Password must be at least 8 characters');
-  const userRes = await pool.query('SELECT id, email FROM users WHERE id = $1', [req.params.id]);
+  const userRes = await pool.query('SELECT id, email, auth_provider FROM users WHERE id = $1', [req.params.id]);
   if (!userRes.rows.length) throw new ApiError(404, 'NOT_FOUND', 'User not found');
+  if (userRes.rows[0].auth_provider === 'GOOGLE') throw new ApiError(422, 'GOOGLE_AUTH_ACCOUNT', 'This account signs in with Google — there is no password to reset');
   const hash = await bcrypt.hash(newPassword, 10);
   await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.params.id]);
   await writeAudit(pool, { userId: req.user.id, action: 'ADMIN_PASSWORD_RESET', entityTable: 'users', entityId: Number(req.params.id), detail: { target_email: userRes.rows[0].email } });
