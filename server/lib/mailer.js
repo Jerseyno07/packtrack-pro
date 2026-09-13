@@ -1,22 +1,15 @@
-const nodemailer = require('nodemailer');
-
 // Fire-and-log outbound email, same convention as notifyFlashFacilityCleared in
 // index.js: never blocks or fails the caller's request on the email call, always
 // records the outcome via the audit_log writer passed in.
 //
-// Sends via Gmail SMTP using an App Password on an existing Google account
-// (no domain/DNS verification needed, unlike Resend/SES) — GMAIL_USER is the
-// sending address, GMAIL_APP_PASSWORD the 16-character app password.
-const transporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)
-  ? nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
-      // Railway's container resolves smtp.gmail.com to an IPv6 address that isn't
-      // actually routable there (ENETUNREACH), a known Node 18 DNS-ordering issue
-      // on hosts without real IPv6 egress. Forcing IPv4 avoids it entirely.
-      family: 4,
-    })
-  : null;
+// Sends via Brevo's transactional email HTTPS API (plain fetch, no SDK, matching
+// the rest of this codebase's outbound-integration style). Deliberately NOT
+// SMTP: Railway blocks outbound SMTP entirely (confirmed live — both IPv4 and
+// IPv6 connections to smtp.gmail.com timed out), so this must be a REST call.
+// BREVO_SENDER_EMAIL is a single verified sender (Brevo's "Single Sender"
+// verification — a code emailed to that address, no DNS/domain ownership
+// needed), not a verified domain, so deliverability is weaker than a fully
+// DKIM-authenticated domain but functional for this volume.
 
 const ROLE_LABEL = {
   ADMIN: 'Admin',
@@ -24,7 +17,7 @@ const ROLE_LABEL = {
 };
 
 async function sendInviteEmail({ toEmail, role, invitedUserId, writeAudit, pool }) {
-  if (!transporter) return; // GMAIL_USER/GMAIL_APP_PASSWORD unset — integration disabled, matches FLASH_OUTBOUND_URL convention
+  if (!process.env.BREVO_API_KEY || !process.env.BREVO_SENDER_EMAIL) return; // unset — integration disabled, matches FLASH_OUTBOUND_URL convention
 
   const appUrl = process.env.FRONTEND_ORIGIN || '';
   const roleLabel = ROLE_LABEL[role] || role;
@@ -32,20 +25,30 @@ async function sendInviteEmail({ toEmail, role, invitedUserId, writeAudit, pool 
   let messageId = null;
   let errorMessage = null;
   try {
-    const result = await transporter.sendMail({
-      from: `PackTrack Pro <${process.env.GMAIL_USER}>`,
-      to: toEmail,
-      subject: "You've been added to PackTrack Pro",
-      html: `
-        <p>Hi,</p>
-        <p>You've been given <strong>${roleLabel}</strong> access to PackTrack Pro.</p>
-        <p>Sign in with your Ninjacart Google account at
-          <a href="${appUrl}">${appUrl}</a> — no password needed, just use the
-          "Sign in with Google" button.</p>
-        <p>— PackTrack Pro</p>
-      `,
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': process.env.BREVO_API_KEY,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { email: process.env.BREVO_SENDER_EMAIL, name: 'PackTrack Pro' },
+        to: [{ email: toEmail }],
+        subject: "You've been added to PackTrack Pro",
+        htmlContent: `
+          <p>Hi,</p>
+          <p>You've been given <strong>${roleLabel}</strong> access to PackTrack Pro.</p>
+          <p>Sign in with your Ninjacart Google account at
+            <a href="${appUrl}">${appUrl}</a> — no password needed, just use the
+            "Sign in with Google" button.</p>
+          <p>— PackTrack Pro</p>
+        `,
+      }),
     });
-    messageId = result.messageId || null;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) errorMessage = data?.message || `HTTP ${res.status}`;
+    else messageId = data?.messageId || null;
   } catch (e) {
     errorMessage = e.message;
   }
