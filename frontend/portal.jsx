@@ -1020,7 +1020,7 @@ function AdminPanel({ token, tabOverride }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || 'Invite failed');
-      setInviteSuccess(`Invited ${data.user.email} — they can now sign in with Google at this URL.`);
+      setInviteSuccess(`Invited ${data.user.email} — they'll get an email with sign-in instructions, and can sign in with Google at this URL any time.`);
       setInviteForm({ email: '', role: 'PM_STORE_EXEC', warehouse_ids: [] });
       fetchUsers();
     } catch (e) {
@@ -2258,7 +2258,7 @@ function AdminPanel({ token, tabOverride }) {
           <div className="space-y-3">
             <div>
               <h4 className="font-semibold text-slate-800 text-sm">Invite User</h4>
-              <p className="text-xs text-slate-500 mt-0.5">Adds an email + role. That person signs in with their Ninjacart Google account — no password to set or share.</p>
+              <p className="text-xs text-slate-500 mt-0.5">Adds an email + role and sends them an invite email automatically. That person signs in with their Ninjacart Google account — no password to set or share.</p>
             </div>
             <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3 max-w-xl">
               <div className="grid grid-cols-2 gap-3">

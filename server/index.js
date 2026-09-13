@@ -63,6 +63,7 @@ const bcrypt = require('bcrypt');
 const helmet = require('helmet');
 const cors = require('cors');
 const { OAuth2Client } = require('google-auth-library');
+const { sendInviteEmail } = require('./lib/mailer');
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
@@ -432,6 +433,9 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
     await writeAudit(client, { userId: req.user.id, action: isGoogle ? 'USER_INVITED' : 'USER_CREATED', entityTable: 'users', entityId: userId, detail: { email: d.email, role: d.role, auth_provider: d.auth_provider } });
     await client.query('COMMIT');
     res.status(201).json({ user: userIns.rows[0] });
+    if (isGoogle) {
+      sendInviteEmail({ toEmail: d.email, role: d.role, invitedUserId: userId, writeAudit, pool }).catch(() => {});
+    }
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
