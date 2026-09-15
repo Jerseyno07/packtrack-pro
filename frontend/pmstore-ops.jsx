@@ -74,7 +74,6 @@ function makeApi(token) {
     confirmReceipt: (payload) => req('POST', '/api/v1/stock-receipts', payload),
     forceComplete: (issueId, reason) => req('POST', `/api/v1/stock-issues/${issueId}/force-complete`, { reason }),
     forcePO: (id, reason) => req('POST', `/api/v1/purchase-orders/${id}/force-complete`, { reason }),
-    forceIndent: (id, reason) => req('POST', `/api/v1/indent-lines/${id}/force-complete`, { reason }),
     uploadGrnImage: async (grnId, imageFile) => {
       const fd = new FormData();
       fd.append('invoice_image', imageFile);
@@ -663,9 +662,11 @@ function IssueScreen({ api }) {
   const [submitError, setSubmitError] = useState('');
   const [dispatched, setDispatched] = useState(null);
   const [dispatchRemark, setDispatchRemark] = useState('');
-  const [fcLineId, setFcLineId] = useState(null);
-  const [fcLineReason, setFcLineReason] = useState('');
-  const [fcLineSubmitting, setFcLineSubmitting] = useState(false);
+  // Line ids toggled to force-complete as PART of this dispatch, not an immediate
+  // standalone action — the actual close happens together with Confirm Dispatch,
+  // via the same shared `dispatchRemark`, so a partial qty + close-the-rest and a
+  // qty=0 + close-it-now both go through one flow instead of two disconnected ones.
+  const [forceCompleteIds, setForceCompleteIds] = useState(new Set());
 
   const load = useCallback(async () => {
     setLoading(true); setFetchError('');
@@ -707,8 +708,14 @@ function IssueScreen({ api }) {
 
   async function dispatch() {
     const items = (selectedFacility?.lines ?? [])
-      .map((l) => ({ indent_line_id: l.id, issued_qty: toBase(l, lineQtys[l.id] ?? 0) }))
-      .filter((i) => i.issued_qty > 0);
+      .map((l) => ({
+        indent_line_id: l.id,
+        issued_qty: toBase(l, lineQtys[l.id] ?? 0),
+        force_complete: forceCompleteIds.has(l.id),
+      }))
+      // Include a line if there's something to dispatch OR it's being closed —
+      // a line with qty=0 and not toggled has nothing to submit.
+      .filter((i) => i.issued_qty > 0 || i.force_complete);
     setSubmitting(true); setSubmitError('');
     try {
       const payload = { issue_date: issueDate, vehicle_no: vehicleNo || undefined, items };
@@ -720,12 +727,21 @@ function IssueScreen({ api }) {
     } finally { setSubmitting(false); }
   }
 
+  function toggleForceComplete(lineId) {
+    setForceCompleteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId); else next.add(lineId);
+      return next;
+    });
+  }
+
   function backToFacilities() {
     setSelectedFacilityId(null);
     setShowSummary(false);
     setSubmitError('');
     setVehicleNo('');
     setDispatchRemark('');
+    setForceCompleteIds(new Set());
   }
 
   function reset() {
@@ -734,21 +750,8 @@ function IssueScreen({ api }) {
     setShowSummary(false);
     setVehicleNo('');
     setDispatchRemark('');
+    setForceCompleteIds(new Set());
     load();
-  }
-
-  async function forceCompleteLine(lineId) {
-    setFcLineSubmitting(true);
-    try {
-      await api.forceIndent(lineId, fcLineReason.trim());
-      setFcLineId(null);
-      setFcLineReason('');
-      await load();
-    } catch (e) {
-      setSubmitError(e.message || 'Force complete failed.');
-    } finally {
-      setFcLineSubmitting(false);
-    }
   }
 
   // ── Success ──
@@ -811,16 +814,19 @@ function IssueScreen({ api }) {
 
   // ── Facility detail ──
   const lines = selectedFacility.lines;
+  // A line is in this batch if it has a qty to dispatch OR is toggled to close —
+  // qty=0 + toggled is valid (nothing sent, just closing the request).
   const summaryItems = lines
-    .map((l) => ({ ...l, actualQty: Number(lineQtys[l.id] ?? 0) }))
-    .filter((i) => i.actualQty > 0);
+    .map((l) => ({ ...l, actualQty: Number(lineQtys[l.id] ?? 0), willClose: forceCompleteIds.has(l.id) }))
+    .filter((i) => i.actualQty > 0 || i.willClose);
   const hasAnyQty = summaryItems.length > 0;
   const hasStockError = lines.some((l) => {
     const q = Number(lineQtys[l.id] ?? 0);
     return q > 0 && q > toDisp(l, l.pm_on_hand_qty);
   });
   const hasOverIndent = summaryItems.some((i) => i.actualQty > toDisp(i, i.pending_qty));
-  const needsDispatchRemark = hasStockError || hasOverIndent;
+  const hasAnyForceComplete = forceCompleteIds.size > 0;
+  const needsDispatchRemark = hasStockError || hasOverIndent || hasAnyForceComplete;
   const canDispatch = hasAnyQty && (!needsDispatchRemark || dispatchRemark.trim()) && !submitting;
 
   return (
@@ -883,34 +889,18 @@ function IssueScreen({ api }) {
                 {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">Exceeds indent qty — add a remark in the dispatch summary</p>}
               </div>
 
-              {fcLineId === l.id ? (
-                <div className="pt-2 border-t border-slate-100 space-y-2">
-                  <textarea
-                    rows={2}
-                    value={fcLineReason}
-                    onChange={(e) => setFcLineReason(e.target.value)}
-                    placeholder="Reason for closing this indent line…"
-                    className="w-full px-3 py-2 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
-                    autoFocus
-                  />
-                  <div className="flex gap-2">
-                    <button onClick={() => { setFcLineId(null); setFcLineReason(''); }}
-                      className="flex-1 py-2 text-sm bg-slate-100 text-slate-600 rounded-lg font-medium">
-                      Cancel
-                    </button>
-                    <button onClick={() => forceCompleteLine(l.id)} disabled={!fcLineReason.trim() || fcLineSubmitting}
-                      className="flex-1 py-2 text-sm bg-amber-600 text-white rounded-lg font-medium disabled:opacity-40 flex items-center justify-center gap-1.5">
-                      {fcLineSubmitting ? <RefreshCw size={13} className="animate-spin" /> : <Zap size={13} />}
-                      Close Indent
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button onClick={() => { setFcLineId(l.id); setFcLineReason(''); }}
-                  className="text-xs text-amber-600 font-medium flex items-center gap-1 hover:text-amber-800">
-                  <Zap size={12} /> Force Complete this indent
-                </button>
-              )}
+              <label className="flex items-start gap-2 pt-2 border-t border-slate-100 cursor-pointer">
+                <input type="checkbox" checked={forceCompleteIds.has(l.id)} onChange={() => toggleForceComplete(l.id)}
+                  className="mt-0.5 w-4 h-4 accent-amber-600" />
+                <span className="text-xs text-amber-700">
+                  <span className="font-medium flex items-center gap-1"><Zap size={12} /> Close this indent after dispatch</span>
+                  <span className="block text-slate-500 mt-0.5">
+                    {qtyNum > 0
+                      ? `Sends ${qty} ${unit} now, then closes the indent — no further qty will be expected.`
+                      : 'Closes the indent without sending anything.'}
+                  </span>
+                </span>
+              </label>
             </div>
           );
         })}
@@ -919,7 +909,7 @@ function IssueScreen({ api }) {
       {/* Sticky dispatch bar */}
       <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
         <div className="max-w-lg mx-auto">
-          {needsDispatchRemark && <p className="text-xs text-amber-600 text-center mb-2">Qty mismatch detected — add a remark in the summary to continue.</p>}
+          {needsDispatchRemark && <p className="text-xs text-amber-600 text-center mb-2">{hasAnyForceComplete ? 'Closing an indent — add a remark in the summary to continue.' : 'Qty mismatch detected — add a remark in the summary to continue.'}</p>}
           <button onClick={() => setShowSummary(true)} disabled={!hasAnyQty}
             className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:bg-blue-700">
             <Truck size={18} /> Review & Dispatch ({summaryItems.length} item{summaryItems.length !== 1 ? 's' : ''})
@@ -938,13 +928,18 @@ function IssueScreen({ api }) {
 
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
               {summaryItems.map((item) => (
-                <div key={item.id} className="flex items-center justify-between gap-3 py-1">
+                <div key={item.id} className="flex items-center justify-between gap-3 py-1.5 border-b border-slate-50 last:border-0">
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-slate-900 leading-tight">{item.material_name}</div>
                     <div className="text-xs text-slate-400 mt-0.5">{item.indent_ref}</div>
+                    <span className={`inline-block mt-1 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${item.willClose ? 'bg-amber-100 text-amber-700' : item.actualQty >= toDisp(item, item.pending_qty) ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-600'}`}>
+                      {item.willClose ? 'Will close' : item.actualQty >= toDisp(item, item.pending_qty) ? 'Fully issued' : 'Remains open'}
+                    </span>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="font-bold text-slate-900">{item.actualQty} <span className="text-slate-400 font-normal text-xs">{dispUnit(item)}</span></div>
+                    <div className="font-bold text-slate-900">
+                      {item.actualQty > 0 ? <>{item.actualQty} <span className="text-slate-400 font-normal text-xs">{dispUnit(item)}</span></> : <span className="text-slate-400 font-normal">— nothing sent</span>}
+                    </div>
                     <div className="text-xs text-slate-400">of {toDisp(item, item.pending_qty)} pending</div>
                   </div>
                 </div>
@@ -964,13 +959,16 @@ function IssueScreen({ api }) {
                 {needsDispatchRemark && (
                   <div>
                     <label className="text-xs font-medium text-amber-700 mb-1 block">
-                      Remark <span className="text-red-500">*</span> <span className="text-slate-400 font-normal">(required — qty mismatch)</span>
+                      Remark <span className="text-red-500">*</span>{' '}
+                      <span className="text-slate-400 font-normal">
+                        (required — {hasAnyForceComplete ? 'closing an indent' : 'qty mismatch'})
+                      </span>
                     </label>
                     <textarea
                       rows={2}
                       value={dispatchRemark}
                       onChange={(e) => setDispatchRemark(e.target.value)}
-                      placeholder="Reason for the quantity difference…"
+                      placeholder={hasAnyForceComplete ? 'Reason for closing the indent(s)…' : 'Reason for the quantity difference…'}
                       className="w-full px-3 py-3 border border-amber-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
                     />
                   </div>
@@ -1326,7 +1324,8 @@ export default function PMStoreOps() {
     { target: null, title: 'Force Complete', body: 'Closes the PO with whatever qty was received so far. No further GRNs are allowed. An admin can reverse this from the admin portal if done by mistake.' },
     { target: 'indent-list', title: 'Issue Against Indent — Pending Indents', body: 'Each card is an approved material request from an FC or CC facility waiting to be fulfilled. Shows facility, material, and pending qty.', onEnter: () => setTab('issue') },
     { target: null, title: 'Dispatch Details', body: 'Qty defaults to the indent\'s pending amount — adjust only for partial dispatches. Vehicle No is the transport vehicle carrying the goods (optional).' },
-    { target: null, title: 'Confirm Issue', body: 'Records the dispatch, deducts from PM Store stock, and notifies the receiving FC/CC exec to acknowledge receipt in their app.' },
+    { target: null, title: 'Close This Indent After Dispatch', body: 'Tick this if the recipient won\'t need the rest of this indent — e.g. vendor is out of stock. Whatever qty you enter above still gets sent; the indent then closes instead of staying open for the remainder. Leave qty at 0 to close an indent without sending anything.' },
+    { target: null, title: 'Confirm Issue', body: 'Review & Dispatch shows every line in this batch — what\'s being sent, what will close, and what stays open for later — before you confirm. Confirming records the dispatch, deducts from PM Store stock, and notifies the receiving FC/CC exec to acknowledge receipt in their app.' },
     { target: null, title: 'Store Stock', body: 'The Store Stock tab shows current on-hand quantities at this PM Store. Check here before issuing against an indent to confirm sufficient stock is available. Use the download icon to export the current view as a CSV.', onEnter: () => setTab('stock') },
     { target: 'tour-btn-pmstore', title: "You're all set!", body: 'Hit the ? button at the bottom-right any time to replay this tour.' },
   ];

@@ -1093,15 +1093,27 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
   const batchSchema = z.object({
     issue_date: z.string().min(1),
     vehicle_no: z.string().optional(),
+    // Shared reason applied to whichever line(s) this batch force-completes —
+    // per-item force_complete below decides *which* lines that is, not this.
     force_complete_reason: z.string().optional(),
     items: z.array(z.object({
       indent_line_id: z.coerce.number().int().positive(),
-      issued_qty: z.coerce.number().positive(),
+      // 0 is valid here specifically for force_complete-only lines (nothing
+      // dispatched, indent just closed) — the stock_issues CHECK (issued_qty > 0)
+      // constraint means a 0-qty line must never reach the insert below.
+      issued_qty: z.coerce.number().nonnegative().default(0),
+      force_complete: z.boolean().optional().default(false),
     })).min(1),
   });
   const parsed = batchSchema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid batch issue payload', parsed.error.issues);
   const { issue_date, vehicle_no, items, force_complete_reason } = parsed.data;
+  if (items.some((i) => i.issued_qty <= 0 && !i.force_complete)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Each item needs a positive issued_qty, force_complete, or both');
+  }
+  if (items.some((i) => i.force_complete) && !force_complete_reason?.trim()) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'force_complete_reason is required when any item has force_complete set');
+  }
 
   const client = await pool.connect();
   try {
@@ -1158,9 +1170,13 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       avgCosts.set(materialId, Number(costRes.rows[0].avg_cost || 0));
     }
 
-    // Insert stock_issues rows and post ledger entries
+    // Insert stock_issues rows and post ledger entries — skip entirely for
+    // qty=0 items (force-complete-only lines, nothing physically dispatched;
+    // stock_issues.issued_qty has a CHECK (issued_qty > 0), a 0-qty row would
+    // fail the insert anyway).
     const issueRefs = [];
     for (const { item, line, remaining } of lineDataList) {
+      if (item.issued_qty <= 0) continue;
       const unitCost = avgCosts.get(line.material_id);
       const issueRef = genRef('ISS');
       const issueIns = await client.query(
@@ -1170,27 +1186,31 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       );
       const issueId = issueIns.rows[0].id;
       await postLedgerEntry(client, { warehouseId: fromWhId, materialId: line.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
-      // Update issued_qty on indent line
-      await client.query(
-        `UPDATE indent_lines SET issued_qty = issued_qty + $1, updated_at = now() WHERE id = $2`,
-        [item.issued_qty, line.id]
-      );
+      // indent_lines.issued_qty and .status are kept in sync automatically by
+      // trg_issue_sync_indent (fn_sync_indent_issued_qty, db/001_schema.sql) —
+      // it recomputes issued_qty as SUM(stock_issues.issued_qty) on every insert
+      // here and sets PENDING/PARTIALLY_ISSUED/FULLY_ISSUED accordingly. A manual
+      // UPDATE here used to double-count on top of the trigger (found live,
+      // 2026-09-15) — do not add one back; force-complete below is the only
+      // status the trigger doesn't own.
       await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, indent_line_id: line.id, qty: item.issued_qty } });
       issueRefs.push(issueRef);
     }
 
-    // Force-complete indent lines when remark provided
-    if (force_complete_reason) {
-      for (const { line } of lineDataList) {
-        const freshLine = await client.query('SELECT * FROM indent_lines WHERE id = $1', [line.id]);
-        const fl = freshLine.rows[0];
-        if (fl && !['FULLY_ISSUED', 'CANCELLED', 'FORCE_COMPLETED'].includes(fl.status)) {
-          await client.query(
-            `UPDATE indent_lines SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
-            [req.user.id, force_complete_reason, fl.id]
-          );
-          await writeAudit(client, { userId: req.user.id, action: 'INDENT_LINE_FORCE_COMPLETED', entityTable: 'indent_lines', entityId: fl.id, detail: { reason: force_complete_reason, via_dispatch: true } });
-        }
+    // Force-complete only the specific lines the caller flagged — not every
+    // line in the batch. A line can be force-completed after dispatching a
+    // partial qty above (close the remainder) or with issued_qty=0 (nothing
+    // sent, just close the request) — both go through this same per-item path.
+    for (const { item, line } of lineDataList) {
+      if (!item.force_complete) continue;
+      const freshLine = await client.query('SELECT * FROM indent_lines WHERE id = $1', [line.id]);
+      const fl = freshLine.rows[0];
+      if (fl && !['FULLY_ISSUED', 'CANCELLED', 'FORCE_COMPLETED'].includes(fl.status)) {
+        await client.query(
+          `UPDATE indent_lines SET status='FORCE_COMPLETED', force_completed_by=$1, force_completed_at=now(), force_complete_reason=$2, updated_at=now() WHERE id=$3`,
+          [req.user.id, force_complete_reason, fl.id]
+        );
+        await writeAudit(client, { userId: req.user.id, action: 'INDENT_LINE_FORCE_COMPLETED', entityTable: 'indent_lines', entityId: fl.id, detail: { reason: force_complete_reason, via_dispatch: true, dispatched_qty: item.issued_qty } });
       }
     }
 
