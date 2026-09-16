@@ -378,6 +378,21 @@ function requireRole(...roles) {
   };
 }
 
+// Service-to-service auth for external integrations (e.g. DICE) — a static
+// shared key, not a user session, since the caller has no PackTrack account.
+// No DB lookup, deliberately generic rejection message either way (missing
+// or wrong key) so a probing caller can't tell how close they got.
+function authenticateService(envVarName) {
+  return (req, res, next) => {
+    const expected = process.env[envVarName];
+    const provided = req.header('X-API-KEY');
+    if (!expected || !provided || provided !== expected) {
+      return next(new ApiError(401, 'UNAUTHENTICATED', 'Missing or invalid X-API-KEY'));
+    }
+    next();
+  };
+}
+
 // Convenience for initial setup: create the first admin user if none exists.
 // In production, gate this behind a setup token or remove after first run.
 app.post('/api/v1/auth/bootstrap-admin', asyncHandler(async (req, res) => {
@@ -552,6 +567,29 @@ function toIsoDateOrNull(val) {
   // ISO YYYY-MM-DD and other formats native Date handles
   const d = new Date(s);
   return isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+}
+
+// Converts a raw po_qty/no_of_rolls input into the base quantity PackTrack
+// stores, per material type — shared by the CSV PO upload and the DICE push
+// endpoint so a future change to the conversion rules only happens once.
+// Throws a plain Error with a human-readable reason; callers turn that into
+// either a row-level upload error or a per-line REJECTED result.
+function resolveMaterialQty(mat, { po_qty, no_of_rolls }) {
+  if (mat.stickers_per_roll) {
+    if (!no_of_rolls) throw new Error(`"No. of Rolls" is required for sticker roll material '${mat.code}'`);
+    return no_of_rolls * mat.stickers_per_roll;
+  }
+  if (mat.unit === 'Roll') {
+    if (!no_of_rolls) throw new Error(`Roll material '${mat.code}' requires no_of_rolls`);
+    if (!mat.meters_per_unit) throw new Error(`Material '${mat.code}' is missing its meters_per_unit configuration — set it on the Materials tab first`);
+    return no_of_rolls * Number(mat.meters_per_unit);
+  }
+  if (mat.pieces_per_kg) {
+    if (!po_qty) throw new Error(`'${mat.code}' requires po_qty (enter quantity in Kg)`);
+    return po_qty * Number(mat.pieces_per_kg);
+  }
+  if (!po_qty) throw new Error(`Non-roll material '${mat.code}' requires po_qty`);
+  return po_qty;
 }
 
 // CSV uploads parse everything as the JS type Excel infers — codes like "3202" often
@@ -822,19 +860,11 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
         if (!warehouseId) { errors.push({ row: rowNum, error: `Unknown or non-PM-Store pm_store_code '${d.pm_store_code}'` }); continue; }
 
         let finalQty;
-        if (mat.stickers_per_roll) {
-          if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `"No. of Rolls" is required for sticker roll material '${d.sku_code}'` }); continue; }
-          finalQty = d.no_of_rolls * mat.stickers_per_roll;
-        } else if (mat.unit === 'Roll') {
-          if (!d.no_of_rolls) { errors.push({ row: rowNum, error: `Roll material '${d.sku_code}' requires no_of_rolls column` }); continue; }
-          if (!mat.meters_per_unit) { errors.push({ row: rowNum, error: `Material '${d.sku_code}' is missing its meters_per_unit configuration — set it on the Materials tab before uploading` }); continue; }
-          finalQty = d.no_of_rolls * Number(mat.meters_per_unit);
-        } else if (mat.pieces_per_kg) {
-          if (!d.po_qty) { errors.push({ row: rowNum, error: `'${d.sku_code}' requires po_qty column (enter quantity in kg)` }); continue; }
-          finalQty = d.po_qty * Number(mat.pieces_per_kg);
-        } else {
-          if (!d.po_qty) { errors.push({ row: rowNum, error: `Non-roll material '${d.sku_code}' requires po_qty column` }); continue; }
-          finalQty = d.po_qty;
+        try {
+          finalQty = resolveMaterialQty(mat, { po_qty: d.po_qty, no_of_rolls: d.no_of_rolls });
+        } catch (e) {
+          errors.push({ row: rowNum, error: e.message });
+          continue;
         }
 
         const poDate = toIsoDateOrNull(d.po_date);
@@ -906,6 +936,176 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
+
+// ── External: DICE PO Posting API ──────────────────────────────────────────
+// Inbound push from DICE/Zaggle — see the shared spec doc (Obsidian note 21)
+// for the full contract. Deliberately per-line results, not all-or-nothing
+// like the CSV upload above: a machine batch shouldn't need a full retry of
+// 49 good lines because 1 was bad. Idempotency key is (po_no, material_id),
+// same composite uniqueness the CSV upload already relies on.
+const MAX_DICE_BATCH_ITEMS = 500;
+
+const dicePoItemSchema = z.object({
+  item_code: z.string().min(1),
+  po_qty: z.coerce.number().positive().optional(),
+  no_of_rolls: z.coerce.number().positive().optional(),
+  unit_price: z.coerce.number().nonnegative(),
+});
+const dicePoSchema = z.object({
+  po_no: z.string().min(1),
+  vendor_name: z.string().min(1),
+  po_date: z.string().min(1),
+  expected_delivery: z.string().optional(),
+  pm_store_code: z.string().min(1),
+  items: z.array(dicePoItemSchema).min(1),
+});
+const diceBatchSchema = z.object({
+  purchase_orders: z.array(dicePoSchema).min(1),
+});
+
+app.post('/api/v1/external/dice/purchase-orders', authenticateService('DICE_INBOUND_API_KEY'),
+  asyncHandler(async (req, res) => {
+    const parsed = diceBatchSchema.safeParse(req.body);
+    if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid request body', parsed.error.issues);
+    const { purchase_orders } = parsed.data;
+
+    const totalItems = purchase_orders.reduce((sum, po) => sum + po.items.length, 0);
+    if (totalItems > MAX_DICE_BATCH_ITEMS) {
+      throw new ApiError(400, 'BATCH_TOO_LARGE', `Batch has ${totalItems} line items — max ${MAX_DICE_BATCH_ITEMS} per call. Split into multiple calls.`);
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const matMap = new Map((await client.query(
+        "SELECT id, code, unit, stickers_per_roll, meters_per_unit, pieces_per_kg, dice_item_code FROM materials WHERE is_active AND dice_item_code IS NOT NULL"
+      )).rows.map((r) => [r.dice_item_code, r]));
+      const whMap = new Map((await client.query(
+        "SELECT id, code FROM warehouses WHERE is_active AND warehouse_type='PM_STORE'"
+      )).rows.map((r) => [r.code, r.id]));
+
+      // Flatten to one entry per (po, item) for uniform per-line processing.
+      const lines = [];
+      for (const po of purchase_orders) {
+        for (const item of po.items) lines.push({ po, item });
+      }
+
+      const poNos = [...new Set(purchase_orders.map((po) => po.po_no))];
+      const existingRes = await client.query(
+        'SELECT po_no, material_id, id FROM purchase_orders WHERE po_no = ANY($1)',
+        [poNos]
+      );
+      const existingMap = new Map(existingRes.rows.map((r) => [`${r.po_no}::${r.material_id}`, r.id]));
+
+      const batchRef = genRef('POB');
+      let insertedCount = 0;
+      const results = [];
+      const toInsert = [];
+
+      for (const { po, item } of lines) {
+        const mat = matMap.get(item.item_code);
+        if (!mat) {
+          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: 'Unknown item_code — not mapped to a PackTrack material' });
+          continue;
+        }
+        const warehouseId = whMap.get(po.pm_store_code);
+        if (!warehouseId) {
+          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `Unknown or non-PM-Store pm_store_code '${po.pm_store_code}'` });
+          continue;
+        }
+        let finalQty;
+        try {
+          finalQty = resolveMaterialQty(mat, { po_qty: item.po_qty, no_of_rolls: item.no_of_rolls });
+        } catch (e) {
+          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: e.message });
+          continue;
+        }
+        const poDate = toIsoDateOrNull(po.po_date);
+        if (poDate === undefined) {
+          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `Invalid po_date '${po.po_date}'` });
+          continue;
+        }
+        let expDelivery = null;
+        if (po.expected_delivery) {
+          expDelivery = toIsoDateOrNull(po.expected_delivery);
+          if (expDelivery === undefined) {
+            results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `Invalid expected_delivery '${po.expected_delivery}'` });
+            continue;
+          }
+        }
+
+        const dupKey = `${po.po_no}::${mat.id}`;
+        const existingId = existingMap.get(dupKey);
+        if (existingId) {
+          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'DUPLICATE', purchase_order_id: Number(existingId) });
+          continue;
+        }
+
+        // Guard against duplicate (po_no, material) lines within this same
+        // batch (existingMap only reflects what's already in the DB).
+        if (toInsert.some((r) => r.dupKey === dupKey)) {
+          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `PO '${po.po_no}' already has a line for this material earlier in this batch` });
+          continue;
+        }
+
+        toInsert.push({ po, item, mat, warehouseId, finalQty, poDate, expDelivery, dupKey });
+      }
+
+      if (toInsert.length > 0) {
+        const batchIns = await client.query(
+          `INSERT INTO po_batches (batch_ref, source_filename, uploaded_by_user_id, status, total_rows, valid_rows) VALUES ($1,$2,NULL,'VALIDATED',$3,$3) RETURNING id`,
+          [batchRef, `DICE_PUSH:${new Date().toISOString()}`, toInsert.length]
+        );
+        const batchId = batchIns.rows[0].id;
+
+        for (const line of toInsert) {
+          const ins = await client.query(
+            `INSERT INTO purchase_orders (po_no, batch_id, vendor_name, material_id, pm_store_warehouse_id, po_qty, unit_price, po_date, expected_delivery, source)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'DICE_PUSH') RETURNING id`,
+            [line.po.po_no, batchId, line.po.vendor_name, line.mat.id, line.warehouseId, line.finalQty, line.item.unit_price, line.poDate, line.expDelivery]
+          );
+          const poId = ins.rows[0].id;
+          insertedCount++;
+          results.push({ po_no: line.po.po_no, item_code: line.item.item_code, status: 'CREATED', purchase_order_id: Number(poId) });
+          await writeAudit(client, { userId: null, action: 'DICE_PO_PUSHED', entityTable: 'purchase_orders', entityId: poId, detail: { po_no: line.po.po_no, item_code: line.item.item_code, qty: line.finalQty } });
+        }
+      }
+
+      // Audit the rejections too, per-line, for a complete trail.
+      for (const r of results) {
+        if (r.status === 'REJECTED') {
+          await writeAudit(client, { userId: null, action: 'DICE_PO_PUSH_REJECTED', entityTable: 'purchase_orders', entityId: null, detail: { po_no: r.po_no, item_code: r.item_code, reason: r.reason } });
+        }
+      }
+
+      await client.query('COMMIT');
+      res.status(200).json({ results });
+    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  })
+);
+
+app.patch('/api/v1/materials/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const schema = z.object({ dice_item_code: z.string().trim().min(1).nullable().optional() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid material update payload', parsed.error.issues);
+  if (parsed.data.dice_item_code === undefined) throw new ApiError(400, 'VALIDATION_ERROR', 'Nothing to update');
+
+  const existing = await pool.query('SELECT id FROM materials WHERE id = $1', [req.params.id]);
+  if (!existing.rows.length) throw new ApiError(404, 'NOT_FOUND', 'Material not found');
+
+  try {
+    const result = await pool.query(
+      'UPDATE materials SET dice_item_code = $1 WHERE id = $2 RETURNING id, code, dice_item_code',
+      [parsed.data.dice_item_code, req.params.id]
+    );
+    await writeAudit(pool, { userId: req.user.id, action: 'MATERIAL_UPDATED', entityTable: 'materials', entityId: req.params.id, detail: { dice_item_code: parsed.data.dice_item_code } });
+    res.json(result.rows[0]);
+  } catch (e) {
+    if (e.code === '23505') throw new ApiError(409, 'DUPLICATE_DICE_CODE', `dice_item_code '${parsed.data.dice_item_code}' is already mapped to another material`);
+    throw e;
+  }
+}));
 
 app.get('/api/v1/purchase-orders/batches/:ref/download', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
   const { rows } = await pool.query('SELECT source_file_key, source_filename FROM po_batches WHERE batch_ref = $1', [req.params.ref]);
