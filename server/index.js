@@ -302,13 +302,14 @@ app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
   res.json(await issueSession(user));
 }));
 
-// Google Identity Services ID-token login — Admin Portal and PM Store Ops only
-// (phase 1). Google only proves who the person is; PackTrack's own `users` table
-// (email -> role) still decides whether they're allowed in and what they can do.
+// Google Identity Services ID-token login — Admin Portal, PM Store Ops, and
+// the Procurement view (phase 1). Google only proves who the person is;
+// PackTrack's own `users` table (email -> role) still decides whether
+// they're allowed in and what they can do.
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_WORKSPACE_DOMAIN = process.env.GOOGLE_WORKSPACE_DOMAIN;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
-const GOOGLE_AUTH_ROLES = ['ADMIN', 'PM_STORE_EXEC']; // phase-1 scope only
+const GOOGLE_AUTH_ROLES = ['ADMIN', 'PM_STORE_EXEC', 'PROCUREMENT']; // phase-1 scope only
 
 app.post('/api/v1/auth/google', asyncHandler(async (req, res) => {
   if (!googleClient) throw new ApiError(503, 'GOOGLE_AUTH_NOT_CONFIGURED', 'Google sign-in is not configured on this server');
@@ -415,7 +416,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
     name: z.string().min(1).optional(),
     email: z.string().email(),
     password: z.string().min(8).optional(),
-    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP']),
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT']),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional().default([]),
     auth_provider: z.enum(['LOCAL', 'GOOGLE']).optional().default('LOCAL'),
   });
@@ -423,9 +424,9 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid user payload', parsed.error.issues);
   const d = parsed.data;
   const isGoogle = d.auth_provider === 'GOOGLE';
-  // Google sign-in is phase-1 scoped to ADMIN/PM_STORE_EXEC — enforced here, not just in the UI.
+  // Google sign-in is phase-1 scoped to ADMIN/PM_STORE_EXEC/PROCUREMENT — enforced here, not just in the UI.
   if (isGoogle && !GOOGLE_AUTH_ROLES.includes(d.role)) {
-    throw new ApiError(422, 'GOOGLE_AUTH_ROLE_RESTRICTED', 'Google sign-in is only available for ADMIN and PM_STORE_EXEC roles in this phase');
+    throw new ApiError(422, 'GOOGLE_AUTH_ROLE_RESTRICTED', `Google sign-in is only available for ${GOOGLE_AUTH_ROLES.join('/')} roles in this phase`);
   }
   if (!isGoogle && !d.password) throw new ApiError(400, 'VALIDATION_ERROR', 'password (min 8 chars) is required for password-based accounts');
   if (!isGoogle && !d.name) throw new ApiError(400, 'VALIDATION_ERROR', 'name is required for password-based accounts');
@@ -456,7 +457,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
 
 app.patch('/api/v1/admin/users/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const schema = z.object({
-    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP']).optional(),
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT']).optional(),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional(),
     is_active: z.boolean().optional(),
   });
@@ -473,7 +474,7 @@ app.patch('/api/v1/admin/users/:id', authenticate, requireRole('ADMIN'), asyncHa
     if (!prevRes.rows.length) throw new ApiError(404, 'NOT_FOUND', 'User not found');
     const prev = prevRes.rows[0];
     if (prev.auth_provider === 'GOOGLE' && d.role && !GOOGLE_AUTH_ROLES.includes(d.role)) {
-      throw new ApiError(422, 'GOOGLE_AUTH_ROLE_RESTRICTED', 'Google-authed accounts can only hold ADMIN or PM_STORE_EXEC in this phase');
+      throw new ApiError(422, 'GOOGLE_AUTH_ROLE_RESTRICTED', `Google-authed accounts can only hold ${GOOGLE_AUTH_ROLES.join('/')} in this phase`);
     }
     const sets = []; const vals = [];
     if (d.role !== undefined) { vals.push(d.role); sets.push(`role=$${vals.length}`); }
@@ -1144,13 +1145,13 @@ app.post('/api/v1/external/dice/purchase-orders', authenticateService('DICE_INBO
   })
 );
 
-app.get('/api/v1/admin/dice-po-pending', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+app.get('/api/v1/dice-po-pending', authenticate, requireRole('ADMIN', 'PROCUREMENT'), asyncHandler(async (req, res) => {
   const status = req.query.status === 'RESOLVED' ? 'RESOLVED' : 'PENDING';
   const rows = await pool.query('SELECT * FROM dice_po_push_pending WHERE status = $1 ORDER BY created_at DESC', [status]);
   res.json({ items: rows.rows });
 }));
 
-app.post('/api/v1/admin/dice-po-pending/:id/retry', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+app.post('/api/v1/dice-po-pending/:id/retry', authenticate, requireRole('ADMIN', 'PROCUREMENT'), asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1283,6 +1284,35 @@ app.get('/api/v1/purchase-orders', authenticate, asyncHandler(async (req, res) =
   res.json({ data: result.rows });
 }));
 
+// Procurement's "PO Uploaded" status view — same PO-line grain as the route
+// above, plus each line's GRNs (for the GRN-posted/total qty + invoice
+// links). Batched in one extra query rather than N+1, same pattern as the
+// CSV upload's duplicate check (server/index.js, PO upload route) — that
+// N+1 shape caused a real proxy timeout before.
+app.get('/api/v1/procurement/purchase-orders', authenticate, requireRole('PROCUREMENT', 'ADMIN'), asyncHandler(async (req, res) => {
+  const poRes = await pool.query(
+    `SELECT po.id, po.po_no, po.vendor_name, po.po_qty, po.received_qty_cache, po.status, po.source, po.po_date,
+            m.code AS material_code, m.unit, w.name AS warehouse_name
+     FROM purchase_orders po JOIN materials m ON m.id = po.material_id JOIN warehouses w ON w.id = po.pm_store_warehouse_id
+     ORDER BY po.po_date DESC`
+  );
+  const poIds = poRes.rows.map((r) => r.id);
+  const grnRes = poIds.length
+    ? await pool.query(
+        `SELECT id, po_id, grn_ref, grn_date, grn_qty, invoice_no, (invoice_image_path IS NOT NULL) AS has_invoice
+         FROM goods_receipts WHERE po_id = ANY($1) ORDER BY grn_date`,
+        [poIds]
+      )
+    : { rows: [] };
+  const grnsByPo = new Map();
+  for (const g of grnRes.rows) {
+    if (!grnsByPo.has(g.po_id)) grnsByPo.set(g.po_id, []);
+    grnsByPo.get(g.po_id).push(g);
+  }
+  const data = poRes.rows.map((po) => ({ ...po, grns: grnsByPo.get(po.id) || [] }));
+  res.json({ data });
+}));
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE 3: PM STORE INWARD / GRN — against an uploaded PO
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1337,15 +1367,12 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
 }));
 
 // ── GRN Invoice Image Upload ──────────────────────────────────────────────
+// R2-backed, same pattern as the CSV/PO source-file storage — local disk
+// (the original implementation here) is wiped on every Railway redeploy and
+// had no serving route at all, so nothing uploaded before this fix is
+// recoverable. Memory storage so req.file.buffer is available for uploadToR2.
 const grnImageUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const dir = path.join(__dirname, 'uploads', 'grn-images');
-      require('fs').mkdirSync(dir, { recursive: true });
-      cb(null, dir);
-    },
-    filename: (req, file, cb) => cb(null, `grn-${req.params.id}-${Date.now()}${path.extname(file.originalname)}`),
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith('image/')) return cb(new ApiError(400, 'INVALID_FILE', 'Only image files are allowed'));
@@ -1357,10 +1384,22 @@ app.post('/api/v1/goods-receipts/:id/invoice-image', authenticate, requireRole('
   grnImageUpload.single('invoice_image'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw new ApiError(400, 'FILE_REQUIRED', 'No image file uploaded under field "invoice_image"');
-    const relPath = `uploads/grn-images/${req.file.filename}`;
-    const r = await pool.query('UPDATE goods_receipts SET invoice_image_path=$1 WHERE id=$2 RETURNING id', [relPath, req.params.id]);
+    const r2Key = `grn-invoices/${req.params.id}-${Date.now()}${path.extname(req.file.originalname)}`;
+    await uploadToR2(r2Key, req.file.buffer, req.file.mimetype);
+    const r = await pool.query('UPDATE goods_receipts SET invoice_image_path=$1 WHERE id=$2 RETURNING id', [r2Key, req.params.id]);
     if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `GRN ${req.params.id} not found`);
-    res.json({ ok: true, invoice_image_path: relPath });
+    res.json({ ok: true, invoice_image_path: r2Key });
+  })
+);
+
+app.get('/api/v1/goods-receipts/:id/invoice-image', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN', 'PROCUREMENT'),
+  asyncHandler(async (req, res) => {
+    const r = await pool.query('SELECT invoice_image_path FROM goods_receipts WHERE id = $1', [req.params.id]);
+    if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `GRN ${req.params.id} not found`);
+    const key = r.rows[0].invoice_image_path;
+    if (!key) throw new ApiError(404, 'NO_IMAGE', 'No invoice image attached to this GRN');
+    const url = await presignR2(key, `invoice-${req.params.id}${path.extname(key)}`);
+    res.json({ url });
   })
 );
 
