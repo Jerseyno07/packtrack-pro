@@ -944,11 +944,68 @@ app.post('/api/v1/purchase-orders/upload', authenticate, requireRole('PM_STORE_E
 // 49 good lines because 1 was bad. Idempotency key is (po_no, material_id),
 // same composite uniqueness the CSV upload already relies on.
 const MAX_DICE_BATCH_ITEMS = 500;
+const DICE_PACKAGING_SERVICE = 'Packaging_material';
 
+// DICE sends qty + a uom tag (PCS/ROLLS/KG) instead of po_qty/no_of_rolls —
+// they shouldn't need to know PackTrack's internal material-type quirks
+// just to post a PO. This resolves which uom a material expects and
+// translates into the existing resolveMaterialQty() call, so the actual
+// conversion math (stickers_per_roll, meters_per_unit, pieces_per_kg)
+// still lives in one place, shared with the CSV upload.
+function resolveMaterialQtyFromUom(mat, { qty, uom }) {
+  const expected = (mat.stickers_per_roll || mat.unit === 'Roll') ? 'ROLLS'
+    : mat.pieces_per_kg ? 'KG' : 'PCS';
+  if (uom !== expected) throw new Error(`Material '${mat.code}' expects uom '${expected}', got '${uom}'`);
+  return expected === 'ROLLS'
+    ? resolveMaterialQty(mat, { no_of_rolls: qty })
+    : resolveMaterialQty(mat, { po_qty: qty });
+}
+
+// Resolves a single flattened (po + item) line against the current
+// materials/warehouses/existing-PO lookups, without touching the DB —
+// shared by the batch endpoint (called once per line) and the retry
+// endpoint (called once for a stored pending row). Returns a typed result;
+// callers decide what to do with a 'RESOLVED' one (insert it).
+function resolveDiceLine(line, { matMap, whMap, existingMap, batchDupKeys }) {
+  if (line.services !== DICE_PACKAGING_SERVICE) {
+    return { status: 'IGNORED', reason: `services is not '${DICE_PACKAGING_SERVICE}' — not a PackTrack-managed item` };
+  }
+  const mat = matMap.get(line.item_code);
+  if (!mat) {
+    return { status: 'PENDING_MAPPING', reason: 'Unknown item_code — flagged for a PackTrack admin to map; resolves automatically once mapped' };
+  }
+  const warehouseId = whMap.get(line.pm_store_code);
+  if (!warehouseId) {
+    return { status: 'REJECTED', reason: `Unknown or non-PM-Store pm_store_code '${line.pm_store_code}'` };
+  }
+  let finalQty;
+  try {
+    finalQty = resolveMaterialQtyFromUom(mat, { qty: line.qty, uom: line.uom });
+  } catch (e) {
+    return { status: 'REJECTED', reason: e.message };
+  }
+  const poDate = toIsoDateOrNull(line.po_date);
+  if (poDate === undefined) return { status: 'REJECTED', reason: `Invalid po_date '${line.po_date}'` };
+  let expDelivery = null;
+  if (line.expected_delivery) {
+    expDelivery = toIsoDateOrNull(line.expected_delivery);
+    if (expDelivery === undefined) return { status: 'REJECTED', reason: `Invalid expected_delivery '${line.expected_delivery}'` };
+  }
+  const dupKey = `${line.po_no}::${mat.id}`;
+  const existingId = existingMap.get(dupKey);
+  if (existingId) return { status: 'DUPLICATE', purchase_order_id: Number(existingId) };
+  if (batchDupKeys && batchDupKeys.has(dupKey)) {
+    return { status: 'REJECTED', reason: `PO '${line.po_no}' already has a line for this material earlier in this batch` };
+  }
+  return { status: 'RESOLVED', mat, warehouseId, finalQty, poDate, expDelivery, dupKey };
+}
+
+const diceUomEnum = z.enum(['PCS', 'ROLLS', 'KG']);
 const dicePoItemSchema = z.object({
   item_code: z.string().min(1),
-  po_qty: z.coerce.number().positive().optional(),
-  no_of_rolls: z.coerce.number().positive().optional(),
+  services: z.string().min(1),
+  qty: z.coerce.number().positive(),
+  uom: diceUomEnum,
   unit_price: z.coerce.number().nonnegative(),
 });
 const dicePoSchema = z.object({
@@ -974,6 +1031,12 @@ app.post('/api/v1/external/dice/purchase-orders', authenticateService('DICE_INBO
       throw new ApiError(400, 'BATCH_TOO_LARGE', `Batch has ${totalItems} line items — max ${MAX_DICE_BATCH_ITEMS} per call. Split into multiple calls.`);
     }
 
+    // Raw-payload archive — fire-and-log, never blocks real processing.
+    // Full forensic copy of exactly what DICE sent, independent of how the
+    // operational tables below end up interpreting it.
+    const r2Key = `dice-po-calls/${new Date().toISOString()}-${crypto.randomBytes(4).toString('hex')}.json`;
+    uploadToR2(r2Key, Buffer.from(JSON.stringify(req.body)), 'application/json').catch(() => {});
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -988,7 +1051,14 @@ app.post('/api/v1/external/dice/purchase-orders', authenticateService('DICE_INBO
       // Flatten to one entry per (po, item) for uniform per-line processing.
       const lines = [];
       for (const po of purchase_orders) {
-        for (const item of po.items) lines.push({ po, item });
+        for (const item of po.items) {
+          lines.push({
+            po_no: po.po_no, vendor_name: po.vendor_name, po_date: po.po_date,
+            expected_delivery: po.expected_delivery, pm_store_code: po.pm_store_code,
+            item_code: item.item_code, services: item.services, qty: item.qty,
+            uom: item.uom, unit_price: item.unit_price,
+          });
+        }
       }
 
       const poNos = [...new Set(purchase_orders.map((po) => po.po_no))];
@@ -999,57 +1069,45 @@ app.post('/api/v1/external/dice/purchase-orders', authenticateService('DICE_INBO
       const existingMap = new Map(existingRes.rows.map((r) => [`${r.po_no}::${r.material_id}`, r.id]));
 
       const batchRef = genRef('POB');
-      let insertedCount = 0;
       const results = [];
       const toInsert = [];
+      const batchDupKeys = new Set();
+      const counts = { CREATED: 0, DUPLICATE: 0, REJECTED: 0, PENDING_MAPPING: 0, IGNORED: 0 };
 
-      for (const { po, item } of lines) {
-        const mat = matMap.get(item.item_code);
-        if (!mat) {
-          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: 'Unknown item_code — not mapped to a PackTrack material' });
-          continue;
-        }
-        const warehouseId = whMap.get(po.pm_store_code);
-        if (!warehouseId) {
-          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `Unknown or non-PM-Store pm_store_code '${po.pm_store_code}'` });
-          continue;
-        }
-        let finalQty;
-        try {
-          finalQty = resolveMaterialQty(mat, { po_qty: item.po_qty, no_of_rolls: item.no_of_rolls });
-        } catch (e) {
-          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: e.message });
-          continue;
-        }
-        const poDate = toIsoDateOrNull(po.po_date);
-        if (poDate === undefined) {
-          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `Invalid po_date '${po.po_date}'` });
-          continue;
-        }
-        let expDelivery = null;
-        if (po.expected_delivery) {
-          expDelivery = toIsoDateOrNull(po.expected_delivery);
-          if (expDelivery === undefined) {
-            results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `Invalid expected_delivery '${po.expected_delivery}'` });
-            continue;
-          }
-        }
+      for (const line of lines) {
+        const r = resolveDiceLine(line, { matMap, whMap, existingMap, batchDupKeys });
 
-        const dupKey = `${po.po_no}::${mat.id}`;
-        const existingId = existingMap.get(dupKey);
-        if (existingId) {
-          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'DUPLICATE', purchase_order_id: Number(existingId) });
+        if (r.status === 'PENDING_MAPPING') {
+          const pendingIns = await client.query(
+            `INSERT INTO dice_po_push_pending (po_no, vendor_name, po_date, expected_delivery, pm_store_code, item_code, qty, uom, unit_price)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+            [line.po_no, line.vendor_name, toIsoDateOrNull(line.po_date) || null, line.expected_delivery ? toIsoDateOrNull(line.expected_delivery) : null, line.pm_store_code, line.item_code, line.qty, line.uom, line.unit_price]
+          );
+          const pendingId = pendingIns.rows[0].id;
+          await writeAudit(client, { userId: null, action: 'DICE_PO_LINE_PENDING_MAPPING', entityTable: 'dice_po_push_pending', entityId: pendingId, detail: { po_no: line.po_no, item_code: line.item_code } });
+          results.push({ po_no: line.po_no, item_code: line.item_code, status: 'PENDING_MAPPING', pending_id: Number(pendingId), reason: r.reason });
+          counts.PENDING_MAPPING++;
+          continue;
+        }
+        if (r.status === 'IGNORED') {
+          results.push({ po_no: line.po_no, item_code: line.item_code, status: 'IGNORED', reason: r.reason });
+          counts.IGNORED++;
+          continue;
+        }
+        if (r.status === 'REJECTED') {
+          await writeAudit(client, { userId: null, action: 'DICE_PO_PUSH_REJECTED', entityTable: 'purchase_orders', entityId: null, detail: { po_no: line.po_no, item_code: line.item_code, reason: r.reason } });
+          results.push({ po_no: line.po_no, item_code: line.item_code, status: 'REJECTED', reason: r.reason });
+          counts.REJECTED++;
+          continue;
+        }
+        if (r.status === 'DUPLICATE') {
+          results.push({ po_no: line.po_no, item_code: line.item_code, status: 'DUPLICATE', purchase_order_id: r.purchase_order_id });
+          counts.DUPLICATE++;
           continue;
         }
 
-        // Guard against duplicate (po_no, material) lines within this same
-        // batch (existingMap only reflects what's already in the DB).
-        if (toInsert.some((r) => r.dupKey === dupKey)) {
-          results.push({ po_no: po.po_no, item_code: item.item_code, status: 'REJECTED', reason: `PO '${po.po_no}' already has a line for this material earlier in this batch` });
-          continue;
-        }
-
-        toInsert.push({ po, item, mat, warehouseId, finalQty, poDate, expDelivery, dupKey });
+        batchDupKeys.add(r.dupKey);
+        toInsert.push({ line, r });
       }
 
       if (toInsert.length > 0) {
@@ -1059,31 +1117,118 @@ app.post('/api/v1/external/dice/purchase-orders', authenticateService('DICE_INBO
         );
         const batchId = batchIns.rows[0].id;
 
-        for (const line of toInsert) {
+        for (const { line, r } of toInsert) {
           const ins = await client.query(
             `INSERT INTO purchase_orders (po_no, batch_id, vendor_name, material_id, pm_store_warehouse_id, po_qty, unit_price, po_date, expected_delivery, source)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'DICE_PUSH') RETURNING id`,
-            [line.po.po_no, batchId, line.po.vendor_name, line.mat.id, line.warehouseId, line.finalQty, line.item.unit_price, line.poDate, line.expDelivery]
+            [line.po_no, batchId, line.vendor_name, r.mat.id, r.warehouseId, r.finalQty, line.unit_price, r.poDate, r.expDelivery]
           );
           const poId = ins.rows[0].id;
-          insertedCount++;
-          results.push({ po_no: line.po.po_no, item_code: line.item.item_code, status: 'CREATED', purchase_order_id: Number(poId) });
-          await writeAudit(client, { userId: null, action: 'DICE_PO_PUSHED', entityTable: 'purchase_orders', entityId: poId, detail: { po_no: line.po.po_no, item_code: line.item.item_code, qty: line.finalQty } });
-        }
-      }
-
-      // Audit the rejections too, per-line, for a complete trail.
-      for (const r of results) {
-        if (r.status === 'REJECTED') {
-          await writeAudit(client, { userId: null, action: 'DICE_PO_PUSH_REJECTED', entityTable: 'purchase_orders', entityId: null, detail: { po_no: r.po_no, item_code: r.item_code, reason: r.reason } });
+          results.push({ po_no: line.po_no, item_code: line.item_code, status: 'CREATED', purchase_order_id: Number(poId) });
+          counts.CREATED++;
+          await writeAudit(client, { userId: null, action: 'DICE_PO_PUSHED', entityTable: 'purchase_orders', entityId: poId, detail: { po_no: line.po_no, item_code: line.item_code, qty: r.finalQty } });
         }
       }
 
       await client.query('COMMIT');
       res.status(200).json({ results });
+
+      // Summary row for the raw-payload archive — after response, never
+      // blocks or fails the caller's request.
+      pool.query(
+        `INSERT INTO dice_po_push_calls (r2_key, po_count, item_count, created_count, duplicate_count, rejected_count, pending_count, ignored_count)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [r2Key, purchase_orders.length, lines.length, counts.CREATED, counts.DUPLICATE, counts.REJECTED, counts.PENDING_MAPPING, counts.IGNORED]
+      ).catch(() => {});
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
+
+app.get('/api/v1/admin/dice-po-pending', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const status = req.query.status === 'RESOLVED' ? 'RESOLVED' : 'PENDING';
+  const rows = await pool.query('SELECT * FROM dice_po_push_pending WHERE status = $1 ORDER BY created_at DESC', [status]);
+  res.json({ items: rows.rows });
+}));
+
+app.post('/api/v1/admin/dice-po-pending/:id/retry', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Cast dates to ::text in SQL, not .toISOString() on the returned Date —
+    // pg returns DATE columns at local-midnight, so toISOString() shifts to
+    // the previous day on any non-UTC machine (see CLAUDE.md's IST/UTC note;
+    // caught live here during testing: 2026-09-16 became 2026-09-15).
+    const pendingRes = await client.query(
+      "SELECT *, po_date::text AS po_date_text, expected_delivery::text AS expected_delivery_text FROM dice_po_push_pending WHERE id = $1 FOR UPDATE",
+      [req.params.id]
+    );
+    if (!pendingRes.rows.length) throw new ApiError(404, 'NOT_FOUND', 'Pending line not found');
+    const p = pendingRes.rows[0];
+    if (p.status === 'RESOLVED') {
+      await client.query('COMMIT');
+      return res.json({ status: 'RESOLVED', purchase_order_id: p.resolved_purchase_order_id ? Number(p.resolved_purchase_order_id) : null });
+    }
+
+    const matRes = await client.query(
+      "SELECT id, code, unit, stickers_per_roll, meters_per_unit, pieces_per_kg FROM materials WHERE is_active AND dice_item_code = $1",
+      [p.item_code]
+    );
+    const matMap = new Map(matRes.rows.length ? [[p.item_code, matRes.rows[0]]] : []);
+    const whRes = await client.query(
+      "SELECT id FROM warehouses WHERE is_active AND warehouse_type='PM_STORE' AND code = $1",
+      [p.pm_store_code]
+    );
+    const whMap = new Map(whRes.rows.length ? [[p.pm_store_code, whRes.rows[0].id]] : []);
+    const existingRes = await client.query('SELECT material_id, id FROM purchase_orders WHERE po_no = $1', [p.po_no]);
+    const existingMap = new Map(existingRes.rows.map((r) => [`${p.po_no}::${r.material_id}`, r.id]));
+
+    const line = {
+      po_no: p.po_no, vendor_name: p.vendor_name,
+      po_date: p.po_date_text,
+      expected_delivery: p.expected_delivery_text || undefined,
+      pm_store_code: p.pm_store_code, item_code: p.item_code, services: DICE_PACKAGING_SERVICE,
+      qty: Number(p.qty), uom: p.uom, unit_price: Number(p.unit_price),
+    };
+    const r = resolveDiceLine(line, { matMap, whMap, existingMap });
+
+    if (r.status === 'DUPLICATE') {
+      await client.query(
+        `UPDATE dice_po_push_pending SET status='RESOLVED', resolved_purchase_order_id=$1, retry_count=retry_count+1, last_retried_at=now(), last_retried_by=$2, last_error=NULL WHERE id=$3`,
+        [r.purchase_order_id, req.user.id, p.id]
+      );
+      await client.query('COMMIT');
+      return res.json({ status: 'RESOLVED', purchase_order_id: r.purchase_order_id, note: 'A PO for this line already existed' });
+    }
+    if (r.status !== 'RESOLVED') {
+      await client.query(
+        `UPDATE dice_po_push_pending SET retry_count=retry_count+1, last_error=$1, last_retried_at=now(), last_retried_by=$2 WHERE id=$3`,
+        [r.reason || r.status, req.user.id, p.id]
+      );
+      await client.query('COMMIT');
+      return res.json({ status: 'PENDING', reason: r.reason || r.status });
+    }
+
+    const batchRef = genRef('POB');
+    const batchIns = await client.query(
+      `INSERT INTO po_batches (batch_ref, source_filename, uploaded_by_user_id, status, total_rows, valid_rows) VALUES ($1,$2,NULL,'VALIDATED',1,1) RETURNING id`,
+      [batchRef, `DICE_PUSH_RETRY:${new Date().toISOString()}`]
+    );
+    const batchId = batchIns.rows[0].id;
+    const ins = await client.query(
+      `INSERT INTO purchase_orders (po_no, batch_id, vendor_name, material_id, pm_store_warehouse_id, po_qty, unit_price, po_date, expected_delivery, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'DICE_PUSH') RETURNING id`,
+      [line.po_no, batchId, line.vendor_name, r.mat.id, r.warehouseId, r.finalQty, line.unit_price, r.poDate, r.expDelivery]
+    );
+    const poId = ins.rows[0].id;
+    await writeAudit(client, { userId: req.user.id, action: 'DICE_PO_PUSHED', entityTable: 'purchase_orders', entityId: poId, detail: { po_no: line.po_no, item_code: line.item_code, qty: r.finalQty, via_retry: true, pending_id: p.id } });
+    await client.query(
+      `UPDATE dice_po_push_pending SET status='RESOLVED', resolved_purchase_order_id=$1, retry_count=retry_count+1, last_retried_at=now(), last_retried_by=$2, last_error=NULL WHERE id=$3`,
+      [poId, req.user.id, p.id]
+    );
+    await client.query('COMMIT');
+    res.json({ status: 'RESOLVED', purchase_order_id: Number(poId) });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
 
 app.patch('/api/v1/materials/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const schema = z.object({ dice_item_code: z.string().trim().min(1).nullable().optional() });
