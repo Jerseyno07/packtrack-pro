@@ -9,3 +9,8 @@ graft/
 
 # Vendor API docs dropped in for reference — may contain live credentials, never commit.
 DICE_ERP_*.docx
+
+# One-off data export files dropped in the repo root for a bulk data-fix pass
+# (e.g. FSN<->EAN mapping exports) — internal data, not project source.
+[0-9]*_[0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9].xlsx
+~$*.xlsx
