@@ -1,6 +1,29 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, LogOut, LogIn, RefreshCw, AlertTriangle, CheckCircle2, Camera, X, ImagePlus } from 'lucide-react';
+import { Package, LogOut, LogIn, RefreshCw, AlertTriangle, CheckCircle2, Camera, X, ImagePlus, MonitorSmartphone } from 'lucide-react';
 import jsQR from 'jsqr';
+
+function useInstallPrompt() {
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const [prompt, setPrompt] = useState(window.__pwaPrompt || null);
+  const [showInstructions, setShowInstructions] = useState(false);
+  useEffect(() => {
+    const onReady = () => setPrompt(window.__pwaPrompt);
+    const onInstalled = () => setPrompt(null);
+    window.addEventListener('pwaready', onReady);
+    window.addEventListener('pwainstalled', onInstalled);
+    return () => { window.removeEventListener('pwaready', onReady); window.removeEventListener('pwainstalled', onInstalled); };
+  }, []);
+  const install = async () => {
+    if (prompt) {
+      prompt.prompt();
+      const { outcome } = await prompt.userChoice;
+      if (outcome === 'accepted') setPrompt(null);
+    } else {
+      setShowInstructions(true);
+    }
+  };
+  return { canInstall: !isStandalone, install, showInstructions, setShowInstructions };
+}
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -61,6 +84,7 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const { canInstall, install, showInstructions, setShowInstructions } = useInstallPrompt();
   const googleButtonRef = useRef(null);
 
   async function handleSubmit(e) {
@@ -129,6 +153,22 @@ function LoginScreen({ onLogin }) {
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+        {canInstall && (
+          <button onClick={install}
+            className="mt-4 w-full py-3 border border-slate-200 bg-white text-slate-600 rounded-xl font-medium flex items-center justify-center gap-2 active:bg-slate-50">
+            <MonitorSmartphone size={16} /> Add to Home Screen
+          </button>
+        )}
+        {showInstructions && (
+          <div className="mt-4 bg-white rounded-2xl border border-slate-200 p-4 text-sm text-slate-700 space-y-2">
+            <div className="font-semibold text-slate-900 flex items-center justify-between">
+              Add to Home Screen
+              <button onClick={() => setShowInstructions(false)} className="text-slate-400 text-lg leading-none">×</button>
+            </div>
+            <p><span className="font-medium">Android:</span> Tap the three-dot menu (⋮) in Chrome → <em>Add to Home Screen</em></p>
+            <p><span className="font-medium">iPhone:</span> Tap the Share button (⎙) in Safari → <em>Add to Home Screen</em></p>
+          </div>
+        )}
       </div>
     </div>
   );
