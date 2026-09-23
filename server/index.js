@@ -2505,10 +2505,18 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
          FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[])
            AS t(sku_code, sku_name, source, ean, packing_type, primary_pm_code, secondary_pm_code, tertiary_pm_code)
          ON CONFLICT (sku_code) DO UPDATE SET
-           sku_name = EXCLUDED.sku_name,
-           source = EXCLUDED.source,
-           ean = EXCLUDED.ean,
-           packing_type = EXCLUDED.packing_type,
+           -- sku_name/source/ean/packing_type: a file that doesn't carry that
+           -- column (or leaves it blank for this row) must not blank out a
+           -- value a previous upload set — COALESCE keeps the existing value
+           -- rather than nulling it. Found live 2026-09-23: a Packing-Type-only
+           -- re-upload with no EAN column wiped 658 previously-mapped EANs.
+           -- primary/secondary/tertiary material codes stay unconditional —
+           -- blanking Packing Material is an established, intentional action
+           -- (MRP-sticker-only SKUs), not a value this upload just doesn't carry.
+           sku_name = COALESCE(EXCLUDED.sku_name, sku_packaging_master.sku_name),
+           source = COALESCE(EXCLUDED.source, sku_packaging_master.source),
+           ean = COALESCE(EXCLUDED.ean, sku_packaging_master.ean),
+           packing_type = COALESCE(EXCLUDED.packing_type, sku_packaging_master.packing_type),
            primary_pm_code = EXCLUDED.primary_pm_code,
            secondary_pm_code = EXCLUDED.secondary_pm_code,
            tertiary_pm_code = EXCLUDED.tertiary_pm_code,
