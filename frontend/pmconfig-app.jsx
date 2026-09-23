@@ -238,14 +238,26 @@ function ScanView({ token, user, onLogout }) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
+    // jsQR's cost scales with pixel count, and decoding a full 1280x720 frame
+    // in pure JS on mobile Safari is what made scans feel slow next to a
+    // native scanner (Paytm etc. use a hardware decoder over a small
+    // reticle, not a full-frame JS decode). Only feeding it a center-cropped,
+    // capped-resolution square — matching the on-screen guide box below —
+    // cuts the per-frame pixel count by roughly 6-8x with no loss of range,
+    // since the user is aiming the code at that box anyway.
+    const DECODE_SIZE = 360;
+
     function tick() {
       if (stopped) return;
       const video = videoRef.current;
       if (video && video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const side = Math.min(video.videoWidth, video.videoHeight);
+        const sx = (video.videoWidth - side) / 2;
+        const sy = (video.videoHeight - side) / 2;
+        canvas.width = DECODE_SIZE;
+        canvas.height = DECODE_SIZE;
+        ctx.drawImage(video, sx, sy, side, side, 0, 0, DECODE_SIZE, DECODE_SIZE);
+        const imageData = ctx.getImageData(0, 0, DECODE_SIZE, DECODE_SIZE);
         const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
         if (code?.data) {
           stopped = true;
@@ -260,7 +272,7 @@ function ScanView({ token, user, onLogout }) {
     (async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
           audio: false,
         });
         if (stopped) { stream.getTracks().forEach((t) => t.stop()); return; }
@@ -345,7 +357,13 @@ function ScanView({ token, user, onLogout }) {
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800 mb-3">
                 <Camera size={16} /> Scan QR Code
               </div>
-              <video ref={videoRef} className="w-full rounded-lg bg-black aspect-video" muted playsInline />
+              <div className="relative">
+                <video ref={videoRef} className="w-full rounded-lg bg-black aspect-video" muted playsInline />
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="w-[55%] aspect-square border-2 border-white/80 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.25)]" />
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 mt-2">Center the QR code in the box for a faster scan</p>
               {cameraError && (
                 <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-3">
                   <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" /><span>{cameraError}</span>
