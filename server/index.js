@@ -2409,6 +2409,7 @@ app.use(express.static(frontendDist));
 //   weight_lot       → sku_name (not the "SKU Name" column — the vendor's real SKU-master
 //                       export carries the descriptive label under "Weight Lot" instead)
 //   source           → source (stored as-is, informational)
+//   ean              → ean (stored as-is, one EAN per FSN)
 //   packing_material → primary material (looked up by name OR code, case-insensitive)
 //   sec._packing_(*) → secondary / tertiary materials (any col matching this pattern,
 //                       non-empty/non-zero value = material is used; name extracted
@@ -2444,6 +2445,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       const sku_code = String(row['fsn_id'] ?? row['fsn'] ?? row['sku_code'] ?? '').trim();
       const sku_name = String(row['weight_lot'] ?? '').trim() || null;
       const source = String(row['source'] ?? '').trim() || null;
+      const ean = String(row['ean'] ?? '').trim() || null;
       const primaryRaw = String(row['packing_material'] ?? row['primary_pm_code'] ?? '').trim();
 
       if (!sku_code) { errors.push({ row: rowNum, error: 'FSN ID is required' }); continue; }
@@ -2476,7 +2478,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       }
 
       validRows.push({
-        sku_code, sku_name, source, primary_pm_code,
+        sku_code, sku_name, source, ean, primary_pm_code,
         secondary_pm_code: secCodes[0] ?? null,
         tertiary_pm_code: secCodes[1] ?? null,
       });
@@ -2496,13 +2498,14 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
     for (let i = 0; i < dedupedRows.length; i += BATCH_SIZE) {
       const chunk = dedupedRows.slice(i, i + BATCH_SIZE);
       await pool.query(
-        `INSERT INTO sku_packaging_master (sku_code, sku_name, source, primary_pm_code, secondary_pm_code, tertiary_pm_code, uploaded_by, uploaded_at)
-         SELECT sku_code, sku_name, source, primary_pm_code, secondary_pm_code, tertiary_pm_code, $7, now()
-         FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
-           AS t(sku_code, sku_name, source, primary_pm_code, secondary_pm_code, tertiary_pm_code)
+        `INSERT INTO sku_packaging_master (sku_code, sku_name, source, ean, primary_pm_code, secondary_pm_code, tertiary_pm_code, uploaded_by, uploaded_at)
+         SELECT sku_code, sku_name, source, ean, primary_pm_code, secondary_pm_code, tertiary_pm_code, $8, now()
+         FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+           AS t(sku_code, sku_name, source, ean, primary_pm_code, secondary_pm_code, tertiary_pm_code)
          ON CONFLICT (sku_code) DO UPDATE SET
            sku_name = EXCLUDED.sku_name,
            source = EXCLUDED.source,
+           ean = EXCLUDED.ean,
            primary_pm_code = EXCLUDED.primary_pm_code,
            secondary_pm_code = EXCLUDED.secondary_pm_code,
            tertiary_pm_code = EXCLUDED.tertiary_pm_code,
@@ -2512,6 +2515,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
           chunk.map((r) => r.sku_code),
           chunk.map((r) => r.sku_name),
           chunk.map((r) => r.source),
+          chunk.map((r) => r.ean),
           chunk.map((r) => r.primary_pm_code),
           chunk.map((r) => r.secondary_pm_code),
           chunk.map((r) => r.tertiary_pm_code),

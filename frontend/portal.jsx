@@ -1728,7 +1728,7 @@ function AdminPanel({ token, tabOverride }) {
         <div data-tour="sku-section" className="space-y-4 max-w-xl">
           <div>
             <h3 className="font-semibold text-slate-800 mb-1">Upload SKU Packaging Master</h3>
-            <p className="text-xs text-slate-500 mb-3">Use your existing master CSV — required column: <code>FSN ID</code>. Also read: <code>Weight Lot</code> (stored as the SKU's descriptive name — not the <code>SKU Name</code> column), <code>Source</code>, <code>Packing Material</code>, and any <code>Sec. packing (…)</code> columns for secondary/tertiary materials. Other columns in your file are ignored.</p>
+            <p className="text-xs text-slate-500 mb-3">Use your existing master CSV — required column: <code>FSN ID</code>. Also read: <code>Weight Lot</code> (stored as the SKU's descriptive name — not the <code>SKU Name</code> column), <code>Source</code>, <code>EAN</code>, <code>Packing Material</code>, and any <code>Sec. packing (…)</code> columns for secondary/tertiary materials. Other columns in your file are ignored.</p>
             <div className="flex gap-2">
               <label className={`flex-1 flex items-center gap-2 px-3 py-2.5 border rounded-lg cursor-pointer text-sm ${skuFile ? 'border-green-400 bg-green-50 text-green-700' : 'border-dashed border-slate-300 text-slate-500 hover:border-blue-400'}`}>
                 <FileSpreadsheet size={15} />
@@ -1742,9 +1742,9 @@ function AdminPanel({ token, tabOverride }) {
               </button>
             </div>
             <button data-tour="sku-sample" onClick={() => downloadCSV('sku_master_sample.csv', [
-              ['FSN ID','Weight Lot','SKU Name','Source','Packing Type','Packing Material','Sec. packing (Cling wrap)','Sec. packing (Foam Roll)','Sec. packing (Butter Paper)','Sec. packing (Foam Net)'],
-              ['VEGFFHGDAHJVZQEN','Beans (cluster) 500g','Beans (cluster)','Vendor A','Bag','LDPE Cover 6 Kg','','','',''],
-              ['VEGHZA5FHUVZRZ7C','Fresh Yam 1kg','Fresh Yam','Vendor B','Net','Net Roll','1','','',''],
+              ['FSN ID','Weight Lot','SKU Name','Source','EAN','Packing Type','Packing Material','Sec. packing (Cling wrap)','Sec. packing (Foam Roll)','Sec. packing (Butter Paper)','Sec. packing (Foam Net)'],
+              ['VEGFFHGDAHJVZQEN','Beans (cluster) 500g','Beans (cluster)','Vendor A','8901030895563','Bag','LDPE Cover 6 Kg','','','',''],
+              ['VEGHZA5FHUVZRZ7C','Fresh Yam 1kg','Fresh Yam','Vendor B','8901030895570','Net','Net Roll','1','','',''],
             ])} className="mt-2 text-xs text-blue-600 hover:underline">↓ Download sample CSV</button>
           </div>
           {skuError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{skuError}</div>}
@@ -2916,7 +2916,7 @@ export default function App() {
             { target: 'transit-diff-table', title: 'Transit Difference', body: 'Flags dispatches that closed (fully received or force-completed) with a mismatch between what was issued and what was actually accounted for at the destination. Red = short-received, amber = over-received. Only closed dispatches appear here — an in-progress one might still be topped up.', onEnter: () => setAdminTabForTour('transit-diff') },
             { target: 'audit-pagination', title: 'Audit Log', body: 'Every system action is recorded here with the real user who did it — GRNs, force completes, password resets, cancellations. Use Prev and Next to page through 50 records at a time.', onEnter: () => setAdminTabForTour('audit') },
             { target: 'sku-section', title: 'SKU Packaging Master', body: 'Maps each FSN (Ninjacart product code) to its packaging materials. The daily consumption scraper uses this mapping to deduct PM stock when units are packed at FC/CC.', onEnter: () => setAdminTabForTour('sku') },
-            { target: 'sku-sample', title: 'Download SKU Sample', body: 'Download the sample to see the columns read: FSN ID (required), Weight Lot (stored as the SKU\'s name — not the SKU Name column), Source, Packing Material, plus optional secondary/tertiary columns for multi-material SKUs.' },
+            { target: 'sku-sample', title: 'Download SKU Sample', body: 'Download the sample to see the columns read: FSN ID (required), Weight Lot (stored as the SKU\'s name — not the SKU Name column), Source, EAN, Packing Material, plus optional secondary/tertiary columns for multi-material SKUs.' },
             { target: 'sku-upload-btn', title: 'Upload SKU Master', body: 'Upload your filled SKU master CSV here. Existing FSN rows are updated; new ones are inserted. Re-upload whenever the packaging mapping changes.' },
             { target: 'run-now', title: 'Run Consumption Scraper', body: 'Triggers the daily scraper immediately without waiting for the 5am schedule. Use after uploading a new SKU master or if yesterday\'s run failed.', onEnter: () => setAdminTabForTour('consumption') },
             { target: 'msl-filter', title: 'Min Stock Levels — Filter', body: 'Narrows the threshold grid to PM Store, FC, or CC facilities so you can focus edits on one type at a time.', onEnter: () => setAdminTabForTour('msl') },
