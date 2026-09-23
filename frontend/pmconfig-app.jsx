@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Package, LogOut, LogIn, RefreshCw, AlertTriangle, CheckCircle2, Camera, X, ImagePlus } from 'lucide-react';
-import { BrowserMultiFormatReader } from '@zxing/browser';
+import { BrowserMultiFormatReader, BarcodeFormat } from '@zxing/browser';
+import { DecodeHintType } from '@zxing/library';
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -225,7 +226,22 @@ function ScanView({ token, user, onLogout }) {
   useEffect(() => {
     if (!scanning) return;
     setCameraError('');
-    const reader = new BrowserMultiFormatReader();
+    // The physical codes on packs here are QR (encoding the EAN as text),
+    // not 1D barcodes — TRY_HARDER plus an explicit format list (QR_CODE
+    // first, since that's what's actually scanned, common 1D formats kept
+    // too so a real barcode still works if one's ever used) is the
+    // documented fix for continuous-scan decode reliability. Found live:
+    // camera feed worked fine, codes just never decoded, until this was
+    // added.
+    const hints = new Map();
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.QR_CODE,
+      BarcodeFormat.EAN_13, BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A, BarcodeFormat.UPC_E,
+      BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
+    ]);
+    const reader = new BrowserMultiFormatReader(hints);
     let cancelled = false;
     reader.decodeFromConstraints({ video: { facingMode: 'environment' } }, videoRef.current, (decoded, err, controls) => {
       controlsRef.current = controls;
@@ -305,7 +321,7 @@ function ScanView({ token, user, onLogout }) {
           <>
             <div className="bg-white rounded-xl border border-slate-200 p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800 mb-3">
-                <Camera size={16} /> Scan EAN Barcode
+                <Camera size={16} /> Scan QR Code
               </div>
               <video ref={videoRef} className="w-full rounded-lg bg-black aspect-video" muted playsInline />
               {cameraError && (
