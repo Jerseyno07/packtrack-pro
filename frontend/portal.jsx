@@ -2279,6 +2279,7 @@ function AdminPanel({ token, tabOverride }) {
                     <option value="PM_STORE_EXEC">PM Store Exec</option>
                     <option value="ADMIN">Admin</option>
                     <option value="PROCUREMENT">Procurement</option>
+                    <option value="PM_CONFIG">PM Config</option>
                   </select>
                 </div>
               </div>
@@ -2427,6 +2428,7 @@ function AdminPanel({ token, tabOverride }) {
                 <option value="PM_STORE_EXEC">PM Store Exec</option>
                 <option value="ADMIN">Admin</option>
                 <option value="PROCUREMENT">Procurement</option>
+                <option value="PM_CONFIG">PM Config</option>
               </select>
             </div>
             {editUserModal.role === 'PM_STORE_EXEC' && (

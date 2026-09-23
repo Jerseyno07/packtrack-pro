@@ -309,7 +309,7 @@ app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_WORKSPACE_DOMAIN = process.env.GOOGLE_WORKSPACE_DOMAIN;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
-const GOOGLE_AUTH_ROLES = ['ADMIN', 'PM_STORE_EXEC', 'PROCUREMENT']; // phase-1 scope only
+const GOOGLE_AUTH_ROLES = ['ADMIN', 'PM_STORE_EXEC', 'PROCUREMENT', 'PM_CONFIG']; // phase-1 scope only
 
 app.post('/api/v1/auth/google', asyncHandler(async (req, res) => {
   if (!googleClient) throw new ApiError(503, 'GOOGLE_AUTH_NOT_CONFIGURED', 'Google sign-in is not configured on this server');
@@ -416,7 +416,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
     name: z.string().min(1).optional(),
     email: z.string().email(),
     password: z.string().min(8).optional(),
-    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT']),
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG']),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional().default([]),
     auth_provider: z.enum(['LOCAL', 'GOOGLE']).optional().default('LOCAL'),
   });
@@ -457,7 +457,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
 
 app.patch('/api/v1/admin/users/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const schema = z.object({
-    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT']).optional(),
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG']).optional(),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional(),
     is_active: z.boolean().optional(),
   });
@@ -2552,6 +2552,134 @@ app.get('/api/v1/sku-packaging-master', authenticate, requireRole('ADMIN'), asyn
     [limit, offset]
   );
   res.json({ data: r.rows, page: Number(page), page_size: limit });
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE: PM CONFIG — barcode-scan packing validation (/pmconfig)
+// ═══════════════════════════════════════════════════════════════════════════
+// Shelf/QC point flow: scan an EAN, see PackTrack's current sku_packaging_master
+// mapping, either confirm it ("Same as Bizfin") or record what it actually is.
+// Every submission — confirmed or corrected — lands in sku_validation_scans,
+// a pure log table. Nothing here ever writes back to sku_packaging_master; that
+// table stays the CSV-upload-owned source of truth, this is just a QC trail.
+
+const pmconfigScanHistorySql = `
+  SELECT v.id, v.same_as_bizfin, v.primary_pm_code, v.secondary_pm_code, v.tertiary_pm_code,
+         v.photo_path, v.scanned_at, u.name AS scanned_by_name, u.email AS scanned_by_email
+  FROM sku_validation_scans v JOIN users u ON u.id = v.scanned_by
+  WHERE v.sku_code = $1
+  ORDER BY v.scanned_at DESC
+  LIMIT 10
+`;
+
+app.get('/api/v1/pmconfig/lookup', authenticate, requireRole('PM_CONFIG', 'ADMIN'), asyncHandler(async (req, res) => {
+  const { ean } = req.query;
+  if (!ean) throw new ApiError(400, 'EAN_REQUIRED', 'ean query param is required');
+
+  const skuRes = await pool.query(
+    `SELECT s.sku_code, s.sku_name, s.ean, s.packing_type,
+            s.primary_pm_code, mp.name AS primary_pm_name,
+            s.secondary_pm_code, ms.name AS secondary_pm_name,
+            s.tertiary_pm_code, mt.name AS tertiary_pm_name
+     FROM sku_packaging_master s
+     LEFT JOIN materials mp ON mp.code = s.primary_pm_code
+     LEFT JOIN materials ms ON ms.code = s.secondary_pm_code
+     LEFT JOIN materials mt ON mt.code = s.tertiary_pm_code
+     WHERE s.ean = $1`,
+    [String(ean).trim()]
+  );
+  if (!skuRes.rows.length) throw new ApiError(404, 'EAN_NOT_FOUND', `No SKU mapped to EAN '${ean}'`);
+  const sku = skuRes.rows[0];
+
+  const history = await pool.query(pmconfigScanHistorySql, [sku.sku_code]);
+  res.json({ sku, recent_scans: history.rows });
+}));
+
+const pmconfigPhotoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) return cb(new ApiError(400, 'INVALID_FILE', 'Only image files are allowed'));
+    cb(null, true);
+  },
+});
+
+app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'ADMIN'), pmconfigPhotoUpload.single('photo'),
+  asyncHandler(async (req, res) => {
+    const schema = z.object({
+      sku_code: z.string().min(1),
+      ean: z.string().optional(),
+      // Not z.coerce.boolean() — that's Boolean(val), which is true for the
+      // literal string "false" too. Multipart fields always arrive as
+      // strings, so match the string explicitly.
+      same_as_bizfin: z.enum(['true', 'false']).transform((v) => v === 'true'),
+      primary_pm_code: z.string().optional(),
+      secondary_pm_code: z.string().optional(),
+      tertiary_pm_code: z.string().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid validate payload', parsed.error.issues);
+    const d = parsed.data;
+
+    const skuRes = await pool.query('SELECT * FROM sku_packaging_master WHERE sku_code = $1', [d.sku_code]);
+    if (!skuRes.rows.length) throw new ApiError(404, 'SKU_NOT_FOUND', `SKU '${d.sku_code}' not found`);
+    const sku = skuRes.rows[0];
+
+    const matRows = (await pool.query('SELECT code, name FROM materials WHERE is_active')).rows;
+    const matByName = new Map(matRows.map((r) => [r.name.toLowerCase().trim(), r.code]));
+    const matByCode = new Map(matRows.map((r) => [r.code.toLowerCase().trim(), r.code]));
+    function resolveMaterial(val) {
+      if (!val) return null;
+      const v = String(val).toLowerCase().trim();
+      return matByName.get(v) ?? matByCode.get(v) ?? null;
+    }
+
+    let primary_pm_code, secondary_pm_code, tertiary_pm_code;
+    if (d.same_as_bizfin) {
+      // Never trust the client's copy of the mapping — snapshot the
+      // current sku_packaging_master row server-side.
+      primary_pm_code = sku.primary_pm_code;
+      secondary_pm_code = sku.secondary_pm_code;
+      tertiary_pm_code = sku.tertiary_pm_code;
+    } else {
+      if (!d.primary_pm_code) throw new ApiError(400, 'PRIMARY_REQUIRED', 'Primary packing material is required when not "Same as Bizfin"');
+      primary_pm_code = resolveMaterial(d.primary_pm_code);
+      if (!primary_pm_code) throw new ApiError(400, 'MATERIAL_NOT_FOUND', `Primary packing material '${d.primary_pm_code}' not found`);
+      if (d.secondary_pm_code) {
+        secondary_pm_code = resolveMaterial(d.secondary_pm_code);
+        if (!secondary_pm_code) throw new ApiError(400, 'MATERIAL_NOT_FOUND', `Secondary packing material '${d.secondary_pm_code}' not found`);
+      }
+      if (d.tertiary_pm_code) {
+        tertiary_pm_code = resolveMaterial(d.tertiary_pm_code);
+        if (!tertiary_pm_code) throw new ApiError(400, 'MATERIAL_NOT_FOUND', `Tertiary packing material '${d.tertiary_pm_code}' not found`);
+      }
+    }
+
+    let photo_path = null;
+    if (req.file) {
+      photo_path = `pmconfig-scans/${d.sku_code}-${Date.now()}${path.extname(req.file.originalname)}`;
+      await uploadToR2(photo_path, req.file.buffer, req.file.mimetype);
+    }
+
+    const ins = await pool.query(
+      `INSERT INTO sku_validation_scans (sku_code, ean, same_as_bizfin, primary_pm_code, secondary_pm_code, tertiary_pm_code, photo_path, scanned_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [d.sku_code, d.ean || sku.ean, d.same_as_bizfin, primary_pm_code, secondary_pm_code || null, tertiary_pm_code || null, photo_path, req.user.id]
+    );
+    await writeAudit(pool, { userId: req.user.id, action: 'SKU_VALIDATION_SCAN', entityTable: 'sku_validation_scans', entityId: ins.rows[0].id, detail: { sku_code: d.sku_code, same_as_bizfin: d.same_as_bizfin } });
+
+    const history = await pool.query(pmconfigScanHistorySql, [d.sku_code]);
+    res.status(201).json({ id: ins.rows[0].id, recent_scans: history.rows });
+  })
+);
+
+app.get('/api/v1/pmconfig/scans/:id/photo', authenticate, requireRole('PM_CONFIG', 'ADMIN'), asyncHandler(async (req, res) => {
+  const r = await pool.query('SELECT photo_path FROM sku_validation_scans WHERE id = $1', [req.params.id]);
+  if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Scan ${req.params.id} not found`);
+  const key = r.rows[0].photo_path;
+  if (!key) throw new ApiError(404, 'NO_PHOTO', 'No photo attached to this scan');
+  const url = await presignR2(key, `scan-${req.params.id}${path.extname(key)}`);
+  res.json({ url });
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════

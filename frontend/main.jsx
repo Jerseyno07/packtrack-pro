@@ -7,6 +7,7 @@ import App from './portal.jsx';
 import PMStoreOps from './pmstore-ops.jsx';
 import ReceiptApp from './receipt-app.jsx';
 import ProcApp from './proc-app.jsx';
+import PMConfigApp from './pmconfig-app.jsx';
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -21,6 +22,7 @@ createRoot(document.getElementById('root')).render(
         <Route path="/ops" element={<PMStoreOps />} />
         <Route path="/receipt" element={<ReceiptApp />} />
         <Route path="/proc" element={<ProcApp />} />
+        <Route path="/pmconfig" element={<PMConfigApp />} />
       </Routes>
     </BrowserRouter>
   </StrictMode>
