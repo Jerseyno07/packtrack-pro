@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Package, LogOut, LogIn, RefreshCw, AlertTriangle, CheckCircle2, Camera, X, ImagePlus } from 'lucide-react';
-import { BrowserMultiFormatReader, BarcodeFormat } from '@zxing/browser';
-import { DecodeHintType } from '@zxing/library';
+import jsQR from 'jsqr';
 
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -185,7 +184,6 @@ function MaterialPicker({ label, required, materials, value, onChange }) {
 function ScanView({ token, user, onLogout }) {
   const api = makeApi(token);
   const videoRef = useRef(null);
-  const controlsRef = useRef(null);
   const [manualEan, setManualEan] = useState('');
   const [scanning, setScanning] = useState(true);
   const [cameraError, setCameraError] = useState('');
@@ -222,39 +220,63 @@ function ScanView({ token, user, onLogout }) {
     }
   }, [token]);
 
-  // Camera scanning — only runs while in scanning mode (not while a result is shown).
+  // Camera scanning — only runs while in scanning mode (not while a result is
+  // shown). Self-managed getUserMedia + canvas + requestAnimationFrame loop
+  // with jsQR doing the actual decode, deliberately not @zxing/browser's own
+  // video-handling layer — that library has open, unresolved iPhone-specific
+  // continuous-decode issues (confirmed live: camera feed worked fine on
+  // iOS Safari, codes just never decoded). jsQR is a pure pixel-in/result-out
+  // decoder with no platform-specific video code, so this loop is the only
+  // thing that has to behave correctly per-browser, and it's simple enough
+  // to reason about directly.
   useEffect(() => {
     if (!scanning) return;
     setCameraError('');
-    // The physical codes on packs here are QR (encoding the EAN as text),
-    // not 1D barcodes — TRY_HARDER plus an explicit format list (QR_CODE
-    // first, since that's what's actually scanned, common 1D formats kept
-    // too so a real barcode still works if one's ever used) is the
-    // documented fix for continuous-scan decode reliability. Found live:
-    // camera feed worked fine, codes just never decoded, until this was
-    // added.
-    const hints = new Map();
-    hints.set(DecodeHintType.TRY_HARDER, true);
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-      BarcodeFormat.QR_CODE,
-      BarcodeFormat.EAN_13, BarcodeFormat.EAN_8,
-      BarcodeFormat.UPC_A, BarcodeFormat.UPC_E,
-      BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
-    ]);
-    const reader = new BrowserMultiFormatReader(hints);
-    let cancelled = false;
-    reader.decodeFromConstraints({ video: { facingMode: 'environment' } }, videoRef.current, (decoded, err, controls) => {
-      controlsRef.current = controls;
-      if (decoded && !cancelled) {
-        cancelled = true;
-        controls.stop();
-        doLookup(decoded.getText());
+    let stream = null;
+    let rafId = null;
+    let stopped = false;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    function tick() {
+      if (stopped) return;
+      const video = videoRef.current;
+      if (video && video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+        if (code?.data) {
+          stopped = true;
+          stream?.getTracks().forEach((t) => t.stop());
+          doLookup(code.data);
+          return;
+        }
       }
-    }).catch((e) => setCameraError(e.message || 'Camera access failed — use manual entry below instead.'));
+      rafId = requestAnimationFrame(tick);
+    }
+
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        if (stopped) { stream.getTracks().forEach((t) => t.stop()); return; }
+        const video = videoRef.current;
+        video.srcObject = stream;
+        await video.play();
+        tick();
+      } catch (e) {
+        setCameraError(e.message || 'Camera access failed — use manual entry below instead.');
+      }
+    })();
 
     return () => {
-      cancelled = true;
-      controlsRef.current?.stop();
+      stopped = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      stream?.getTracks().forEach((t) => t.stop());
     };
   }, [scanning, doLookup]);
 
