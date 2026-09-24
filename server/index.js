@@ -94,6 +94,22 @@ async function presignR2(key, filename) {
   }), { expiresIn: 3600 });
 }
 
+// /pmconfig scan photos go to a separate, publicly-readable bucket — not
+// R2_BUCKET_NAME, which also holds indent/PO CSVs, DICE payloads, and GRN
+// invoice images that must stay private. Same account, so the same S3
+// client works, just pointed at a different bucket. Returns the permanent
+// public URL so it can be stored directly on the row — no presigned link,
+// no expiry, no auth needed to open it (e.g. from an exported spreadsheet).
+async function uploadPmconfigPhoto(key, buffer, contentType) {
+  await r2.send(new PutObjectCommand({
+    Bucket: process.env.R2_PMCONFIG_BUCKET_NAME,
+    Key: key,
+    Body: buffer,
+    ContentType: contentType,
+  }));
+  return `${process.env.R2_PMCONFIG_PUBLIC_URL}/${key}`;
+}
+
 const app = express();
 app.use(helmet({
   contentSecurityPolicy: {
@@ -2566,7 +2582,7 @@ app.get('/api/v1/sku-packaging-master', authenticate, requireRole('ADMIN'), asyn
 const pmconfigScanHistorySql = `
   SELECT v.id, v.same_as_bizfin, v.primary_pm_code, v.secondary_pm_code, v.tertiary_pm_code,
          v.primary_pm_other, v.secondary_pm_other, v.tertiary_pm_other,
-         v.photo_path, v.scanned_at, u.name AS scanned_by_name, u.email AS scanned_by_email
+         v.photo_path, v.photo_url, v.scanned_at, u.name AS scanned_by_name, u.email AS scanned_by_email
   FROM sku_validation_scans v JOIN users u ON u.id = v.scanned_by
   WHERE v.sku_code = $1
   ORDER BY v.scanned_at DESC
@@ -2677,15 +2693,16 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
     }
 
     let photo_path = null;
+    let photo_url = null;
     if (req.file) {
       photo_path = `pmconfig-scans/${d.sku_code}-${Date.now()}${path.extname(req.file.originalname)}`;
-      await uploadToR2(photo_path, req.file.buffer, req.file.mimetype);
+      photo_url = await uploadPmconfigPhoto(photo_path, req.file.buffer, req.file.mimetype);
     }
 
     const ins = await pool.query(
-      `INSERT INTO sku_validation_scans (sku_code, ean, same_as_bizfin, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, scanned_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-      [d.sku_code, d.ean || sku.ean, d.same_as_bizfin, primary_pm_code || null, secondary_pm_code || null, tertiary_pm_code || null, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, req.user.id]
+      `INSERT INTO sku_validation_scans (sku_code, ean, same_as_bizfin, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, photo_url, scanned_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [d.sku_code, d.ean || sku.ean, d.same_as_bizfin, primary_pm_code || null, secondary_pm_code || null, tertiary_pm_code || null, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, photo_url, req.user.id]
     );
     await writeAudit(pool, { userId: req.user.id, action: 'SKU_VALIDATION_SCAN', entityTable: 'sku_validation_scans', entityId: ins.rows[0].id, detail: { sku_code: d.sku_code, same_as_bizfin: d.same_as_bizfin } });
 
@@ -2695,9 +2712,14 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
 );
 
 app.get('/api/v1/pmconfig/scans/:id/photo', authenticate, requireRole('PM_CONFIG', 'ADMIN'), asyncHandler(async (req, res) => {
-  const r = await pool.query('SELECT photo_path FROM sku_validation_scans WHERE id = $1', [req.params.id]);
+  const r = await pool.query('SELECT photo_path, photo_url FROM sku_validation_scans WHERE id = $1', [req.params.id]);
   if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', `Scan ${req.params.id} not found`);
-  const key = r.rows[0].photo_path;
+  const { photo_path: key, photo_url } = r.rows[0];
+  // photo_url is the permanent public link (packtrack-pmconfig-photos bucket) —
+  // present on every row uploaded after that bucket went live. The presigned
+  // fallback only exists for rows from before the switch that only have the
+  // old private bucket's key.
+  if (photo_url) return res.json({ url: photo_url });
   if (!key) throw new ApiError(404, 'NO_PHOTO', 'No photo attached to this scan');
   const url = await presignR2(key, `scan-${req.params.id}${path.extname(key)}`);
   res.json({ url });
