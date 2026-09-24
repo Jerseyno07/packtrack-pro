@@ -284,33 +284,35 @@ function ScanView({ token, user, onLogout }) {
   }, [token]);
 
   // Camera scanning — only runs while in scanning mode (not while a result is
-  // shown). Self-managed getUserMedia + canvas + requestAnimationFrame loop
-  // with jsQR doing the actual decode, deliberately not @zxing/browser's own
-  // video-handling layer — that library has open, unresolved iPhone-specific
-  // continuous-decode issues (confirmed live: camera feed worked fine on
-  // iOS Safari, codes just never decoded). jsQR is a pure pixel-in/result-out
-  // decoder with no platform-specific video code, so this loop is the only
-  // thing that has to behave correctly per-browser, and it's simple enough
-  // to reason about directly.
+  // shown). Tries the native BarcodeDetector API first — hardware-accelerated,
+  // decodes the full video frame directly with no per-frame JS/canvas cost,
+  // and is what actually closes the speed gap with a native scanner app.
+  // Falls back to a jsQR + canvas loop only on browsers without it. That
+  // fallback deliberately isn't @zxing/browser's own video-handling layer,
+  // which has open, unresolved iPhone-specific continuous-decode issues
+  // (confirmed live: camera feed worked fine on iOS Safari, codes just never
+  // decoded there).
   useEffect(() => {
     if (!scanning) return;
     setCameraError('');
     let stream = null;
     let rafId = null;
     let stopped = false;
+
+    // jsQR fallback only — decoding a center-cropped, capped-resolution
+    // square instead of the full frame keeps pure-JS decode cost down (its
+    // cost scales with pixel count, unlike the native detector below).
+    const DECODE_SIZE = 400;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    // jsQR's cost scales with pixel count, and decoding a full 1280x720 frame
-    // in pure JS on mobile Safari is what made scans feel slow next to a
-    // native scanner (Paytm etc. use a hardware decoder over a small
-    // reticle, not a full-frame JS decode). Only feeding it a center-cropped,
-    // capped-resolution square — matching the on-screen guide box below —
-    // cuts the per-frame pixel count by roughly 6-8x with no loss of range,
-    // since the user is aiming the code at that box anyway.
-    const DECODE_SIZE = 360;
+    function finish(text) {
+      stopped = true;
+      stream?.getTracks().forEach((t) => t.stop());
+      doLookup(text);
+    }
 
-    function tick() {
+    function tickJsQR() {
       if (stopped) return;
       const video = videoRef.current;
       if (video && video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
@@ -322,27 +324,59 @@ function ScanView({ token, user, onLogout }) {
         ctx.drawImage(video, sx, sy, side, side, 0, 0, DECODE_SIZE, DECODE_SIZE);
         const imageData = ctx.getImageData(0, 0, DECODE_SIZE, DECODE_SIZE);
         const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
-        if (code?.data) {
-          stopped = true;
-          stream?.getTracks().forEach((t) => t.stop());
-          doLookup(code.data);
-          return;
-        }
+        if (code?.data) { finish(code.data); return; }
       }
-      rafId = requestAnimationFrame(tick);
+      rafId = requestAnimationFrame(tickJsQR);
+    }
+
+    function tickNative(detector) {
+      if (stopped) return;
+      const video = videoRef.current;
+      if (!video || video.readyState < video.HAVE_ENOUGH_DATA || video.videoWidth === 0) {
+        rafId = requestAnimationFrame(() => tickNative(detector));
+        return;
+      }
+      detector.detect(video)
+        .then((codes) => {
+          if (stopped) return;
+          if (codes.length > 0) { finish(codes[0].rawValue); return; }
+          rafId = requestAnimationFrame(() => tickNative(detector));
+        })
+        .catch(() => {
+          if (!stopped) rafId = requestAnimationFrame(() => tickNative(detector));
+        });
+    }
+
+    async function getDetector() {
+      if (!('BarcodeDetector' in window)) return null;
+      try {
+        const formats = await window.BarcodeDetector.getSupportedFormats();
+        if (!formats.includes('qr_code')) return null;
+        return new window.BarcodeDetector({ formats: ['qr_code'] });
+      } catch {
+        return null;
+      }
     }
 
     (async () => {
       try {
+        const detector = await getDetector();
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+          video: {
+            facingMode: 'environment',
+            // Native detection is hardware-accelerated with no per-frame JS
+            // cost, so it can afford a sharper feed for better range; the
+            // jsQR fallback stays lower-res since its cost scales with pixels.
+            width: { ideal: detector ? 1280 : 640 },
+            height: { ideal: detector ? 720 : 480 },
+          },
           audio: false,
         });
         if (stopped) { stream.getTracks().forEach((t) => t.stop()); return; }
         const video = videoRef.current;
         video.srcObject = stream;
         await video.play();
-        tick();
+        if (detector) tickNative(detector); else tickJsQR();
       } catch (e) {
         setCameraError(e.message || 'Camera access failed — use manual entry below instead.');
       }
@@ -429,9 +463,9 @@ function ScanView({ token, user, onLogout }) {
                 <Camera size={16} /> Scan QR Code
               </div>
               <div className="relative">
-                <video ref={videoRef} className="w-full rounded-lg bg-black aspect-video" muted playsInline />
+                <video ref={videoRef} className="w-full rounded-lg bg-black aspect-[3/4] object-cover" muted playsInline />
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                  <div className="w-[55%] aspect-square border-2 border-white/80 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.25)]" />
+                  <div className="w-[80%] aspect-square border-2 border-white/80 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.25)]" />
                 </div>
               </div>
               <p className="text-xs text-slate-400 mt-2">Center the QR code in the box for a faster scan</p>
