@@ -176,10 +176,17 @@ function LoginScreen({ onLogin }) {
 
 // Simple type-to-filter picker over a preloaded materials list — same
 // interaction idea as the facility search in TransferSendScreen.jsx.
+// Sentinel for "the physical material isn't in this list at all" — kept in
+// sync with the server's PM_OTHER_SENTINEL. Picking it reveals a mandatory
+// free-text field in the parent, since PackTrack's materials list can't be
+// assumed to cover what's actually on the shelf.
+const PM_OTHER_CODE = '__OTHER__';
+
 function MaterialPicker({ label, required, materials, value, onChange }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
-  const selected = materials.find((m) => m.code === value);
+  const isOther = value === PM_OTHER_CODE;
+  const selected = !isOther ? materials.find((m) => m.code === value) : null;
   const matches = query.trim()
     ? materials.filter((m) => m.name.toLowerCase().includes(query.toLowerCase()) || m.code.toLowerCase().includes(query.toLowerCase())).slice(0, 8)
     : [];
@@ -189,7 +196,12 @@ function MaterialPicker({ label, required, materials, value, onChange }) {
       <label className="text-xs font-medium text-slate-500 mb-1 block">
         {label} {required && <span className="text-red-500">*</span>}
       </label>
-      {selected ? (
+      {isOther ? (
+        <div className="flex items-center justify-between px-3 py-2.5 border border-amber-300 rounded-lg bg-amber-50">
+          <span className="text-sm text-amber-800">Others</span>
+          <button type="button" onClick={() => onChange(null)} className="text-amber-500 hover:text-amber-700"><X size={14} /></button>
+        </div>
+      ) : selected ? (
         <div className="flex items-center justify-between px-3 py-2.5 border border-slate-300 rounded-lg bg-slate-50">
           <span className="text-sm text-slate-800">{selected.name} <span className="text-slate-400 text-xs">({selected.code})</span></span>
           <button type="button" onClick={() => onChange(null)} className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
@@ -204,8 +216,8 @@ function MaterialPicker({ label, required, materials, value, onChange }) {
             placeholder={`Search ${label.toLowerCase()}...`}
             className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          {open && matches.length > 0 && (
-            <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {open && (
+            <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
               {matches.map((m) => (
                 <button key={m.code} type="button"
                   onClick={() => { onChange(m.code); setQuery(''); setOpen(false); }}
@@ -213,6 +225,11 @@ function MaterialPicker({ label, required, materials, value, onChange }) {
                   {m.name} <span className="text-slate-400 text-xs">({m.code})</span>
                 </button>
               ))}
+              <button type="button"
+                onClick={() => { onChange(PM_OTHER_CODE); setQuery(''); setOpen(false); }}
+                className="w-full text-left px-3 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50">
+                Others (not in this list)
+              </button>
             </div>
           )}
         </>
@@ -235,6 +252,9 @@ function ScanView({ token, user, onLogout }) {
   const [primaryCode, setPrimaryCode] = useState(null);
   const [secondaryCode, setSecondaryCode] = useState(null);
   const [tertiaryCode, setTertiaryCode] = useState(null);
+  const [primaryOtherText, setPrimaryOtherText] = useState('');
+  const [secondaryOtherText, setSecondaryOtherText] = useState('');
+  const [tertiaryOtherText, setTertiaryOtherText] = useState('');
   const [photoFile, setPhotoFile] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -251,6 +271,9 @@ function ScanView({ token, user, onLogout }) {
       setPrimaryCode(null);
       setSecondaryCode(null);
       setTertiaryCode(null);
+      setPrimaryOtherText('');
+      setSecondaryOtherText('');
+      setTertiaryOtherText('');
       setPhotoFile(null);
       setScanning(false);
     } catch (e) {
@@ -347,7 +370,7 @@ function ScanView({ token, user, onLogout }) {
 
   async function handleSubmit() {
     if (!result) return;
-    if (!sameAsBizfin && !primaryCode) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     setSubmitError('');
     try {
@@ -357,8 +380,11 @@ function ScanView({ token, user, onLogout }) {
       fd.append('same_as_bizfin', String(sameAsBizfin));
       if (!sameAsBizfin) {
         fd.append('primary_pm_code', primaryCode);
+        if (primaryCode === PM_OTHER_CODE) fd.append('primary_pm_other', primaryOtherText.trim());
         if (secondaryCode) fd.append('secondary_pm_code', secondaryCode);
+        if (secondaryCode === PM_OTHER_CODE) fd.append('secondary_pm_other', secondaryOtherText.trim());
         if (tertiaryCode) fd.append('tertiary_pm_code', tertiaryCode);
+        if (tertiaryCode === PM_OTHER_CODE) fd.append('tertiary_pm_other', tertiaryOtherText.trim());
         if (photoFile) fd.append('photo', photoFile);
       }
       await api.validate(fd);
@@ -371,7 +397,12 @@ function ScanView({ token, user, onLogout }) {
     }
   }
 
-  const canSubmit = sameAsBizfin || !!primaryCode;
+  const canSubmit = sameAsBizfin || (
+    !!primaryCode
+    && (primaryCode !== PM_OTHER_CODE || !!primaryOtherText.trim())
+    && (secondaryCode !== PM_OTHER_CODE || !!secondaryOtherText.trim())
+    && (tertiaryCode !== PM_OTHER_CODE || !!tertiaryOtherText.trim())
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 max-w-lg mx-auto">
@@ -468,9 +499,30 @@ function ScanView({ token, user, onLogout }) {
 
               {!sameAsBizfin && (
                 <div className="space-y-3 pt-1">
-                  <MaterialPicker label="Primary Packing Material" required materials={materials} value={primaryCode} onChange={setPrimaryCode} />
-                  <MaterialPicker label="Secondary Packing Material" materials={materials} value={secondaryCode} onChange={setSecondaryCode} />
-                  <MaterialPicker label="Tertiary Packing Material" materials={materials} value={tertiaryCode} onChange={setTertiaryCode} />
+                  <div>
+                    <MaterialPicker label="Primary Packing Material" required materials={materials} value={primaryCode} onChange={setPrimaryCode} />
+                    {primaryCode === PM_OTHER_CODE && (
+                      <input type="text" value={primaryOtherText} onChange={(e) => setPrimaryOtherText(e.target.value)}
+                        placeholder="Describe the actual primary packing material"
+                        className="mt-2 w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
+                    )}
+                  </div>
+                  <div>
+                    <MaterialPicker label="Secondary Packing Material" materials={materials} value={secondaryCode} onChange={setSecondaryCode} />
+                    {secondaryCode === PM_OTHER_CODE && (
+                      <input type="text" value={secondaryOtherText} onChange={(e) => setSecondaryOtherText(e.target.value)}
+                        placeholder="Describe the actual secondary packing material"
+                        className="mt-2 w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
+                    )}
+                  </div>
+                  <div>
+                    <MaterialPicker label="Tertiary Packing Material" materials={materials} value={tertiaryCode} onChange={setTertiaryCode} />
+                    {tertiaryCode === PM_OTHER_CODE && (
+                      <input type="text" value={tertiaryOtherText} onChange={(e) => setTertiaryOtherText(e.target.value)}
+                        placeholder="Describe the actual tertiary packing material"
+                        className="mt-2 w-full px-3 py-2.5 border border-amber-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
+                    )}
+                  </div>
                   <div>
                     <label className="text-xs font-medium text-slate-500 mb-1 block">Photo (optional)</label>
                     <label className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-slate-300 rounded-lg text-sm text-slate-500 cursor-pointer hover:border-blue-400">

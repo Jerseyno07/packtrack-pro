@@ -2565,12 +2565,18 @@ app.get('/api/v1/sku-packaging-master', authenticate, requireRole('ADMIN'), asyn
 
 const pmconfigScanHistorySql = `
   SELECT v.id, v.same_as_bizfin, v.primary_pm_code, v.secondary_pm_code, v.tertiary_pm_code,
+         v.primary_pm_other, v.secondary_pm_other, v.tertiary_pm_other,
          v.photo_path, v.scanned_at, u.name AS scanned_by_name, u.email AS scanned_by_email
   FROM sku_validation_scans v JOIN users u ON u.id = v.scanned_by
   WHERE v.sku_code = $1
   ORDER BY v.scanned_at DESC
   LIMIT 10
 `;
+
+// Sentinel the frontend sends for a tier's code field when the physical
+// material isn't in the materials list at all — the free-text companion
+// field (e.g. primary_pm_other) is then required instead of a real code.
+const PM_OTHER_SENTINEL = '__OTHER__';
 
 app.get('/api/v1/pmconfig/lookup', authenticate, requireRole('PM_CONFIG', 'ADMIN'), asyncHandler(async (req, res) => {
   const { ean } = req.query;
@@ -2616,6 +2622,9 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
       primary_pm_code: z.string().optional(),
       secondary_pm_code: z.string().optional(),
       tertiary_pm_code: z.string().optional(),
+      primary_pm_other: z.string().optional(),
+      secondary_pm_other: z.string().optional(),
+      tertiary_pm_other: z.string().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid validate payload', parsed.error.issues);
@@ -2635,6 +2644,7 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
     }
 
     let primary_pm_code, secondary_pm_code, tertiary_pm_code;
+    let primary_pm_other = null, secondary_pm_other = null, tertiary_pm_other = null;
     if (d.same_as_bizfin) {
       // Never trust the client's copy of the mapping — snapshot the
       // current sku_packaging_master row server-side.
@@ -2642,14 +2652,25 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
       secondary_pm_code = sku.secondary_pm_code;
       tertiary_pm_code = sku.tertiary_pm_code;
     } else {
-      if (!d.primary_pm_code) throw new ApiError(400, 'PRIMARY_REQUIRED', 'Primary packing material is required when not "Same as Bizfin"');
-      primary_pm_code = resolveMaterial(d.primary_pm_code);
-      if (!primary_pm_code) throw new ApiError(400, 'MATERIAL_NOT_FOUND', `Primary packing material '${d.primary_pm_code}' not found`);
-      if (d.secondary_pm_code) {
+      if (d.primary_pm_code === PM_OTHER_SENTINEL) {
+        primary_pm_other = (d.primary_pm_other || '').trim();
+        if (!primary_pm_other) throw new ApiError(400, 'PRIMARY_OTHER_REQUIRED', 'Primary packing material description is required when "Others" is selected');
+      } else {
+        if (!d.primary_pm_code) throw new ApiError(400, 'PRIMARY_REQUIRED', 'Primary packing material is required when not "Same as Bizfin"');
+        primary_pm_code = resolveMaterial(d.primary_pm_code);
+        if (!primary_pm_code) throw new ApiError(400, 'MATERIAL_NOT_FOUND', `Primary packing material '${d.primary_pm_code}' not found`);
+      }
+      if (d.secondary_pm_code === PM_OTHER_SENTINEL) {
+        secondary_pm_other = (d.secondary_pm_other || '').trim();
+        if (!secondary_pm_other) throw new ApiError(400, 'SECONDARY_OTHER_REQUIRED', 'Secondary packing material description is required when "Others" is selected');
+      } else if (d.secondary_pm_code) {
         secondary_pm_code = resolveMaterial(d.secondary_pm_code);
         if (!secondary_pm_code) throw new ApiError(400, 'MATERIAL_NOT_FOUND', `Secondary packing material '${d.secondary_pm_code}' not found`);
       }
-      if (d.tertiary_pm_code) {
+      if (d.tertiary_pm_code === PM_OTHER_SENTINEL) {
+        tertiary_pm_other = (d.tertiary_pm_other || '').trim();
+        if (!tertiary_pm_other) throw new ApiError(400, 'TERTIARY_OTHER_REQUIRED', 'Tertiary packing material description is required when "Others" is selected');
+      } else if (d.tertiary_pm_code) {
         tertiary_pm_code = resolveMaterial(d.tertiary_pm_code);
         if (!tertiary_pm_code) throw new ApiError(400, 'MATERIAL_NOT_FOUND', `Tertiary packing material '${d.tertiary_pm_code}' not found`);
       }
@@ -2662,9 +2683,9 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
     }
 
     const ins = await pool.query(
-      `INSERT INTO sku_validation_scans (sku_code, ean, same_as_bizfin, primary_pm_code, secondary_pm_code, tertiary_pm_code, photo_path, scanned_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [d.sku_code, d.ean || sku.ean, d.same_as_bizfin, primary_pm_code, secondary_pm_code || null, tertiary_pm_code || null, photo_path, req.user.id]
+      `INSERT INTO sku_validation_scans (sku_code, ean, same_as_bizfin, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, scanned_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      [d.sku_code, d.ean || sku.ean, d.same_as_bizfin, primary_pm_code || null, secondary_pm_code || null, tertiary_pm_code || null, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, req.user.id]
     );
     await writeAudit(pool, { userId: req.user.id, action: 'SKU_VALIDATION_SCAN', entityTable: 'sku_validation_scans', entityId: ins.rows[0].id, detail: { sku_code: d.sku_code, same_as_bizfin: d.same_as_bizfin } });
 
