@@ -267,7 +267,10 @@ function ScanView({ token, user, onLogout }) {
     try {
       const data = await api.lookup(ean);
       setResult(data);
-      setSameAsBizfin(true);
+      // No FSN mapping (data.sku === null) means "Same as Bizfin" has
+      // nothing to compare against — go straight to the "log what you see"
+      // fields instead of defaulting to a confirm state.
+      setSameAsBizfin(!!data.sku);
       setPrimaryCode(null);
       setSecondaryCode(null);
       setTertiaryCode(null);
@@ -409,8 +412,8 @@ function ScanView({ token, user, onLogout }) {
     setSubmitError('');
     try {
       const fd = new FormData();
-      fd.append('sku_code', result.sku.sku_code);
-      fd.append('ean', result.sku.ean || '');
+      if (result.sku) fd.append('sku_code', result.sku.sku_code);
+      fd.append('ean', (result.sku ? result.sku.ean : result.ean) || '');
       fd.append('same_as_bizfin', String(sameAsBizfin));
       if (!sameAsBizfin) {
         fd.append('primary_pm_code', primaryCode);
@@ -499,16 +502,29 @@ function ScanView({ token, user, onLogout }) {
           <>
             <button onClick={backToScan} className="text-sm text-blue-600 hover:underline">&larr; Back to scan</button>
 
-            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-2">
-              <div className="text-xs text-slate-400 font-mono">{result.sku.sku_code}</div>
-              <div className="font-bold text-slate-900">{result.sku.sku_name || <span className="text-slate-400 italic">No name on file</span>}</div>
-              <div className="grid grid-cols-2 gap-2 text-sm pt-2">
-                <div><span className="text-slate-400 text-xs block">Primary Material</span>{result.sku.primary_pm_name || '—'}</div>
-                <div><span className="text-slate-400 text-xs block">Secondary Material</span>{result.sku.secondary_pm_name || '—'}</div>
-                <div><span className="text-slate-400 text-xs block">Tertiary Material</span>{result.sku.tertiary_pm_name || '—'}</div>
-                <div><span className="text-slate-400 text-xs block">Packing Type</span>{result.sku.packing_type || '—'}</div>
+            {result.sku ? (
+              <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-2">
+                <div className="text-xs text-slate-400 font-mono">{result.sku.sku_code}</div>
+                <div className="font-bold text-slate-900">{result.sku.sku_name || <span className="text-slate-400 italic">No name on file</span>}</div>
+                <div className="grid grid-cols-2 gap-2 text-sm pt-2">
+                  <div><span className="text-slate-400 text-xs block">Primary Material</span>{result.sku.primary_pm_name || '—'}</div>
+                  <div><span className="text-slate-400 text-xs block">Secondary Material</span>{result.sku.secondary_pm_name || '—'}</div>
+                  <div><span className="text-slate-400 text-xs block">Tertiary Material</span>{result.sku.tertiary_pm_name || '—'}</div>
+                  <div><span className="text-slate-400 text-xs block">Packing Type</span>{result.sku.packing_type || '—'}</div>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-amber-200 p-4 space-y-1.5">
+                <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+                  <AlertTriangle size={16} /> No FSN mapping found
+                </div>
+                <div className="text-xs text-slate-400 font-mono">{result.ean}</div>
+                <p className="text-xs text-slate-500">
+                  This EAN isn't in the SKU Packaging Master yet. You can still log what the pack actually looks like below —
+                  it won't be tied to an FSN, but it helps us see which EANs are being scanned without a map, and why.
+                </p>
+              </div>
+            )}
 
             {result.recent_scans.length > 0 && (
               <div className="bg-white rounded-xl border border-slate-200 p-4">
@@ -516,7 +532,11 @@ function ScanView({ token, user, onLogout }) {
                 <div className="space-y-1.5">
                   {result.recent_scans.map((s) => (
                     <div key={s.id} className="flex items-center justify-between text-xs">
-                      <span className="text-slate-600">{s.scanned_by_name} {s.same_as_bizfin ? <span className="text-emerald-600">(confirmed)</span> : <span className="text-amber-600">(corrected)</span>}</span>
+                      <span className="text-slate-600">
+                        {s.scanned_by_name} {!result.sku
+                          ? <span className="text-amber-600">(no FSN map)</span>
+                          : s.same_as_bizfin ? <span className="text-emerald-600">(confirmed)</span> : <span className="text-amber-600">(corrected)</span>}
+                      </span>
                       <span className="text-slate-400">{new Date(s.scanned_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
                   ))}
@@ -525,11 +545,13 @@ function ScanView({ token, user, onLogout }) {
             )}
 
             <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={sameAsBizfin} onChange={(e) => setSameAsBizfin(e.target.checked)}
-                  className="w-4 h-4 accent-blue-600" />
-                <span className="text-sm font-medium text-slate-800">Same as Bizfin</span>
-              </label>
+              {result.sku && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={sameAsBizfin} onChange={(e) => setSameAsBizfin(e.target.checked)}
+                    className="w-4 h-4 accent-blue-600" />
+                  <span className="text-sm font-medium text-slate-800">Same as Bizfin</span>
+                </label>
+              )}
 
               {!sameAsBizfin && (
                 <div className="space-y-3 pt-1">

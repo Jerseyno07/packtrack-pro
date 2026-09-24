@@ -2589,6 +2589,19 @@ const pmconfigScanHistorySql = `
   LIMIT 10
 `;
 
+// Scan history for an EAN that has no sku_packaging_master mapping — keyed
+// by ean instead of sku_code, since there is no sku_code. Mirrors
+// pmconfigScanHistorySql's shape so the frontend doesn't need to branch on it.
+const pmconfigScanHistoryByEanSql = `
+  SELECT v.id, v.same_as_bizfin, v.primary_pm_code, v.secondary_pm_code, v.tertiary_pm_code,
+         v.primary_pm_other, v.secondary_pm_other, v.tertiary_pm_other,
+         v.photo_path, v.photo_url, v.scanned_at, u.name AS scanned_by_name, u.email AS scanned_by_email
+  FROM sku_validation_scans v JOIN users u ON u.id = v.scanned_by
+  WHERE v.ean = $1 AND v.sku_code IS NULL
+  ORDER BY v.scanned_at DESC
+  LIMIT 10
+`;
+
 // Sentinel the frontend sends for a tier's code field when the physical
 // material isn't in the materials list at all — the free-text companion
 // field (e.g. primary_pm_other) is then required instead of a real code.
@@ -2597,6 +2610,7 @@ const PM_OTHER_SENTINEL = '__OTHER__';
 app.get('/api/v1/pmconfig/lookup', authenticate, requireRole('PM_CONFIG', 'ADMIN'), asyncHandler(async (req, res) => {
   const { ean } = req.query;
   if (!ean) throw new ApiError(400, 'EAN_REQUIRED', 'ean query param is required');
+  const trimmedEan = String(ean).trim();
 
   const skuRes = await pool.query(
     `SELECT s.sku_code, s.sku_name, s.ean, s.packing_type,
@@ -2608,11 +2622,19 @@ app.get('/api/v1/pmconfig/lookup', authenticate, requireRole('PM_CONFIG', 'ADMIN
      LEFT JOIN materials ms ON ms.code = s.secondary_pm_code
      LEFT JOIN materials mt ON mt.code = s.tertiary_pm_code
      WHERE s.ean = $1`,
-    [String(ean).trim()]
+    [trimmedEan]
   );
-  if (!skuRes.rows.length) throw new ApiError(404, 'EAN_NOT_FOUND', `No SKU mapped to EAN '${ean}'`);
-  const sku = skuRes.rows[0];
 
+  if (!skuRes.rows.length) {
+    // No FSN mapping — still worth knowing which EANs are actually being
+    // scanned in the field with no map, and what the packaging material
+    // looks like on them, so return a 200 with sku: null instead of a 404.
+    // The frontend lets the user log what they see against the bare EAN.
+    const history = await pool.query(pmconfigScanHistoryByEanSql, [trimmedEan]);
+    return res.json({ sku: null, ean: trimmedEan, recent_scans: history.rows });
+  }
+
+  const sku = skuRes.rows[0];
   const history = await pool.query(pmconfigScanHistorySql, [sku.sku_code]);
   res.json({ sku, recent_scans: history.rows });
 }));
@@ -2629,7 +2651,9 @@ const pmconfigPhotoUpload = multer({
 app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'ADMIN'), pmconfigPhotoUpload.single('photo'),
   asyncHandler(async (req, res) => {
     const schema = z.object({
-      sku_code: z.string().min(1),
+      // sku_code is absent when the EAN scanned had no FSN mapping at all —
+      // ean is required in that case, it's the only identifying data.
+      sku_code: z.string().optional(),
       ean: z.string().optional(),
       // Not z.coerce.boolean() — that's Boolean(val), which is true for the
       // literal string "false" too. Multipart fields always arrive as
@@ -2646,9 +2670,18 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
     if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid validate payload', parsed.error.issues);
     const d = parsed.data;
 
-    const skuRes = await pool.query('SELECT * FROM sku_packaging_master WHERE sku_code = $1', [d.sku_code]);
-    if (!skuRes.rows.length) throw new ApiError(404, 'SKU_NOT_FOUND', `SKU '${d.sku_code}' not found`);
-    const sku = skuRes.rows[0];
+    let sku = null;
+    if (d.sku_code) {
+      const skuRes = await pool.query('SELECT * FROM sku_packaging_master WHERE sku_code = $1', [d.sku_code]);
+      if (!skuRes.rows.length) throw new ApiError(404, 'SKU_NOT_FOUND', `SKU '${d.sku_code}' not found`);
+      sku = skuRes.rows[0];
+    } else {
+      if (!d.ean || !d.ean.trim()) throw new ApiError(400, 'EAN_REQUIRED', 'EAN is required when there is no FSN mapping');
+      // "Same as Bizfin" compares the pack against PackTrack's own mapping —
+      // meaningless with no mapping to compare against. Ignore whatever the
+      // client sent and always take the "log what you see" branch below.
+      d.same_as_bizfin = false;
+    }
 
     const matRows = (await pool.query('SELECT code, name FROM materials WHERE is_active')).rows;
     const matByName = new Map(matRows.map((r) => [r.name.toLowerCase().trim(), r.code]));
@@ -2695,18 +2728,21 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
     let photo_path = null;
     let photo_url = null;
     if (req.file) {
-      photo_path = `pmconfig-scans/${d.sku_code}-${Date.now()}${path.extname(req.file.originalname)}`;
+      photo_path = `pmconfig-scans/${d.sku_code || 'unmapped'}-${Date.now()}${path.extname(req.file.originalname)}`;
       photo_url = await uploadPmconfigPhoto(photo_path, req.file.buffer, req.file.mimetype);
     }
 
+    const ean = d.ean || sku?.ean || null;
     const ins = await pool.query(
       `INSERT INTO sku_validation_scans (sku_code, ean, same_as_bizfin, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, photo_url, scanned_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-      [d.sku_code, d.ean || sku.ean, d.same_as_bizfin, primary_pm_code || null, secondary_pm_code || null, tertiary_pm_code || null, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, photo_url, req.user.id]
+      [d.sku_code || null, ean, d.same_as_bizfin, primary_pm_code || null, secondary_pm_code || null, tertiary_pm_code || null, primary_pm_other, secondary_pm_other, tertiary_pm_other, photo_path, photo_url, req.user.id]
     );
-    await writeAudit(pool, { userId: req.user.id, action: 'SKU_VALIDATION_SCAN', entityTable: 'sku_validation_scans', entityId: ins.rows[0].id, detail: { sku_code: d.sku_code, same_as_bizfin: d.same_as_bizfin } });
+    await writeAudit(pool, { userId: req.user.id, action: 'SKU_VALIDATION_SCAN', entityTable: 'sku_validation_scans', entityId: ins.rows[0].id, detail: { sku_code: d.sku_code || null, ean, same_as_bizfin: d.same_as_bizfin } });
 
-    const history = await pool.query(pmconfigScanHistorySql, [d.sku_code]);
+    const history = sku
+      ? await pool.query(pmconfigScanHistorySql, [d.sku_code])
+      : await pool.query(pmconfigScanHistoryByEanSql, [ean]);
     res.status(201).json({ id: ins.rows[0].id, recent_scans: history.rows });
   })
 );
