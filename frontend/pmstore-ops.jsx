@@ -426,13 +426,16 @@ function GRNScreen({ api, warehouseId }) {
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div><h2 className="text-lg font-bold text-slate-900">Post GRN</h2><p className="text-sm text-slate-500">Receive against a vendor PO, or a Stock Transfer sent to this facility.</p></div>
-          <div className="flex items-center gap-1">
-            <button onClick={() => setAdhocMode(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100">
-              <Plus size={14} /> Adhoc GRN
-            </button>
-            <button onClick={loadAll} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
-          </div>
+          <button onClick={loadAll} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
         </div>
+
+        <button
+          onClick={() => setAdhocMode(true)}
+          title="Adhoc GRN — no PO yet"
+          className="fixed bottom-40 right-4 flex items-center gap-2 pl-4 pr-5 py-3 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 z-50 text-sm font-semibold"
+        >
+          <Plus size={18} /> Adhoc GRN
+        </button>
 
         <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
           {[['all', 'All'], ['po', 'POs'], ['transfer', 'Stock Transfers']].map(([val, label]) => (
