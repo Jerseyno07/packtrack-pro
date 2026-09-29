@@ -1419,6 +1419,115 @@ app.get('/api/v1/goods-receipts/:id/invoice-image', authenticate, requireRole('P
   })
 );
 
+// ── Adhoc GRN — a receipt with no PO yet ──────────────────────────────────
+// PM Store sometimes physically receives stock before the matching PO is
+// uploaded (invoice without a PO number, a delivery challan, a petty-cash
+// purchase). This posts the real goods_receipts row and stock_ledger entry
+// immediately (po_id NULL — db/039_adhoc_grn.sql made that nullable) so
+// on-hand stock stays accurate; a Procurement user attaches the real PO
+// later via POST /procurement/unmapped-grns/:id/map, which is a plain
+// UPDATE ... SET po_id — the existing trg_grn_sync_po trigger does the
+// received_qty_cache/status sync from there with no further code needed.
+const adhocGrnSchema = z.object({
+  warehouse_id: z.coerce.number().int().positive(),
+  vendor_name: z.string().min(1),
+  grn_type: z.enum(['NO_PO_INVOICE', 'DELIVERY_CHALLAN', 'PETTY_CASH']),
+  material_id: z.coerce.number().int().positive(),
+  grn_qty: z.coerce.number().positive(),
+  grn_date: z.string().min(1),
+});
+
+app.post('/api/v1/goods-receipts/adhoc', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'),
+  grnImageUpload.single('invoice_image'),
+  asyncHandler(async (req, res) => {
+    const parsed = adhocGrnSchema.safeParse(req.body);
+    if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid adhoc GRN payload', parsed.error.issues);
+    const d = parsed.data;
+    if (!req.file) throw new ApiError(422, 'INVOICE_REQUIRED', 'An invoice/challan photo is mandatory for Adhoc GRN');
+
+    // Client sends its own warehouse (from the login response's warehouse_ids,
+    // same as TransferSendScreen's sourceWarehouseId) rather than this trusting
+    // req.user.warehouse_ids — that's recomputed per-request straight from
+    // user_warehouses with no ADMIN default, unlike the one-time login response
+    // (see issueSession()), so it's empty for the ADMIN test account. Same
+    // ownership-bypass-for-ADMIN pattern as the stock-issues/transfer endpoint.
+    const warehouseId = d.warehouse_id;
+    if (req.user.role !== 'ADMIN' && !req.user.warehouse_ids.map(String).includes(String(warehouseId))) {
+      throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to this warehouse');
+    }
+
+    const matRes = await pool.query('SELECT id, master_price FROM materials WHERE id = $1 AND is_active', [d.material_id]);
+    if (!matRes.rows.length) throw new ApiError(404, 'MATERIAL_NOT_FOUND', `Material ${d.material_id} not found`);
+    // No PO to snapshot a price from — master_price is the best available
+    // reference cost so this receipt doesn't drag the material's weighted-
+    // average cost down to zero at this warehouse.
+    const unitCost = Number(matRes.rows[0].master_price) || 0;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const grnRef = genRef('GRN');
+      const grnIns = await client.query(
+        `INSERT INTO goods_receipts (grn_ref, po_id, warehouse_id, material_id, grn_qty, unit_price, grn_date, vendor_name, grn_type, received_by_user_id)
+         VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+        [grnRef, warehouseId, d.material_id, d.grn_qty, unitCost, d.grn_date, d.vendor_name, d.grn_type, req.user.id]
+      );
+      const grnId = grnIns.rows[0].id;
+
+      const r2Key = `grn-invoices/${grnId}-${Date.now()}${path.extname(req.file.originalname)}`;
+      await uploadToR2(r2Key, req.file.buffer, req.file.mimetype);
+      await client.query('UPDATE goods_receipts SET invoice_image_path = $1 WHERE id = $2', [r2Key, grnId]);
+
+      await postLedgerEntry(client, { warehouseId, materialId: d.material_id, movementType: 'GRN_INWARD', qtyDelta: d.grn_qty, unitCost, refTable: 'goods_receipts', refId: grnId, movementDate: d.grn_date });
+      await writeAudit(client, { userId: req.user.id, action: 'ADHOC_GRN_CREATED', entityTable: 'goods_receipts', entityId: grnId, detail: { grnRef, vendor_name: d.vendor_name, grn_type: d.grn_type, material_id: d.material_id, qty: d.grn_qty } });
+
+      await client.query('COMMIT');
+      res.status(201).json({ grn_id: grnId, grn_ref: grnRef });
+    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  })
+);
+
+app.get('/api/v1/procurement/unmapped-grns', authenticate, requireRole('PROCUREMENT', 'ADMIN'), asyncHandler(async (req, res) => {
+  const r = await pool.query(
+    `SELECT gr.id, gr.grn_ref, gr.vendor_name, gr.grn_type, gr.grn_qty, gr.grn_date,
+            gr.material_id, m.code AS material_code, m.name AS material_name, m.unit,
+            gr.warehouse_id, w.name AS warehouse_name, w.code AS warehouse_code,
+            (gr.invoice_image_path IS NOT NULL) AS has_invoice, u.name AS received_by_name,
+            gr.created_at
+     FROM goods_receipts gr
+     JOIN materials m ON m.id = gr.material_id
+     JOIN warehouses w ON w.id = gr.warehouse_id
+     LEFT JOIN users u ON u.id = gr.received_by_user_id
+     WHERE gr.po_id IS NULL
+     ORDER BY gr.created_at DESC`
+  );
+  res.json({ data: r.rows });
+}));
+
+app.post('/api/v1/procurement/unmapped-grns/:id/map', authenticate, requireRole('PROCUREMENT', 'ADMIN'), asyncHandler(async (req, res) => {
+  const { po_id } = z.object({ po_id: z.coerce.number().int().positive() }).parse(req.body);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const grnRes = await client.query('SELECT * FROM goods_receipts WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!grnRes.rows.length) throw new ApiError(404, 'NOT_FOUND', `GRN ${req.params.id} not found`);
+    const grn = grnRes.rows[0];
+    if (grn.po_id !== null) throw new ApiError(409, 'ALREADY_MAPPED', `GRN ${grn.grn_ref} is already mapped to a PO`);
+
+    const poRes = await client.query('SELECT * FROM purchase_orders WHERE id = $1 FOR UPDATE', [po_id]);
+    if (!poRes.rows.length) throw new ApiError(404, 'PO_NOT_FOUND', `PO ${po_id} not found`);
+    const po = poRes.rows[0];
+    if (['CLOSED', 'CANCELLED', 'FORCE_COMPLETED'].includes(po.status)) throw new ApiError(409, 'PO_NOT_OPEN', `PO ${po.po_no} is ${po.status}, cannot map a GRN to it`);
+    if (Number(po.material_id) !== Number(grn.material_id)) throw new ApiError(422, 'MATERIAL_MISMATCH', `This GRN is for a different material than PO ${po.po_no}`);
+
+    await client.query('UPDATE goods_receipts SET po_id = $1 WHERE id = $2', [po_id, grn.id]);
+    await writeAudit(client, { userId: req.user.id, action: 'ADHOC_GRN_MAPPED_TO_PO', entityTable: 'goods_receipts', entityId: grn.id, detail: { grnRef: grn.grn_ref, po_id, po_no: po.po_no } });
+    await client.query('COMMIT');
+    res.json({ ok: true, grn_id: grn.id, po_id, po_no: po.po_no });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE 4: ISSUE STOCK FROM PM STORE AGAINST INDENT
 // ═══════════════════════════════════════════════════════════════════════════

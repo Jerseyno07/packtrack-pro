@@ -21,8 +21,20 @@ function makeApi(token) {
     googleLogin: (idToken) => req('POST', '/api/v1/auth/google', { id_token: idToken }),
     listPurchaseOrders: () => req('GET', '/api/v1/procurement/purchase-orders'),
     invoiceImageUrl: (grnId) => req('GET', `/api/v1/goods-receipts/${grnId}/invoice-image`),
+    listUnmappedGrns: () => req('GET', '/api/v1/procurement/unmapped-grns'),
+    // Scoped to the GRN's own material — a PO for a different material would
+    // be rejected server-side anyway (MATERIAL_MISMATCH), but narrowing the
+    // picker up front avoids that error path in the common case.
+    listMatchingPOs: (materialId) => req('GET', `/api/v1/purchase-orders?material_id=${materialId}&status=OPEN,PARTIALLY_RECEIVED`),
+    mapGrnToPo: (grnId, poId) => req('POST', `/api/v1/procurement/unmapped-grns/${grnId}/map`, { po_id: poId }),
   };
 }
+
+const GRN_TYPE_LABEL = {
+  NO_PO_INVOICE: 'Invoice without PO number',
+  DELIVERY_CHALLAN: 'Delivery Challan',
+  PETTY_CASH: 'Petty Cash Purchase',
+};
 
 // Same Google Identity Services pattern as pmstore-ops.jsx / portal.jsx.
 function useGoogleSignIn(buttonRef, onCredential) {
@@ -267,6 +279,178 @@ function POUploadedSection({ token }) {
   );
 }
 
+// Modal for attaching a real PO to a GRN that was posted before one existed
+// (frontend/pmstore-ops.jsx's Adhoc GRN). Picker is scoped to POs for the
+// GRN's own material; the server still re-checks this (MATERIAL_MISMATCH)
+// since the picker's list could be stale by the time of submit.
+function MapToPoModal({ grn, api, onClose, onMapped }) {
+  const [pos, setPos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selectedPoId, setSelectedPoId] = useState(null);
+  const [mapping, setMapping] = useState(false);
+
+  useEffect(() => {
+    api.listMatchingPOs(grn.material_id)
+      .then((d) => setPos(Array.isArray(d.data) ? d.data : []))
+      .catch((e) => setError(e.message || 'Failed to load matching POs'))
+      .finally(() => setLoading(false));
+  }, [grn.material_id]);
+
+  async function confirmMap() {
+    setMapping(true);
+    setError('');
+    try {
+      await api.mapGrnToPo(grn.id, selectedPoId);
+      onMapped();
+    } catch (e) {
+      setError(e.message || 'Failed to map GRN to PO');
+    } finally {
+      setMapping(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <div>
+            <div className="font-bold text-slate-900 text-sm">Map {grn.grn_ref} to a PO</div>
+            <div className="text-xs text-slate-500">{grn.material_code} — {grn.material_name} · {Number(grn.grn_qty).toLocaleString()} {grn.unit}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          {error && (
+            <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+              <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" /><span>{error}</span>
+            </div>
+          )}
+          {loading ? (
+            <div className="py-10 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading matching POs…</div>
+          ) : pos.length === 0 ? (
+            <div className="py-10 text-center text-sm text-slate-400">No open PO found for this material yet. Upload the PO first, then map this GRN to it.</div>
+          ) : (
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {pos.map((po) => (
+                <button key={po.id} onClick={() => setSelectedPoId(po.id)}
+                  className={`w-full text-left px-3 py-2.5 rounded-xl border text-sm ${selectedPoId === po.id ? 'border-blue-400 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+                  <div className="font-mono font-medium text-slate-800">{po.po_no} <span className="text-slate-400 font-normal">· {po.vendor_name}</span></div>
+                  <div className="text-xs text-slate-500">{Number(po.remaining_qty).toLocaleString()} {po.unit} remaining of {Number(po.po_qty).toLocaleString()}</div>
+                </button>
+              ))}
+            </div>
+          )}
+          <button onClick={confirmMap} disabled={!selectedPoId || mapping}
+            className="w-full py-3 rounded-xl font-semibold text-sm bg-blue-600 text-white disabled:opacity-40 disabled:cursor-not-allowed">
+            {mapping ? 'Mapping…' : 'Confirm Mapping'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UnmappedGrnSection({ token }) {
+  const api = makeApi(token);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [quickView, setQuickView] = useState(null);
+  const [mapTarget, setMapTarget] = useState(null);
+
+  function load() {
+    setLoading(true);
+    setError('');
+    api.listUnmappedGrns()
+      .then((d) => setRows(Array.isArray(d.data) ? d.data : []))
+      .catch((e) => setError(e.message || 'Failed to load'))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div className="space-y-4 max-w-6xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Unmapped GRN</h2>
+          <p className="text-sm text-slate-500">Receipts PM Store posted before a matching PO existed — attach the real PO once it's uploaded.</p>
+        </div>
+        <button onClick={load} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700">
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </div>
+
+      {error && (
+        <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" /><span>{error}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="py-16 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="bg-white rounded-xl border border-slate-200 py-16 text-center text-slate-400 text-sm">No unmapped GRNs — everything's tied to a PO.</div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm min-w-[900px]">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr>
+                <th className="text-left px-4 py-2.5">GRN Ref</th>
+                <th className="text-left px-4 py-2.5">Vendor</th>
+                <th className="text-left px-4 py-2.5">Type</th>
+                <th className="text-left px-4 py-2.5">Material</th>
+                <th className="text-left px-4 py-2.5">PM Store</th>
+                <th className="text-right px-4 py-2.5">Qty</th>
+                <th className="text-left px-4 py-2.5">Date</th>
+                <th className="text-left px-4 py-2.5">Received By</th>
+                <th className="text-left px-4 py-2.5">Invoice</th>
+                <th className="text-left px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((g) => (
+                <tr key={g.id} className="border-t border-slate-100 hover:bg-slate-50 align-top">
+                  <td className="px-4 py-3 font-mono text-xs text-slate-700">{g.grn_ref}</td>
+                  <td className="px-4 py-3 text-slate-700 max-w-[140px] truncate" title={g.vendor_name}>{g.vendor_name}</td>
+                  <td className="px-4 py-3"><Badge tone="amber">{GRN_TYPE_LABEL[g.grn_type] || g.grn_type}</Badge></td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-600">{g.material_code} <span className="font-sans text-slate-400">{g.material_name}</span></td>
+                  <td className="px-4 py-3 text-slate-600">{g.warehouse_name}</td>
+                  <td className="px-4 py-3 text-right text-slate-700 whitespace-nowrap">{Number(g.grn_qty).toLocaleString()} {g.unit}</td>
+                  <td className="px-4 py-3 text-slate-600">{g.grn_date}</td>
+                  <td className="px-4 py-3 text-slate-600">{g.received_by_name || '—'}</td>
+                  <td className="px-4 py-3">
+                    <button onClick={() => setQuickView(g)} disabled={!g.has_invoice}
+                      className="flex items-center gap-1 text-xs text-blue-600 hover:underline disabled:text-slate-300 disabled:no-underline disabled:cursor-not-allowed w-fit">
+                      <FileImage size={12} /> {g.has_invoice ? 'View' : 'No image'}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button onClick={() => setMapTarget(g)} className="px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100">
+                      Map to PO
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {quickView && <InvoiceQuickView grn={quickView} api={api} onClose={() => setQuickView(null)} />}
+      {mapTarget && (
+        <MapToPoModal
+          grn={mapTarget}
+          api={api}
+          onClose={() => setMapTarget(null)}
+          onMapped={() => { setMapTarget(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function ProcApp() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
@@ -294,12 +478,14 @@ export default function ProcApp() {
         <div className="flex gap-1 mt-3">
           <button onClick={() => setTab('pos')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'pos' ? 'bg-blue-50 text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}>PO Uploaded</button>
           <button onClick={() => setTab('flagged')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'flagged' ? 'bg-blue-50 text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}>Flagged PO Items</button>
+          <button onClick={() => setTab('unmapped')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'unmapped' ? 'bg-blue-50 text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}>Unmapped GRN</button>
         </div>
       </div>
 
       <div className="p-6">
         {tab === 'pos' && <POUploadedSection token={token} />}
         {tab === 'flagged' && <DicePendingSection token={token} canMapMaterials={false} />}
+        {tab === 'unmapped' && <UnmappedGrnSection token={token} />}
       </div>
     </div>
   );

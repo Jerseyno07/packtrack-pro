@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone, Download } from 'lucide-react';
+import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone, Download, Plus, X } from 'lucide-react';
 
 function useInstallPrompt() {
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
@@ -84,6 +84,19 @@ function makeApi(token) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || 'Image upload failed');
+      return data;
+    },
+    createAdhocGrn: async (fields, imageFile) => {
+      const fd = new FormData();
+      Object.entries(fields).forEach(([k, v]) => fd.append(k, v));
+      fd.append('invoice_image', imageFile);
+      const res = await fetch(`${BASE_URL}/api/v1/goods-receipts/adhoc`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Adhoc GRN failed');
       return data;
     },
   };
@@ -259,6 +272,8 @@ function GRNScreen({ api, warehouseId }) {
   const [selectedPO, setSelectedPO] = useState(null);
   const [selectedTransfer, setSelectedTransfer] = useState(null);
   const [transferSuccess, setTransferSuccess] = useState(null);
+  const [adhocMode, setAdhocMode] = useState(false);
+  const [adhocSuccess, setAdhocSuccess] = useState(null);
   const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
   const [invoiceNo, setInvoiceNo] = useState('');
   const [inwardQty, setInwardQty] = useState('');
@@ -378,6 +393,31 @@ function GRNScreen({ api, warehouseId }) {
     );
   }
 
+  if (adhocSuccess) {
+    return (
+      <div className="text-center py-16">
+        <CheckCircle2 size={40} className="mx-auto mb-3 text-green-500" />
+        <div className="font-bold text-lg text-slate-900">Adhoc GRN Posted</div>
+        <div className="text-sm text-slate-500 mt-1">{adhocSuccess.grn_ref}</div>
+        <div className="text-xs text-slate-400 mt-1">Not yet linked to a PO — Procurement will map it once the PO is uploaded.</div>
+        <button onClick={() => { setAdhocSuccess(null); setAdhocMode(false); loadAll(); }} className="mt-5 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
+          Back to GRN List
+        </button>
+      </div>
+    );
+  }
+
+  if (adhocMode) {
+    return (
+      <AdhocGrnForm
+        api={api}
+        warehouseId={warehouseId}
+        onBack={() => setAdhocMode(false)}
+        onSubmitted={(info) => setAdhocSuccess(info)}
+      />
+    );
+  }
+
   if (!selectedPO) {
     const showPOs = filter !== 'transfer';
     const showTransfers = filter !== 'po';
@@ -386,7 +426,12 @@ function GRNScreen({ api, warehouseId }) {
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div><h2 className="text-lg font-bold text-slate-900">Post GRN</h2><p className="text-sm text-slate-500">Receive against a vendor PO, or a Stock Transfer sent to this facility.</p></div>
-          <button onClick={loadAll} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setAdhocMode(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100">
+              <Plus size={14} /> Adhoc GRN
+            </button>
+            <button onClick={loadAll} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
+          </div>
         </div>
 
         <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
@@ -645,6 +690,153 @@ function toBase(l, disp) {
   if (l.meters_per_unit) return Math.round(n * Number(l.meters_per_unit));
   if (l.pieces_per_kg) return Math.round(n * Number(l.pieces_per_kg));
   return n;
+}
+
+const GRN_TYPES = [
+  { value: 'NO_PO_INVOICE', label: 'Invoice without PO number' },
+  { value: 'DELIVERY_CHALLAN', label: 'Delivery Challan' },
+  { value: 'PETTY_CASH', label: 'Petty Cash Purchase' },
+];
+
+// A receipt with no PO to match against yet — posts real stock/goods_receipts
+// immediately (po_id NULL server-side); Procurement maps it to the PO once
+// that's uploaded (see the Unmapped GRN tab in the Procurement app).
+function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
+  const [materials, setMaterials] = useState([]);
+  const [matSearch, setMatSearch] = useState('');
+  const [showMatDd, setShowMatDd] = useState(false);
+  const [material, setMaterial] = useState(null);
+  const [vendorName, setVendorName] = useState('');
+  const [grnType, setGrnType] = useState('NO_PO_INVOICE');
+  const [qtyDisp, setQtyDisp] = useState('');
+  const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
+  const [image, setImage] = useState(null);
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => { api.listMaterials().then((d) => setMaterials(d.data || [])).catch(() => {}); }, [api]);
+
+  const filteredMaterials = materials.filter((m) => {
+    const q = matSearch.toLowerCase();
+    return !q || m.code.toLowerCase().includes(q) || m.name.toLowerCase().includes(q);
+  });
+
+  function selectMaterial(m) { setMaterial(m); setMatSearch(''); setShowMatDd(false); }
+
+  const canSubmit = !!warehouseId && !!vendorName.trim() && !!grnType && !!material && Number(qtyDisp) > 0 && !!grnDate && !!image && !submitting;
+
+  async function handleSubmit() {
+    setError('');
+    setSubmitting(true);
+    try {
+      const fields = {
+        warehouse_id: warehouseId,
+        vendor_name: vendorName.trim(),
+        grn_type: grnType,
+        material_id: material.id,
+        grn_qty: toBase(material, qtyDisp),
+        grn_date: grnDate,
+      };
+      const res = await api.createAdhocGrn(fields, image);
+      onSubmitted({ grn_ref: res.grn_ref });
+    } catch (e) {
+      setError(e.message || 'Failed to post adhoc GRN.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4 pb-24">
+      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500"><ArrowLeft size={15} /> Back</button>
+      <div>
+        <h2 className="text-lg font-bold text-slate-900">Adhoc GRN</h2>
+        <p className="text-sm text-slate-500">Record a receipt with no PO yet — Procurement will map it to the PO once it's uploaded.</p>
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-500 mb-1">Vendor Name</label>
+        <input type="text" value={vendorName} onChange={(e) => setVendorName(e.target.value)}
+          placeholder="Vendor name as on the invoice/challan"
+          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-500 mb-1">Type of GRN</label>
+        <div className="grid grid-cols-1 gap-2">
+          {GRN_TYPES.map((t) => (
+            <button key={t.value} onClick={() => setGrnType(t.value)}
+              className={`text-left px-3 py-2.5 rounded-xl border text-sm ${grnType === t.value ? 'border-blue-400 bg-blue-50 text-blue-800 font-medium' : 'border-slate-200 text-slate-600'}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="relative">
+        <label className="block text-xs font-medium text-slate-500 mb-1">PM Code</label>
+        {material ? (
+          <div className="flex items-center gap-2 w-full border border-blue-300 bg-blue-50 rounded-xl px-3 py-3">
+            <span className="flex-1 text-sm font-medium text-blue-800">{material.code} <span className="ml-1 text-xs font-normal text-blue-500">{material.name}</span></span>
+            <button onClick={() => setMaterial(null)} className="text-blue-400 hover:text-blue-700"><X size={16} /></button>
+          </div>
+        ) : (
+          <>
+            <input type="text" value={matSearch}
+              onChange={(e) => { setMatSearch(e.target.value); setShowMatDd(true); }}
+              onFocus={() => setShowMatDd(true)}
+              onBlur={() => setTimeout(() => setShowMatDd(false), 150)}
+              placeholder="Search by code or name…"
+              className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+            {showMatDd && matSearch.length > 0 && filteredMaterials.length > 0 && (
+              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
+                {filteredMaterials.slice(0, 20).map((m) => (
+                  <button key={m.id} onMouseDown={() => selectMaterial(m)}
+                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-slate-50 border-b border-slate-100 last:border-0">
+                    <span className="font-mono font-medium text-blue-700">{m.code}</span>{' '}
+                    <span className="text-slate-500">{m.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-500 mb-1">Qty {material && <span className="text-slate-300 font-normal">({dispUnit(material)})</span>}</label>
+        <input type="number" min="0" value={qtyDisp} onChange={(e) => setQtyDisp(e.target.value)}
+          placeholder="0" className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-500 mb-1">GRN Date</label>
+        <input type="date" value={grnDate} onChange={(e) => setGrnDate(e.target.value)}
+          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-500 mb-1">Invoice / Challan Photo</label>
+        <label className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-slate-300 rounded-xl text-sm text-slate-500 cursor-pointer hover:border-blue-400">
+          <ImagePlus size={15} />
+          {image ? image.name : 'Attach a photo — mandatory'}
+          <input type="file" accept="image/*" capture="environment" className="hidden"
+            onChange={(e) => setImage(e.target.files?.[0] ?? null)} />
+        </label>
+      </div>
+
+      {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-3 py-2">{error}</div>}
+
+      <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
+        <div className="max-w-lg mx-auto">
+          <button onClick={handleSubmit} disabled={!canSubmit}
+            className={`w-full py-3.5 rounded-xl font-semibold text-sm ${canSubmit ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+            {submitting ? 'Posting…' : 'Post Adhoc GRN'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── Issue screen ─────────────────────────────────────────────────────────────
