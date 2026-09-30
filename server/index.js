@@ -2695,6 +2695,49 @@ app.get('/api/v1/sku-packaging-master', authenticate, requireRole('ADMIN'), asyn
 // a pure log table. Nothing here ever writes back to sku_packaging_master; that
 // table stays the CSV-upload-owned source of truth, this is just a QC trail.
 
+// Ops day: 2:00 PM IST through the next day's 5:59:59 AM IST — the batching-
+// day window used to flag/restrict re-scanning the same SKU/EAN. The gap
+// between 6am and 2pm IST has no active ops day; duplicate checks are
+// skipped entirely there rather than guessing which day a stray scan in
+// that gap should count against.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function currentOpsDayWindow(now = new Date()) {
+  const nowIst = new Date(now.getTime() + IST_OFFSET_MS);
+  const h = nowIst.getUTCHours();
+  const y = nowIst.getUTCFullYear(), mo = nowIst.getUTCMonth(), da = nowIst.getUTCDate();
+  let startIstMs, endIstMs;
+  if (h >= 14) {
+    startIstMs = Date.UTC(y, mo, da, 14, 0, 0);
+    endIstMs = Date.UTC(y, mo, da + 1, 6, 0, 0);
+  } else if (h < 6) {
+    startIstMs = Date.UTC(y, mo, da - 1, 14, 0, 0);
+    endIstMs = Date.UTC(y, mo, da, 6, 0, 0);
+  } else {
+    return null;
+  }
+  return { start: new Date(startIstMs - IST_OFFSET_MS), end: new Date(endIstMs - IST_OFFSET_MS) };
+}
+
+// Latest scan of this SKU (or bare EAN, when unmapped) within the given ops-
+// day window, if any — keyed the same way pmconfigScanHistorySql /
+// pmconfigScanHistoryByEanSql already are.
+async function findOpsDayScan(client, { skuCode, ean, window }) {
+  if (!window) return null;
+  const r = await client.query(
+    skuCode
+      ? `SELECT v.id, v.scanned_by, v.scanned_at, u.name AS scanned_by_name, u.email AS scanned_by_email
+         FROM sku_validation_scans v JOIN users u ON u.id = v.scanned_by
+         WHERE v.sku_code = $1 AND v.scanned_at >= $2 AND v.scanned_at < $3
+         ORDER BY v.scanned_at DESC LIMIT 1`
+      : `SELECT v.id, v.scanned_by, v.scanned_at, u.name AS scanned_by_name, u.email AS scanned_by_email
+         FROM sku_validation_scans v JOIN users u ON u.id = v.scanned_by
+         WHERE v.sku_code IS NULL AND v.ean = $1 AND v.scanned_at >= $2 AND v.scanned_at < $3
+         ORDER BY v.scanned_at DESC LIMIT 1`,
+    skuCode ? [skuCode, window.start, window.end] : [ean, window.start, window.end]
+  );
+  return r.rows[0] || null;
+}
+
 const pmconfigScanHistorySql = `
   SELECT v.id, v.same_as_bizfin, v.primary_pm_code, v.secondary_pm_code, v.tertiary_pm_code,
          v.primary_pm_other, v.secondary_pm_other, v.tertiary_pm_other,
@@ -2741,18 +2784,28 @@ app.get('/api/v1/pmconfig/lookup', authenticate, requireRole('PM_CONFIG', 'ADMIN
     [trimmedEan]
   );
 
+  const opsWindow = currentOpsDayWindow();
+
   if (!skuRes.rows.length) {
     // No FSN mapping — still worth knowing which EANs are actually being
     // scanned in the field with no map, and what the packaging material
     // looks like on them, so return a 200 with sku: null instead of a 404.
     // The frontend lets the user log what they see against the bare EAN.
     const history = await pool.query(pmconfigScanHistoryByEanSql, [trimmedEan]);
-    return res.json({ sku: null, ean: trimmedEan, recent_scans: history.rows });
+    const dup = await findOpsDayScan(pool, { skuCode: null, ean: trimmedEan, window: opsWindow });
+    return res.json({
+      sku: null, ean: trimmedEan, recent_scans: history.rows,
+      already_scanned_today: dup ? { scanned_by_name: dup.scanned_by_name, scanned_by_email: dup.scanned_by_email, scanned_at: dup.scanned_at, is_you: dup.scanned_by === req.user.id } : null,
+    });
   }
 
   const sku = skuRes.rows[0];
   const history = await pool.query(pmconfigScanHistorySql, [sku.sku_code]);
-  res.json({ sku, recent_scans: history.rows });
+  const dup = await findOpsDayScan(pool, { skuCode: sku.sku_code, ean: null, window: opsWindow });
+  res.json({
+    sku, recent_scans: history.rows,
+    already_scanned_today: dup ? { scanned_by_name: dup.scanned_by_name, scanned_by_email: dup.scanned_by_email, scanned_at: dup.scanned_at, is_you: dup.scanned_by === req.user.id } : null,
+  });
 }));
 
 const pmconfigPhotoUpload = multer({
@@ -2781,6 +2834,9 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
       primary_pm_other: z.string().optional(),
       secondary_pm_other: z.string().optional(),
       tertiary_pm_other: z.string().optional(),
+      // Present + exactly "YES" when the same user is knowingly re-submitting
+      // a SKU/EAN they already scanned earlier in today's ops day.
+      confirm_rescan: z.string().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid validate payload', parsed.error.issues);
@@ -2797,6 +2853,25 @@ app.post('/api/v1/pmconfig/validate', authenticate, requireRole('PM_CONFIG', 'AD
       // meaningless with no mapping to compare against. Ignore whatever the
       // client sent and always take the "log what you see" branch below.
       d.same_as_bizfin = false;
+    }
+
+    // Ops-day duplicate guard — re-checked here server-side regardless of
+    // what the lookup response already told the client, since state can
+    // change between lookup and submit. A different user is a hard block,
+    // no override; the same user can proceed only by sending
+    // confirm_rescan: "YES" (the frontend gets there via a type-to-confirm
+    // dialog, never a plain click).
+    const opsWindow = currentOpsDayWindow();
+    if (opsWindow) {
+      const dup = await findOpsDayScan(pool, { skuCode: sku ? sku.sku_code : null, ean: sku ? null : d.ean.trim(), window: opsWindow });
+      if (dup) {
+        if (dup.scanned_by !== req.user.id) {
+          throw new ApiError(409, 'ALREADY_SCANNED_TODAY', `Already scanned today by ${dup.scanned_by_name} at ${new Date(dup.scanned_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' })} IST`, { scanned_by_name: dup.scanned_by_name, scanned_at: dup.scanned_at });
+        }
+        if ((d.confirm_rescan || '').trim().toUpperCase() !== 'YES') {
+          throw new ApiError(409, 'RESCAN_CONFIRMATION_REQUIRED', "You already updated this once in today's batching day — type YES to confirm updating again.");
+        }
+      }
     }
 
     const matRows = (await pool.query('SELECT code, name FROM materials WHERE is_active')).rows;

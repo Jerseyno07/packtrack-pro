@@ -36,7 +36,14 @@ function makeApi(token) {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+    // ApiError's `details` (e.g. who/when for a duplicate-scan block) rides
+    // along on the thrown Error so callers can use it without re-parsing.
+    if (!res.ok) {
+      const err = new Error(data?.error?.message || `HTTP ${res.status}`);
+      err.code = data?.error?.code;
+      err.details = data?.error?.details;
+      throw err;
+    }
     return data;
   }
   return {
@@ -52,10 +59,41 @@ function makeApi(token) {
         body: formData,
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message || 'Submit failed');
+      if (!res.ok) {
+        const err = new Error(data?.error?.message || 'Submit failed');
+        err.code = data?.error?.code;
+        err.details = data?.error?.details;
+        throw err;
+      }
       return data;
     },
   };
+}
+
+// Short double-beep via the Web Audio API — no audio asset to fetch/host,
+// and it works the instant the page has had any user interaction (required
+// for audio autoplay on iOS Safari; every path that calls this follows a
+// tap/scan, so that's already satisfied).
+function playAlertBeep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const beepAt = (startOffset) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.15, ctx.currentTime + startOffset);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + startOffset + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(ctx.currentTime + startOffset);
+      osc.stop(ctx.currentTime + startOffset + 0.2);
+    };
+    beepAt(0);
+    beepAt(0.25);
+    setTimeout(() => ctx.close().catch(() => {}), 700);
+  } catch { /* audio not available — highlight color alone still carries the signal */ }
 }
 
 function useGoogleSignIn(buttonRef, onCredential) {
@@ -246,7 +284,9 @@ function ScanView({ token, user, onLogout }) {
   const [cameraError, setCameraError] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [result, setResult] = useState(null); // { sku, recent_scans }
+  const [result, setResult] = useState(null); // { sku, recent_scans, already_scanned_today }
+  const [showRescanConfirm, setShowRescanConfirm] = useState(false);
+  const [rescanConfirmText, setRescanConfirmText] = useState('');
   const [materials, setMaterials] = useState([]);
   const [sameAsBizfin, setSameAsBizfin] = useState(true);
   const [primaryCode, setPrimaryCode] = useState(null);
@@ -267,6 +307,10 @@ function ScanView({ token, user, onLogout }) {
     try {
       const data = await api.lookup(ean);
       setResult(data);
+      // Pre-Packed per Bizfin's own mapping is the case someone needs to
+      // notice immediately — audible alert alongside the red highlight
+      // below, not just a color someone might not be looking at right then.
+      if (data.sku?.packing_type?.startsWith('Pre-Packed')) playAlertBeep();
       // No FSN mapping (data.sku === null) means "Same as Bizfin" has
       // nothing to compare against — go straight to the "log what you see"
       // fields instead of defaulting to a confirm state.
@@ -278,6 +322,8 @@ function ScanView({ token, user, onLogout }) {
       setSecondaryOtherText('');
       setTertiaryOtherText('');
       setPhotoFile(null);
+      setShowRescanConfirm(false);
+      setRescanConfirmText('');
       setScanning(false);
     } catch (e) {
       setError(e.message || 'Lookup failed');
@@ -405,9 +451,22 @@ function ScanView({ token, user, onLogout }) {
     setScanning(true);
   }
 
-  async function handleSubmit() {
+  function handleSubmit() {
     if (!result) return;
     if (!canSubmit) return;
+    // Same user re-submitting something they already scanned today —
+    // require the type-YES dialog instead of submitting straight away.
+    // (A different user never reaches this point at all: the blocked view
+    // below replaces the form entirely when already_scanned_today.is_you
+    // is false.)
+    if (result.already_scanned_today?.is_you) {
+      setShowRescanConfirm(true);
+      return;
+    }
+    doSubmit(false);
+  }
+
+  async function doSubmit(confirmRescan) {
     setSubmitting(true);
     setSubmitError('');
     try {
@@ -415,6 +474,7 @@ function ScanView({ token, user, onLogout }) {
       if (result.sku) fd.append('sku_code', result.sku.sku_code);
       fd.append('ean', (result.sku ? result.sku.ean : result.ean) || '');
       fd.append('same_as_bizfin', String(sameAsBizfin));
+      if (confirmRescan) fd.append('confirm_rescan', 'YES');
       if (!sameAsBizfin) {
         fd.append('primary_pm_code', primaryCode);
         if (primaryCode === PM_OTHER_CODE) fd.append('primary_pm_other', primaryOtherText.trim());
@@ -502,6 +562,21 @@ function ScanView({ token, user, onLogout }) {
           <>
             <button onClick={backToScan} className="text-sm text-blue-600 hover:underline">&larr; Back to scan</button>
 
+            {result.already_scanned_today && !result.already_scanned_today.is_you ? (
+              <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+                  <AlertTriangle size={16} /> Already scanned today
+                </div>
+                <div className="text-xs text-slate-500 font-mono">{result.sku ? result.sku.sku_code : result.ean}</div>
+                <p className="text-sm text-slate-700">
+                  <span className="font-medium">{result.already_scanned_today.scanned_by_name}</span> already scanned this in today's batching day, at{' '}
+                  {new Date(result.already_scanned_today.scanned_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}.
+                </p>
+                <p className="text-xs text-slate-500">Only they can update it again today — move on to the next item.</p>
+                <button onClick={backToScan} className="w-full py-3 bg-blue-600 text-white rounded-xl font-semibold mt-1">Back to Scan</button>
+              </div>
+            ) : (
+              <>
             {result.sku ? (
               <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-2">
                 <div className="text-xs text-slate-400 font-mono">{result.sku.sku_code}</div>
@@ -510,7 +585,16 @@ function ScanView({ token, user, onLogout }) {
                   <div><span className="text-slate-400 text-xs block">Primary Material</span>{result.sku.primary_pm_name || '—'}</div>
                   <div><span className="text-slate-400 text-xs block">Secondary Material</span>{result.sku.secondary_pm_name || '—'}</div>
                   <div><span className="text-slate-400 text-xs block">Tertiary Material</span>{result.sku.tertiary_pm_name || '—'}</div>
-                  <div><span className="text-slate-400 text-xs block">Packing Type</span>{result.sku.packing_type || '—'}</div>
+                  <div>
+                    <span className="text-slate-400 text-xs block">Packing Type</span>
+                    {result.sku.packing_type ? (
+                      <span className={`inline-block px-1.5 py-0.5 rounded font-medium ${
+                        result.sku.packing_type.startsWith('NC-Packed') ? 'bg-emerald-100 text-emerald-800'
+                          : result.sku.packing_type.startsWith('Pre-Packed') ? 'bg-red-100 text-red-800'
+                          : ''
+                      }`}>{result.sku.packing_type}</span>
+                    ) : '—'}
+                  </div>
                 </div>
               </div>
             ) : (
@@ -603,9 +687,38 @@ function ScanView({ token, user, onLogout }) {
                 {submitting ? 'Submitting...' : 'Submit'}
               </button>
             </div>
+              </>
+            )}
           </>
         )}
       </div>
+
+      {showRescanConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => { setShowRescanConfirm(false); setRescanConfirmText(''); }}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+              <AlertTriangle size={16} /> Update again?
+            </div>
+            <p className="text-sm text-slate-700">You have already updated this once in today's batching day — Are you sure you want to update again?</p>
+            <p className="text-xs text-slate-500">Type <span className="font-mono font-semibold">YES</span> to confirm.</p>
+            <input type="text" value={rescanConfirmText} onChange={(e) => setRescanConfirmText(e.target.value)}
+              placeholder="Type YES" autoFocus
+              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500" />
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => { setShowRescanConfirm(false); setRescanConfirmText(''); }}
+                className="flex-1 py-2.5 rounded-lg text-sm font-medium text-slate-600 bg-slate-100">
+                Cancel
+              </button>
+              <button
+                onClick={() => { setShowRescanConfirm(false); setRescanConfirmText(''); doSubmit(true); }}
+                disabled={rescanConfirmText.trim().toUpperCase() !== 'YES'}
+                className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed">
+                Confirm Update
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
