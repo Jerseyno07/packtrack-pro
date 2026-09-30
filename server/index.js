@@ -1788,11 +1788,18 @@ app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EX
     const materialTotals = new Map();
     for (const item of items) materialTotals.set(item.material_id, (materialTotals.get(item.material_id) || 0) + item.issued_qty);
 
-    for (const [materialId, totalQty] of materialTotals) {
-      const onHand = await getOnHandQty(client, from_warehouse_id, materialId);
-      if (totalQty > onHand) {
-        const mat = matMap.get(materialId);
-        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${mat.code}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
+    // TEMPORARILY DISABLED (2026-09-30, per user request) for PM Store adhoc
+    // issue/transfer only — PM Store can dispatch past zero/negative on-hand
+    // for now. CC/FC-initiated transfers (this same endpoint) still enforce
+    // the check below. Re-enable by removing this `if` guard once the user
+    // says so — do not remove the check itself, just this bypass.
+    if (fromWh.warehouse_type !== 'PM_STORE') {
+      for (const [materialId, totalQty] of materialTotals) {
+        const onHand = await getOnHandQty(client, from_warehouse_id, materialId);
+        if (totalQty > onHand) {
+          const mat = matMap.get(materialId);
+          throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${mat.code}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
+        }
       }
     }
 
