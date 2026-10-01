@@ -2952,6 +2952,94 @@ app.get('/api/v1/pmconfig/scans/:id/photo', authenticate, requireRole('PM_CONFIG
   res.json({ url });
 }));
 
+// Ops-day window for the "What's been scanned today" tab — unlike
+// currentOpsDayWindow() (which returns null in the 6am-2pm gap to skip the
+// duplicate-scan check there), this always resolves to a window: during the
+// gap it shows the ops day that just ended, rather than going blank for the
+// hours staff are most likely to be reviewing the overnight batch.
+function opsDayWindowForDisplay(now = new Date()) {
+  const nowIst = new Date(now.getTime() + IST_OFFSET_MS);
+  const h = nowIst.getUTCHours();
+  const y = nowIst.getUTCFullYear(), mo = nowIst.getUTCMonth(), da = nowIst.getUTCDate();
+  let startIstMs, endIstMs;
+  if (h >= 14) {
+    startIstMs = Date.UTC(y, mo, da, 14, 0, 0);
+    endIstMs = Date.UTC(y, mo, da + 1, 6, 0, 0);
+  } else {
+    startIstMs = Date.UTC(y, mo, da - 1, 14, 0, 0);
+    endIstMs = Date.UTC(y, mo, da, 6, 0, 0);
+  }
+  return { start: new Date(startIstMs - IST_OFFSET_MS), end: new Date(endIstMs - IST_OFFSET_MS) };
+}
+
+// Shared by the "today's scans" tab and its xlsx export — a non-ADMIN caller
+// is always pinned to their own scans (scannedBy forced to req.user.id by the
+// route handlers below); only ADMIN can pass scannedBy: null to see everyone.
+async function fetchTodayScans(client, { window, scannedBy }) {
+  const r = await client.query(
+    `SELECT v.id, v.sku_code, v.ean, v.same_as_bizfin,
+            v.primary_pm_code, mp.name AS primary_pm_name, v.primary_pm_other,
+            v.secondary_pm_code, ms.name AS secondary_pm_name, v.secondary_pm_other,
+            v.tertiary_pm_code, mt.name AS tertiary_pm_name, v.tertiary_pm_other,
+            v.scanned_at, u.id AS scanned_by_id, u.name AS scanned_by_name, u.email AS scanned_by_email,
+            s.sku_name, s.packing_type
+     FROM sku_validation_scans v
+     JOIN users u ON u.id = v.scanned_by
+     LEFT JOIN sku_packaging_master s ON s.sku_code = v.sku_code
+     LEFT JOIN materials mp ON mp.code = v.primary_pm_code
+     LEFT JOIN materials ms ON ms.code = v.secondary_pm_code
+     LEFT JOIN materials mt ON mt.code = v.tertiary_pm_code
+     WHERE v.scanned_at >= $1 AND v.scanned_at < $2
+       AND ($3::bigint IS NULL OR v.scanned_by = $3)
+     ORDER BY v.scanned_by, v.scanned_at DESC`,
+    [window.start, window.end, scannedBy]
+  );
+  return r.rows;
+}
+
+app.get('/api/v1/pmconfig/scans/today', authenticate, requireRole('PM_CONFIG', 'ADMIN'), asyncHandler(async (req, res) => {
+  const window = opsDayWindowForDisplay();
+  // Only ADMIN may look at anyone else's scans (and only when they ask for
+  // it via user_id) — a plain PM_CONFIG user is always pinned to their own,
+  // regardless of what they pass.
+  const scannedBy = req.user.role === 'ADMIN'
+    ? (req.query.user_id ? Number(req.query.user_id) : null)
+    : req.user.id;
+  const rows = await fetchTodayScans(pool, { window, scannedBy });
+  res.json({ window, scans: rows, is_admin_view: req.user.role === 'ADMIN' && scannedBy === null });
+}));
+
+app.get('/api/v1/pmconfig/scans/today/export.xlsx', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const window = opsDayWindowForDisplay();
+  const scannedBy = req.query.user_id ? Number(req.query.user_id) : null;
+  const rows = await fetchTodayScans(pool, { window, scannedBy });
+
+  const toIst = (d) => new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const sheetRows = rows.map((r) => ({
+    'Scanned By': r.scanned_by_name,
+    'Email': r.scanned_by_email,
+    'Scanned At (IST)': toIst(r.scanned_at),
+    'SKU Code': r.sku_code || '',
+    'SKU Name': r.sku_name || '',
+    'EAN': r.ean || '',
+    'Packing Type': r.packing_type || '',
+    'Same as Bizfin': r.same_as_bizfin ? 'Yes' : 'No',
+    'Primary Material': r.primary_pm_code === PM_OTHER_SENTINEL ? r.primary_pm_other : (r.primary_pm_name || ''),
+    'Secondary Material': r.secondary_pm_code === PM_OTHER_SENTINEL ? r.secondary_pm_other : (r.secondary_pm_name || ''),
+    'Tertiary Material': r.tertiary_pm_code === PM_OTHER_SENTINEL ? r.tertiary_pm_other : (r.tertiary_pm_name || ''),
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(sheetRows);
+  XLSX.utils.book_append_sheet(wb, ws, 'Scans');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  const fname = `pmconfig_scans_${new Date(window.start).toISOString().slice(0, 10)}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+  res.send(buf);
+}));
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE: PHYSICAL AUDIT
 // ═══════════════════════════════════════════════════════════════════════════

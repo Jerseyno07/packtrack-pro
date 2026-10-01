@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, LogOut, LogIn, RefreshCw, AlertTriangle, CheckCircle2, Camera, X, ImagePlus, MonitorSmartphone } from 'lucide-react';
+import { Package, LogOut, LogIn, RefreshCw, AlertTriangle, CheckCircle2, Camera, X, ImagePlus, MonitorSmartphone, ScanLine, ListChecks, Download } from 'lucide-react';
 import jsQR from 'jsqr';
 
 function useInstallPrompt() {
@@ -52,6 +52,7 @@ function makeApi(token) {
     lookup: (ean) => req('GET', `/api/v1/pmconfig/lookup?ean=${encodeURIComponent(ean)}`),
     listMaterials: () => req('GET', '/api/v1/materials'),
     photoUrl: (scanId) => req('GET', `/api/v1/pmconfig/scans/${scanId}/photo`),
+    todayScans: (userId) => req('GET', `/api/v1/pmconfig/scans/today${userId ? `?user_id=${userId}` : ''}`),
     validate: async (formData) => {
       const res = await fetch(`${BASE_URL}/api/v1/pmconfig/validate`, {
         method: 'POST',
@@ -66,6 +67,16 @@ function makeApi(token) {
         throw err;
       }
       return data;
+    },
+    exportTodayScansXlsx: async (userId) => {
+      const res = await fetch(`${BASE_URL}/api/v1/pmconfig/scans/today/export.xlsx${userId ? `?user_id=${userId}` : ''}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error?.message || 'Export failed');
+      }
+      return res.blob();
     },
   };
 }
@@ -276,7 +287,7 @@ function MaterialPicker({ label, required, materials, value, onChange }) {
   );
 }
 
-function ScanView({ token, user, onLogout }) {
+function ScanView({ token }) {
   const api = makeApi(token);
   const videoRef = useRef(null);
   const [manualEan, setManualEan] = useState('');
@@ -502,22 +513,7 @@ function ScanView({ token, user, onLogout }) {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 max-w-lg mx-auto">
-      <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 py-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center"><Package size={16} className="text-white" /></div>
-            <div>
-              <div className="font-bold text-slate-900 text-sm">PM Config</div>
-              <div className="text-xs text-slate-400">{user?.name || user?.email}</div>
-            </div>
-          </div>
-          <button onClick={onLogout} className="p-2.5 text-slate-400 active:text-slate-600">
-            <LogOut size={20} />
-          </button>
-        </div>
-      </div>
-
+    <>
       <div className="px-4 pt-4 pb-10 space-y-4">
         {scanning ? (
           <>
@@ -719,6 +715,126 @@ function ScanView({ token, user, onLogout }) {
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+// Per-user and (ADMIN) all-user view of the current ops day's scans, plus an
+// xlsx export — ADMIN-only, since a plain PM_CONFIG user never sees anyone
+// else's scans in the first place.
+function TodayScansView({ token, user }) {
+  const api = makeApi(token);
+  const isAdmin = user?.role === 'ADMIN';
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [data, setData] = useState(null); // { window, scans, is_admin_view }
+  const [exporting, setExporting] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError('');
+    api.todayScans().then(setData).catch((e) => setError(e.message || 'Failed to load')).finally(() => setLoading(false));
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const blob = await api.exportTodayScansXlsx();
+      const dateStr = data?.window?.start ? new Date(data.window.start).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pmconfig_scans_${dateStr}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e.message || 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const windowLabel = data?.window
+    ? `${new Date(data.window.start).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} – ${new Date(data.window.end).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+    : '';
+
+  // Grouped by scanner for the admin view so it reads as "who scanned what"
+  // rather than one flat undifferentiated list — a plain PM_CONFIG user's
+  // response only ever contains their own rows, so this collapses to one
+  // group of one for them automatically.
+  const groups = [];
+  if (data?.scans) {
+    const byUser = new Map();
+    for (const s of data.scans) {
+      if (!byUser.has(s.scanned_by_id)) byUser.set(s.scanned_by_id, { name: s.scanned_by_name, email: s.scanned_by_email, rows: [] });
+      byUser.get(s.scanned_by_id).rows.push(s);
+    }
+    groups.push(...byUser.values());
+  }
+
+  return (
+    <div className="px-4 pt-4 pb-10 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-semibold text-slate-800">Today's batching day</div>
+          {windowLabel && <div className="text-xs text-slate-400">{windowLabel} IST</div>}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={load} disabled={loading} className="p-2 text-slate-400 hover:text-slate-600 disabled:opacity-40" title="Refresh">
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          </button>
+          {isAdmin && (
+            <button onClick={handleExport} disabled={exporting || loading || !data?.scans?.length}
+              className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40">
+              {exporting ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+              Export .xlsx
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" /><span>{error}</span>
+        </div>
+      )}
+
+      {!loading && data && data.scans.length === 0 && (
+        <div className="text-center text-sm text-slate-400 py-10">No scans yet in today's batching day.</div>
+      )}
+
+      {groups.map((g) => (
+        <div key={g.email} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          {isAdmin && (
+            <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700 flex items-center justify-between">
+              <span>{g.name}</span>
+              <span className="text-xs text-slate-400 font-normal">{g.rows.length} scan{g.rows.length === 1 ? '' : 's'}</span>
+            </div>
+          )}
+          <div className="divide-y divide-slate-100">
+            {g.rows.map((s) => (
+              <div key={s.id} className="px-4 py-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs text-slate-500">{s.sku_code || s.ean}</span>
+                  <span className="text-xs text-slate-400">{new Date(s.scanned_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                <div className="text-slate-800 mt-0.5">{s.sku_name || <span className="text-slate-400 italic">No name on file</span>}</div>
+                <div className="flex items-center gap-2 mt-1">
+                  {!s.sku_code ? (
+                    <span className="text-xs text-amber-600">(no FSN map)</span>
+                  ) : s.same_as_bizfin ? (
+                    <span className="text-xs text-emerald-600">(confirmed)</span>
+                  ) : (
+                    <span className="text-xs text-amber-600">(corrected)</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -726,10 +842,42 @@ function ScanView({ token, user, onLogout }) {
 export default function PMConfigApp() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
+  const [tab, setTab] = useState('scan');
 
   if (!token) {
     return <LoginScreen onLogin={(t, u) => { setToken(t); setUser(u); }} />;
   }
 
-  return <ScanView token={token} user={user} onLogout={() => { setToken(null); setUser(null); }} />;
+  return (
+    <div className="min-h-screen bg-slate-50 max-w-lg mx-auto">
+      <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center"><Package size={16} className="text-white" /></div>
+            <div>
+              <div className="font-bold text-slate-900 text-sm">PM Config</div>
+              <div className="text-xs text-slate-400">{user?.name || user?.email}</div>
+            </div>
+          </div>
+          <button onClick={() => { setToken(null); setUser(null); }} className="p-2.5 text-slate-400 active:text-slate-600">
+            <LogOut size={20} />
+          </button>
+        </div>
+        <div className="flex gap-1 mt-3">
+          <button onClick={() => setTab('scan')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium ${tab === 'scan' ? 'bg-blue-600 text-white' : 'text-slate-500 bg-slate-100'}`}>
+            <ScanLine size={14} /> Scan
+          </button>
+          <button onClick={() => setTab('today')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium ${tab === 'today' ? 'bg-blue-600 text-white' : 'text-slate-500 bg-slate-100'}`}>
+            <ListChecks size={14} /> {user?.role === 'ADMIN' ? "Today's Scans (All)" : "Today's Scans"}
+          </button>
+        </div>
+      </div>
+
+      {tab === 'scan'
+        ? <ScanView token={token} user={user} />
+        : <TodayScansView token={token} user={user} />}
+    </div>
+  );
 }
