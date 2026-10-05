@@ -3010,7 +3010,21 @@ app.get('/api/v1/pmconfig/scans/today', authenticate, requireRole('PM_CONFIG', '
 }));
 
 app.get('/api/v1/pmconfig/scans/today/export.xlsx', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
-  const window = opsDayWindowForDisplay();
+  // Admin can pick an arbitrary date/time range from the frontend's export
+  // modal (start/end as UTC ISO instants, already converted client-side from
+  // whatever IST wall-clock range they picked) — falls back to the live ops
+  // day when neither is given, for back-compat with any direct API caller.
+  let window;
+  if (req.query.start || req.query.end) {
+    if (!req.query.start || !req.query.end) throw new ApiError(400, 'RANGE_INCOMPLETE', 'Both start and end are required for a custom range');
+    const start = new Date(req.query.start);
+    const end = new Date(req.query.end);
+    if (isNaN(start) || isNaN(end)) throw new ApiError(400, 'INVALID_RANGE', 'start/end must be valid dates');
+    if (start >= end) throw new ApiError(400, 'INVALID_RANGE', 'start must be before end');
+    window = { start, end };
+  } else {
+    window = opsDayWindowForDisplay();
+  }
   const scannedBy = req.query.user_id ? Number(req.query.user_id) : null;
   const rows = await fetchTodayScans(pool, { window, scannedBy });
 
@@ -3034,7 +3048,9 @@ app.get('/api/v1/pmconfig/scans/today/export.xlsx', authenticate, requireRole('A
   XLSX.utils.book_append_sheet(wb, ws, 'Scans');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
-  const fname = `pmconfig_scans_${new Date(window.start).toISOString().slice(0, 10)}.xlsx`;
+  const startDate = new Date(window.start).toISOString().slice(0, 10);
+  const endDate = new Date(window.end).toISOString().slice(0, 10);
+  const fname = `pmconfig_scans_${startDate}_to_${endDate}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
   res.send(buf);

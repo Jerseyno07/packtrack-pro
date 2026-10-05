@@ -28,6 +28,29 @@ function useInstallPrompt() {
 const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
+// IST is UTC+5:30 — mirrors the backend's own IST_OFFSET_MS arithmetic in
+// opsDayWindowForDisplay(), kept in sync by hand since this is a separate
+// (frontend) file.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+// A <input type="datetime-local"> value ("YYYY-MM-DDTHH:mm", timezone-naive)
+// is always treated as IST wall-clock time in this app — converts it to the
+// equivalent UTC ISO instant to send to the server.
+function istLocalToUtcIso(localStr) {
+  const [datePart, timePart] = localStr.split('T');
+  const [y, m, d] = datePart.split('-').map(Number);
+  const [hh, mm] = timePart.split(':').map(Number);
+  return new Date(Date.UTC(y, m - 1, d, hh, mm) - IST_OFFSET_MS).toISOString();
+}
+
+// Inverse — used to pre-fill the export range modal's inputs from a UTC ISO
+// instant (e.g. the live ops-day window) as IST wall-clock values.
+function utcIsoToIstLocalInput(isoStr) {
+  const d = new Date(new Date(isoStr).getTime() + IST_OFFSET_MS);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
 function makeApi(token) {
   async function req(method, path, body) {
     const res = await fetch(`${BASE_URL}${path}`, {
@@ -68,8 +91,12 @@ function makeApi(token) {
       }
       return data;
     },
-    exportTodayScansXlsx: async (userId) => {
-      const res = await fetch(`${BASE_URL}/api/v1/pmconfig/scans/today/export.xlsx${userId ? `?user_id=${userId}` : ''}`, {
+    exportTodayScansXlsx: async ({ userId, startIso, endIso } = {}) => {
+      const params = new URLSearchParams();
+      if (userId) params.set('user_id', userId);
+      if (startIso && endIso) { params.set('start', startIso); params.set('end', endIso); }
+      const qs = params.toString();
+      const res = await fetch(`${BASE_URL}/api/v1/pmconfig/scans/today/export.xlsx${qs ? `?${qs}` : ''}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
@@ -729,6 +756,9 @@ function TodayScansView({ token, user }) {
   const [error, setError] = useState('');
   const [data, setData] = useState(null); // { window, scans, is_admin_view }
   const [exporting, setExporting] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFrom, setExportFrom] = useState('');
+  const [exportTo, setExportTo] = useState('');
 
   const load = useCallback(() => {
     setLoading(true);
@@ -738,15 +768,29 @@ function TodayScansView({ token, user }) {
 
   useEffect(() => { load(); }, [load]);
 
+  function openExportModal() {
+    // Pre-fill with the live ops-day window so "just click Download" matches
+    // today's unchanged behavior; admin only needs to touch the fields when
+    // they actually want a different range.
+    if (data?.window) {
+      setExportFrom(utcIsoToIstLocalInput(data.window.start));
+      setExportTo(utcIsoToIstLocalInput(data.window.end));
+    }
+    setShowExportModal(true);
+  }
+
   async function handleExport() {
+    setShowExportModal(false);
     setExporting(true);
+    setError('');
     try {
-      const blob = await api.exportTodayScansXlsx();
-      const dateStr = data?.window?.start ? new Date(data.window.start).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const startIso = istLocalToUtcIso(exportFrom);
+      const endIso = istLocalToUtcIso(exportTo);
+      const blob = await api.exportTodayScansXlsx({ startIso, endIso });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `pmconfig_scans_${dateStr}.xlsx`;
+      a.download = `pmconfig_scans_${startIso.slice(0, 10)}_to_${endIso.slice(0, 10)}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -755,6 +799,8 @@ function TodayScansView({ token, user }) {
       setExporting(false);
     }
   }
+
+  const exportRangeValid = exportFrom && exportTo && istLocalToUtcIso(exportTo) > istLocalToUtcIso(exportFrom);
 
   const windowLabel = data?.window
     ? `${new Date(data.window.start).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} – ${new Date(data.window.end).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}`
@@ -775,6 +821,7 @@ function TodayScansView({ token, user }) {
   }
 
   return (
+    <>
     <div className="px-4 pt-4 pb-10 space-y-4">
       <div className="flex items-center justify-between">
         <div>
@@ -786,7 +833,7 @@ function TodayScansView({ token, user }) {
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
           </button>
           {isAdmin && (
-            <button onClick={handleExport} disabled={exporting || loading || !data?.scans?.length}
+            <button onClick={openExportModal} disabled={exporting || loading || !data?.window}
               className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40">
               {exporting ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
               Export .xlsx
@@ -836,6 +883,41 @@ function TodayScansView({ token, user }) {
         </div>
       ))}
     </div>
+
+    {showExportModal && (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowExportModal(false)}>
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+            <Download size={16} /> Export range
+          </div>
+          <p className="text-xs text-slate-500">Pick a date/time range (IST) to export. Defaults to today's batching day.</p>
+          <div>
+            <label className="text-xs font-medium text-slate-500 mb-1 block">From</label>
+            <input type="datetime-local" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)}
+              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-500 mb-1 block">To</label>
+            <input type="datetime-local" value={exportTo} onChange={(e) => setExportTo(e.target.value)}
+              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          {exportFrom && exportTo && !exportRangeValid && (
+            <p className="text-xs text-red-600">"To" must be after "From".</p>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button onClick={() => setShowExportModal(false)}
+              className="flex-1 py-2.5 rounded-lg text-sm font-medium text-slate-600 bg-slate-100">
+              Cancel
+            </button>
+            <button onClick={handleExport} disabled={!exportRangeValid}
+              className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed">
+              Download
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
