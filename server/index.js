@@ -264,6 +264,32 @@ async function postLedgerEntry(client, { warehouseId, materialId, movementType, 
   );
 }
 
+// Auto-receiving for CC destinations: every PM Store dispatch to a CC facility
+// (indent-based or adhoc transfer) is immediately and fully inwarded on arrival,
+// same-day, with no separate CC-side acknowledgement step. This mirrors a normal
+// stock_receipts row (received_qty = full issued_qty, 0 shortage/damage) so the
+// existing fn_sync_issue_receipt_status trigger flips stock_issues.status straight
+// to RECEIVED and v_current_stock reflects the CC's new on-hand immediately.
+// FC destinations are untouched — FC_EXEC still receives manually.
+// Call this inside the same transaction as the issue insert, right after its
+// ISSUE_OUT ledger entry, before COMMIT.
+async function autoReceiveIfCc(client, { issueId, toWarehouseId, materialId, issuedQty, unitCost, issueDate, dispatchedByUserId }) {
+  const whRes = await client.query('SELECT warehouse_type FROM warehouses WHERE id=$1', [toWarehouseId]);
+  if (whRes.rows[0]?.warehouse_type !== 'CC') return null;
+
+  const receiptRef = genRef('RCV');
+  const receiptIns = await client.query(
+    `INSERT INTO stock_receipts (receipt_ref, stock_issue_id, received_qty, shortage_qty, damage_qty, shortage_reason, received_by_user_id, receipt_date, expected_qty)
+     VALUES ($1,$2,$3,0,0,NULL,$4,$5,$3) RETURNING id`,
+    [receiptRef, issueId, issuedQty, dispatchedByUserId || null, issueDate]
+  );
+  const receiptId = receiptIns.rows[0].id;
+
+  await postLedgerEntry(client, { warehouseId: toWarehouseId, materialId, movementType: 'RECEIPT_IN', qtyDelta: issuedQty, unitCost, refTable: 'stock_receipts', refId: receiptId, movementDate: issueDate });
+  await writeAudit(client, { userId: dispatchedByUserId || null, action: 'STOCK_RECEIPT_CONFIRMED', entityTable: 'stock_receipts', entityId: receiptId, detail: { receiptRef, issue_id: issueId, received_qty: issuedQty, shortage_qty: 0, damage_qty: 0, receipt_date: issueDate, auto: true } });
+  return receiptId;
+}
+
 async function getOnHandQty(client, warehouseId, materialId) {
   const r = await client.query(`SELECT COALESCE(SUM(qty_delta),0) AS qty FROM stock_ledger WHERE warehouse_id=$1 AND material_id=$2`, [warehouseId, materialId]);
   return Number(r.rows[0].qty);
@@ -1593,8 +1619,10 @@ app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADM
 
     await postLedgerEntry(client, { warehouseId: fromWhId, materialId: line.material_id, movementType: 'ISSUE_OUT', qtyDelta: -d.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: d.issue_date });
     await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, indent_line_id: line.id, qty: d.issued_qty } });
+    const autoReceiptId = await autoReceiveIfCc(client, { issueId, toWarehouseId: line.warehouse_id, materialId: line.material_id, issuedQty: d.issued_qty, unitCost, issueDate: d.issue_date, dispatchedByUserId: req.user.id });
     await client.query('COMMIT');
-    res.status(201).json({ issue_id: issueId, issue_ref: issueRef, status: 'DISPATCHED', unit_cost_snapshot: unitCost });
+    if (autoReceiptId) await checkAndNotifyFlashIfFacilityClear(client, line.warehouse_id);
+    res.status(201).json({ issue_id: issueId, issue_ref: issueRef, status: autoReceiptId ? 'RECEIVED' : 'DISPATCHED', unit_cost_snapshot: unitCost });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
@@ -1684,6 +1712,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
     // stock_issues.issued_qty has a CHECK (issued_qty > 0), a 0-qty row would
     // fail the insert anyway).
     const issueRefs = [];
+    const clearedCcWarehouseIds = new Set();
     for (const { item, line, remaining } of lineDataList) {
       if (item.issued_qty <= 0) continue;
       const unitCost = avgCosts.get(line.material_id);
@@ -1703,6 +1732,8 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       // 2026-09-15) — do not add one back; force-complete below is the only
       // status the trigger doesn't own.
       await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, indent_line_id: line.id, qty: item.issued_qty } });
+      const autoReceiptId = await autoReceiveIfCc(client, { issueId, toWarehouseId: line.warehouse_id, materialId: line.material_id, issuedQty: item.issued_qty, unitCost, issueDate: issue_date, dispatchedByUserId: req.user.id });
+      if (autoReceiptId) clearedCcWarehouseIds.add(line.warehouse_id);
       issueRefs.push(issueRef);
     }
 
@@ -1724,6 +1755,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
     }
 
     await client.query('COMMIT');
+    for (const whId of clearedCcWarehouseIds) await checkAndNotifyFlashIfFacilityClear(client, whId);
     res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs, status: force_complete_reason ? 'FORCE_COMPLETED' : 'POSTED' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
@@ -1813,6 +1845,7 @@ app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EX
     }
 
     const issueRefs = [];
+    let autoReceived = false;
     for (const item of items) {
       const unitCost = avgCosts.get(item.material_id);
       const issueRef = genRef('ISS');
@@ -1824,11 +1857,19 @@ app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EX
       const issueId = issueIns.rows[0].id;
       await postLedgerEntry(client, { warehouseId: from_warehouse_id, materialId: item.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
       await writeAudit(client, { userId: req.user.id, action: 'STOCK_TRANSFER_DISPATCHED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, material_id: item.material_id, qty: item.issued_qty, from_warehouse_id, to_warehouse_id } });
+      // Auto-receive only for PM Store -> CC adhoc transfers — this endpoint also
+      // carries CC<->FC, FC<->PM, etc. transfers, which must still go through
+      // manual receiving.
+      if (fromWh.warehouse_type === 'PM_STORE') {
+        const autoReceiptId = await autoReceiveIfCc(client, { issueId, toWarehouseId: to_warehouse_id, materialId: item.material_id, issuedQty: item.issued_qty, unitCost, issueDate: issue_date, dispatchedByUserId: req.user.id });
+        if (autoReceiptId) autoReceived = true;
+      }
       issueRefs.push(issueRef);
     }
 
     await client.query('COMMIT');
-    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs });
+    if (autoReceived) await checkAndNotifyFlashIfFacilityClear(client, to_warehouse_id);
+    res.status(201).json({ count: issueRefs.length, issue_refs: issueRefs, status: autoReceived ? 'RECEIVED' : 'POSTED' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
