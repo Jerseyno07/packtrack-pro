@@ -88,7 +88,7 @@ function makeApi(token) {
     },
     createAdhocGrn: async (fields, imageFile) => {
       const fd = new FormData();
-      Object.entries(fields).forEach(([k, v]) => fd.append(k, v));
+      Object.entries(fields).forEach(([k, v]) => fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v));
       fd.append('invoice_image', imageFile);
       const res = await fetch(`${BASE_URL}/api/v1/goods-receipts/adhoc`, {
         method: 'POST',
@@ -699,6 +699,7 @@ const GRN_TYPES = [
   { value: 'NO_PO_INVOICE', label: 'Invoice without PO number' },
   { value: 'DELIVERY_CHALLAN', label: 'Delivery Challan' },
   { value: 'PETTY_CASH', label: 'Petty Cash Purchase' },
+  { value: 'PO_NOT_UPLOADED', label: 'PO not uploaded' },
 ];
 
 // A receipt with no PO to match against yet — posts real stock/goods_receipts
@@ -708,14 +709,14 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
   const [materials, setMaterials] = useState([]);
   const [matSearch, setMatSearch] = useState('');
   const [showMatDd, setShowMatDd] = useState(false);
-  const [material, setMaterial] = useState(null);
+  const [items, setItems] = useState([]); // [{ material, qty_disp }]
   const [vendorName, setVendorName] = useState('');
   const [grnType, setGrnType] = useState('NO_PO_INVOICE');
-  const [qtyDisp, setQtyDisp] = useState('');
   const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
   const [image, setImage] = useState(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const matSearchRef = useRef(null);
 
   useEffect(() => { api.listMaterials().then((d) => setMaterials(d.data || [])).catch(() => {}); }, [api]);
 
@@ -724,9 +725,20 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
     return !q || m.code.toLowerCase().includes(q) || m.name.toLowerCase().includes(q);
   });
 
-  function selectMaterial(m) { setMaterial(m); setMatSearch(''); setShowMatDd(false); }
+  function toggleMaterial(m) {
+    const isSelected = !!items.find((i) => i.material.id === m.id);
+    if (isSelected) setItems((prev) => prev.filter((i) => i.material.id !== m.id));
+    else setItems((prev) => [...prev, { material: m, qty_disp: '' }]);
+    // Keep the dropdown open and the search box focused so multiple materials
+    // can be picked without re-opening the menu after each click.
+    setTimeout(() => matSearchRef.current?.focus(), 0);
+  }
 
-  const canSubmit = !!warehouseId && !!vendorName.trim() && !!grnType && !!material && Number(qtyDisp) > 0 && !!grnDate && !!image && !submitting;
+  function removeItem(materialId) { setItems((prev) => prev.filter((i) => i.material.id !== materialId)); }
+  function setQty(materialId, val) { setItems((prev) => prev.map((i) => (i.material.id === materialId ? { ...i, qty_disp: val } : i))); }
+
+  const canSubmit = !!warehouseId && !!vendorName.trim() && !!grnType && items.length > 0
+    && items.every((i) => Number(i.qty_disp) > 0) && !!grnDate && !!image && !submitting;
 
   async function handleSubmit() {
     setError('');
@@ -736,8 +748,7 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
         warehouse_id: warehouseId,
         vendor_name: vendorName.trim(),
         grn_type: grnType,
-        material_id: material.id,
-        grn_qty: toBase(material, qtyDisp),
+        items: items.map((i) => ({ material_id: i.material.id, grn_qty: toBase(i.material, i.qty_disp) })),
         grn_date: grnDate,
       };
       const res = await api.createAdhocGrn(fields, image);
@@ -777,40 +788,60 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
       </div>
 
       <div className="relative">
-        <label className="block text-xs font-medium text-slate-500 mb-1">PM Code</label>
-        {material ? (
-          <div className="flex items-center gap-2 w-full border border-blue-300 bg-blue-50 rounded-xl px-3 py-3">
-            <span className="flex-1 text-sm font-medium text-blue-800">{material.code} <span className="ml-1 text-xs font-normal text-blue-500">{material.name}</span></span>
-            <button onClick={() => setMaterial(null)} className="text-blue-400 hover:text-blue-700"><X size={16} /></button>
+        <label className="block text-xs font-medium text-slate-500 mb-1">
+          PM Code <span className="text-slate-300 font-normal">(search and select multiple)</span>
+        </label>
+        <input
+          ref={matSearchRef}
+          type="text" value={matSearch}
+          onChange={(e) => { setMatSearch(e.target.value); setShowMatDd(true); }}
+          onFocus={() => setShowMatDd(true)}
+          onBlur={() => setTimeout(() => setShowMatDd(false), 150)}
+          placeholder="Search by code or name…"
+          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+        {showMatDd && matSearch.length > 0 && filteredMaterials.length > 0 && (
+          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
+            {filteredMaterials.slice(0, 20).map((m) => {
+              const isSelected = !!items.find((i) => i.material.id === m.id);
+              return (
+                <button key={m.id} onMouseDown={() => toggleMaterial(m)}
+                  className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2.5 border-b border-slate-100 last:border-0 ${isSelected ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+                  <span className={`flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center text-white text-[10px] font-bold ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-slate-300'}`}>
+                    {isSelected && '✓'}
+                  </span>
+                  <span className="font-mono font-medium text-blue-700">{m.code}</span>
+                  <span className="text-slate-500 truncate">{m.name}</span>
+                </button>
+              );
+            })}
           </div>
-        ) : (
-          <>
-            <input type="text" value={matSearch}
-              onChange={(e) => { setMatSearch(e.target.value); setShowMatDd(true); }}
-              onFocus={() => setShowMatDd(true)}
-              onBlur={() => setTimeout(() => setShowMatDd(false), 150)}
-              placeholder="Search by code or name…"
-              className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
-            {showMatDd && matSearch.length > 0 && filteredMaterials.length > 0 && (
-              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-52 overflow-y-auto">
-                {filteredMaterials.slice(0, 20).map((m) => (
-                  <button key={m.id} onMouseDown={() => selectMaterial(m)}
-                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-slate-50 border-b border-slate-100 last:border-0">
-                    <span className="font-mono font-medium text-blue-700">{m.code}</span>{' '}
-                    <span className="text-slate-500">{m.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </>
+        )}
+        {showMatDd && matSearch.length > 0 && filteredMaterials.length === 0 && (
+          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 px-3 py-2.5 text-sm text-slate-400">No materials found</div>
         )}
       </div>
 
-      <div>
-        <label className="block text-xs font-medium text-slate-500 mb-1">Qty {material && <span className="text-slate-300 font-normal">({dispUnit(material)})</span>}</label>
-        <input type="number" min="0" value={qtyDisp} onChange={(e) => setQtyDisp(e.target.value)}
-          placeholder="0" className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
-      </div>
+      {items.length > 0 && (
+        <div className="space-y-2">
+          {items.map((item) => (
+            <div key={item.material.id} className="bg-white border border-slate-200 rounded-xl px-3 py-2.5 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-mono font-medium text-blue-700">{item.material.code}</div>
+                <div className="text-xs text-slate-500 truncate">{item.material.name}</div>
+              </div>
+              <input
+                type="number" min="0"
+                step={item.material.pieces_per_kg ? '0.001' : '1'}
+                value={item.qty_disp}
+                onChange={(e) => setQty(item.material.id, e.target.value)}
+                placeholder="0"
+                className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" />
+              <span className="text-xs text-slate-400 w-8">{dispUnit(item.material)}</span>
+              <button onClick={() => removeItem(item.material.id)} className="text-slate-300 hover:text-red-400 text-lg leading-none">×</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div>
         <label className="block text-xs font-medium text-slate-500 mb-1">GRN Date</label>

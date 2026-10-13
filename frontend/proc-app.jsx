@@ -34,6 +34,7 @@ const GRN_TYPE_LABEL = {
   NO_PO_INVOICE: 'Invoice without PO number',
   DELIVERY_CHALLAN: 'Delivery Challan',
   PETTY_CASH: 'Petty Cash Purchase',
+  PO_NOT_UPLOADED: 'PO not uploaded',
 };
 
 // Same Google Identity Services pattern as pmstore-ops.jsx / portal.jsx.

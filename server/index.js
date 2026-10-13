@@ -1457,9 +1457,16 @@ app.get('/api/v1/goods-receipts/:id/invoice-image', authenticate, requireRole('P
 const adhocGrnSchema = z.object({
   warehouse_id: z.coerce.number().int().positive(),
   vendor_name: z.string().min(1),
-  grn_type: z.enum(['NO_PO_INVOICE', 'DELIVERY_CHALLAN', 'PETTY_CASH']),
-  material_id: z.coerce.number().int().positive(),
-  grn_qty: z.coerce.number().positive(),
+  grn_type: z.enum(['NO_PO_INVOICE', 'DELIVERY_CHALLAN', 'PETTY_CASH', 'PO_NOT_UPLOADED']),
+  // multipart/form-data carries no native arrays — the client JSON-stringifies
+  // items into this one field (same convention as other multipart endpoints
+  // with array fields in this file).
+  items: z.string().min(1).transform((s, ctx) => {
+    try { return JSON.parse(s); } catch { ctx.addIssue({ code: 'custom', message: 'items must be valid JSON' }); return z.NEVER; }
+  }).pipe(z.array(z.object({
+    material_id: z.coerce.number().int().positive(),
+    grn_qty: z.coerce.number().positive(),
+  })).min(1)),
   grn_date: z.string().min(1),
 });
 
@@ -1482,33 +1489,43 @@ app.post('/api/v1/goods-receipts/adhoc', authenticate, requireRole('PM_STORE_EXE
       throw new ApiError(403, 'FORBIDDEN', 'You are not mapped to this warehouse');
     }
 
-    const matRes = await pool.query('SELECT id, master_price FROM materials WHERE id = $1 AND is_active', [d.material_id]);
-    if (!matRes.rows.length) throw new ApiError(404, 'MATERIAL_NOT_FOUND', `Material ${d.material_id} not found`);
-    // No PO to snapshot a price from — master_price is the best available
-    // reference cost so this receipt doesn't drag the material's weighted-
-    // average cost down to zero at this warehouse.
-    const unitCost = Number(matRes.rows[0].master_price) || 0;
+    const materialIds = d.items.map((i) => i.material_id);
+    const matRes = await pool.query('SELECT id, master_price FROM materials WHERE id = ANY($1) AND is_active', [materialIds]);
+    const matMap = new Map(matRes.rows.map((r) => [Number(r.id), r]));
+    for (const item of d.items) {
+      if (!matMap.get(item.material_id)) throw new ApiError(404, 'MATERIAL_NOT_FOUND', `Material ${item.material_id} not found`);
+    }
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const grnRef = genRef('GRN');
-      const grnIns = await client.query(
-        `INSERT INTO goods_receipts (grn_ref, po_id, warehouse_id, material_id, grn_qty, unit_price, grn_date, vendor_name, grn_type, received_by_user_id)
-         VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-        [grnRef, warehouseId, d.material_id, d.grn_qty, unitCost, d.grn_date, d.vendor_name, d.grn_type, req.user.id]
-      );
-      const grnId = grnIns.rows[0].id;
 
-      const r2Key = `grn-invoices/${grnId}-${Date.now()}${path.extname(req.file.originalname)}`;
+      // One invoice/challan photo covers every material line in this GRN —
+      // upload once, reuse the same R2 key for every goods_receipts row below.
+      const r2Key = `grn-invoices/${warehouseId}-${Date.now()}${path.extname(req.file.originalname)}`;
       await uploadToR2(r2Key, req.file.buffer, req.file.mimetype);
-      await client.query('UPDATE goods_receipts SET invoice_image_path = $1 WHERE id = $2', [r2Key, grnId]);
 
-      await postLedgerEntry(client, { warehouseId, materialId: d.material_id, movementType: 'GRN_INWARD', qtyDelta: d.grn_qty, unitCost, refTable: 'goods_receipts', refId: grnId, movementDate: d.grn_date });
-      await writeAudit(client, { userId: req.user.id, action: 'ADHOC_GRN_CREATED', entityTable: 'goods_receipts', entityId: grnId, detail: { grnRef, vendor_name: d.vendor_name, grn_type: d.grn_type, material_id: d.material_id, qty: d.grn_qty } });
+      const grnRefs = [];
+      for (const item of d.items) {
+        // No PO to snapshot a price from — master_price is the best available
+        // reference cost so this receipt doesn't drag the material's weighted-
+        // average cost down to zero at this warehouse.
+        const unitCost = Number(matMap.get(item.material_id).master_price) || 0;
+        const grnRef = genRef('GRN');
+        const grnIns = await client.query(
+          `INSERT INTO goods_receipts (grn_ref, po_id, warehouse_id, material_id, grn_qty, unit_price, grn_date, vendor_name, grn_type, received_by_user_id, invoice_image_path)
+           VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+          [grnRef, warehouseId, item.material_id, item.grn_qty, unitCost, d.grn_date, d.vendor_name, d.grn_type, req.user.id, r2Key]
+        );
+        const grnId = grnIns.rows[0].id;
+
+        await postLedgerEntry(client, { warehouseId, materialId: item.material_id, movementType: 'GRN_INWARD', qtyDelta: item.grn_qty, unitCost, refTable: 'goods_receipts', refId: grnId, movementDate: d.grn_date });
+        await writeAudit(client, { userId: req.user.id, action: 'ADHOC_GRN_CREATED', entityTable: 'goods_receipts', entityId: grnId, detail: { grnRef, vendor_name: d.vendor_name, grn_type: d.grn_type, material_id: item.material_id, qty: item.grn_qty } });
+        grnRefs.push(grnRef);
+      }
 
       await client.query('COMMIT');
-      res.status(201).json({ grn_id: grnId, grn_ref: grnRef });
+      res.status(201).json({ grn_refs: grnRefs, grn_ref: grnRefs[0] });
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
@@ -1820,18 +1837,14 @@ app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EX
     const materialTotals = new Map();
     for (const item of items) materialTotals.set(item.material_id, (materialTotals.get(item.material_id) || 0) + item.issued_qty);
 
-    // TEMPORARILY DISABLED (2026-09-30, per user request) for PM Store adhoc
-    // issue/transfer only — PM Store can dispatch past zero/negative on-hand
-    // for now. CC/FC-initiated transfers (this same endpoint) still enforce
-    // the check below. Re-enable by removing this `if` guard once the user
-    // says so — do not remove the check itself, just this bypass.
-    if (fromWh.warehouse_type !== 'PM_STORE') {
-      for (const [materialId, totalQty] of materialTotals) {
-        const onHand = await getOnHandQty(client, from_warehouse_id, materialId);
-        if (totalQty > onHand) {
-          const mat = matMap.get(materialId);
-          throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${mat.code}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
-        }
+    // Re-enabled (2026-10-13, per user request) for PM Store adhoc transfers
+    // too — every source facility, including PM Store, must have on-hand
+    // stock to cover the transfer.
+    for (const [materialId, totalQty] of materialTotals) {
+      const onHand = await getOnHandQty(client, from_warehouse_id, materialId);
+      if (totalQty > onHand) {
+        const mat = matMap.get(materialId);
+        throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${mat.code}: need ${totalQty}, have ${onHand}`, { onHand, totalQty });
       }
     }
 
