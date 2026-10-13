@@ -61,7 +61,7 @@ function makeApi(token) {
     login: (email, password) => req('POST', '/api/v1/auth/login', { email, password }),
     googleLogin: (idToken) => req('POST', '/api/v1/auth/google', { id_token: idToken }),
     listOpenPOs: () => req('GET', '/api/v1/purchase-orders?status=OPEN,PARTIALLY_RECEIVED'),
-    pendingByFacility: () => req('GET', '/api/v1/indents/pending-by-facility'),
+    pendingByFacility: (date) => req('GET', `/api/v1/indents/pending-by-facility${date ? `?date=${date}` : ''}`),
     batchIssue: (payload) => req('POST', '/api/v1/stock-issues/batch', payload),
     createTransfer: (payload) => req('POST', '/api/v1/stock-issues/transfer', payload),
     listWarehouses: () => req('GET', '/api/v1/warehouses'),
@@ -897,11 +897,12 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
 }
 
 // ── Issue screen ─────────────────────────────────────────────────────────────
-function IssueScreen({ api }) {
+function IssueScreen({ api, isAdmin }) {
   const today = new Date().toISOString().slice(0, 10);
   const [allLines, setAllLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
+  const [indentDateFilter, setIndentDateFilter] = useState(''); // ADMIN only
   const [selectedFacilityId, setSelectedFacilityId] = useState(null);
   const [lineQtys, setLineQtys] = useState({});
   const [issueDate, setIssueDate] = useState(today);
@@ -920,7 +921,7 @@ function IssueScreen({ api }) {
   const load = useCallback(async () => {
     setLoading(true); setFetchError('');
     try {
-      const data = await api.pendingByFacility();
+      const data = await api.pendingByFacility(isAdmin ? indentDateFilter : undefined);
       const lines = Array.isArray(data) ? data : data.data ?? [];
       setAllLines(lines);
       const qtys = {};
@@ -933,7 +934,7 @@ function IssueScreen({ api }) {
     } catch (e) {
       setFetchError(e.message || 'Failed to load pending indents');
     } finally { setLoading(false); }
-  }, [api]);
+  }, [api, isAdmin, indentDateFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1033,6 +1034,14 @@ function IssueScreen({ api }) {
           </div>
           <button onClick={load} className="p-2 text-slate-400"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
         </div>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-medium text-slate-500">Indent Date</label>
+            <input type="date" value={indentDateFilter} onChange={(e) => setIndentDateFilter(e.target.value)}
+              className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+            {indentDateFilter && <button onClick={() => setIndentDateFilter('')} className="text-xs text-blue-600">Clear</button>}
+          </div>
+        )}
         {fetchError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{fetchError}</div>}
         {loading && <div className="text-center text-sm text-slate-400 py-8">Loading pending indents…</div>}
         {!loading && facilities.length === 0 && <div className="text-center text-sm text-slate-500 py-8">No pending indents found.</div>}
@@ -1606,7 +1615,7 @@ export default function PMStoreOps() {
 
       <div className="px-4 pt-3 pb-8">
         {tab === 'grn' && <GRNScreen api={client} warehouseId={user?.warehouse_ids?.[0]} />}
-        {tab === 'issue' && <IssueScreen api={client} />}
+        {tab === 'issue' && <IssueScreen api={client} isAdmin={user?.role === 'ADMIN'} />}
         {tab === 'transfer' && <TransferSendScreen api={client} sourceWarehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'stock' && <StoreStockView token={token} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'audit' && <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />}

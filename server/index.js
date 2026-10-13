@@ -804,6 +804,16 @@ app.get('/api/v1/indents/uploaded-facilities', authenticate, requireRole('CC_EXE
 }));
 
 app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
+  const params = [];
+  // PM_STORE_EXEC only ever sees the most recently uploaded indent batch —
+  // ADMIN sees everything pending, optionally narrowed by ?date=YYYY-MM-DD.
+  let extraWhere = '';
+  if (req.user.role !== 'ADMIN') {
+    extraWhere = `AND il.batch_id = (SELECT id FROM indent_batches ORDER BY id DESC LIMIT 1)`;
+  } else if (req.query.date) {
+    params.push(req.query.date);
+    extraWhere = `AND il.indent_date = $${params.length}`;
+  }
   const result = await pool.query(`
     SELECT il.id, il.indent_ref, il.indent_date,
            il.requested_qty::numeric, il.issued_qty::numeric,
@@ -819,9 +829,9 @@ app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STO
     CROSS JOIN (SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1) pm_wh
     LEFT JOIN v_current_stock pm_cs ON pm_cs.warehouse_id = pm_wh.id AND pm_cs.material_id = il.material_id
     LEFT JOIN v_current_stock fac_cs ON fac_cs.warehouse_id = il.warehouse_id AND fac_cs.material_id = il.material_id
-    WHERE il.status IN ('PENDING', 'PARTIALLY_ISSUED')
+    WHERE il.status IN ('PENDING', 'PARTIALLY_ISSUED') ${extraWhere}
     ORDER BY w.name, m.name
-  `);
+  `, params);
   res.json(result.rows);
 }));
 
