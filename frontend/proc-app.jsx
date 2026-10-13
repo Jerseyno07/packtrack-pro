@@ -35,6 +35,8 @@ const GRN_TYPE_LABEL = {
   DELIVERY_CHALLAN: 'Delivery Challan',
   PETTY_CASH: 'Petty Cash Purchase',
   PO_NOT_UPLOADED: 'PO not uploaded',
+  STO_NOT_FOUND: 'STO not found',
+  OTHERS: 'Others',
 };
 
 // Same Google Identity Services pattern as pmstore-ops.jsx / portal.jsx.
@@ -415,7 +417,10 @@ function UnmappedGrnSection({ token }) {
                 <tr key={g.id} className="border-t border-slate-100 hover:bg-slate-50 align-top">
                   <td className="px-4 py-3 font-mono text-xs text-slate-700">{g.grn_ref}</td>
                   <td className="px-4 py-3 text-slate-700 max-w-[140px] truncate" title={g.vendor_name}>{g.vendor_name}</td>
-                  <td className="px-4 py-3"><Badge tone="amber">{GRN_TYPE_LABEL[g.grn_type] || g.grn_type}</Badge></td>
+                  <td className="px-4 py-3">
+                    <Badge tone="amber">{GRN_TYPE_LABEL[g.grn_type] || g.grn_type}</Badge>
+                    {g.notes && <div className="text-xs text-slate-400 mt-1 max-w-[160px] truncate" title={g.notes}>{g.notes}</div>}
+                  </td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-600">{g.material_code} <span className="font-sans text-slate-400">{g.material_name}</span></td>
                   <td className="px-4 py-3 text-slate-600">{g.warehouse_name}</td>
                   <td className="px-4 py-3 text-right text-slate-700 whitespace-nowrap">{Number(g.grn_qty).toLocaleString()} {g.unit}</td>

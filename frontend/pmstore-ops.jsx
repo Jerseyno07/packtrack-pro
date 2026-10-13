@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone, Download, Plus, X } from 'lucide-react';
+import { Package, CheckCircle2, AlertTriangle, Truck, FileText, ChevronRight, ChevronDown, ArrowLeft, RefreshCw, LogIn, LogOut, Zap, ImagePlus, MonitorSmartphone, Download, Plus, X } from 'lucide-react';
 
 function useInstallPrompt() {
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
@@ -88,7 +88,7 @@ function makeApi(token) {
     },
     createAdhocGrn: async (fields, imageFile) => {
       const fd = new FormData();
-      Object.entries(fields).forEach(([k, v]) => fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v));
+      Object.entries(fields).forEach(([k, v]) => { if (v !== undefined) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v); });
       fd.append('invoice_image', imageFile);
       const res = await fetch(`${BASE_URL}/api/v1/goods-receipts/adhoc`, {
         method: 'POST',
@@ -700,6 +700,8 @@ const GRN_TYPES = [
   { value: 'DELIVERY_CHALLAN', label: 'Delivery Challan' },
   { value: 'PETTY_CASH', label: 'Petty Cash Purchase' },
   { value: 'PO_NOT_UPLOADED', label: 'PO not uploaded' },
+  { value: 'STO_NOT_FOUND', label: 'STO not found' },
+  { value: 'OTHERS', label: 'Others' },
 ];
 
 // A receipt with no PO to match against yet — posts real stock/goods_receipts
@@ -712,6 +714,8 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
   const [items, setItems] = useState([]); // [{ material, qty_disp }]
   const [vendorName, setVendorName] = useState('');
   const [grnType, setGrnType] = useState('NO_PO_INVOICE');
+  const [showGrnTypeDd, setShowGrnTypeDd] = useState(false);
+  const [remarks, setRemarks] = useState('');
   const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
   const [image, setImage] = useState(null);
   const [error, setError] = useState('');
@@ -738,7 +742,8 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
   function setQty(materialId, val) { setItems((prev) => prev.map((i) => (i.material.id === materialId ? { ...i, qty_disp: val } : i))); }
 
   const canSubmit = !!warehouseId && !!vendorName.trim() && !!grnType && items.length > 0
-    && items.every((i) => Number(i.qty_disp) > 0) && !!grnDate && !!image && !submitting;
+    && items.every((i) => Number(i.qty_disp) > 0) && !!grnDate && !!image
+    && (grnType !== 'OTHERS' || !!remarks.trim()) && !submitting;
 
   async function handleSubmit() {
     setError('');
@@ -748,6 +753,7 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
         warehouse_id: warehouseId,
         vendor_name: vendorName.trim(),
         grn_type: grnType,
+        remarks: grnType === 'OTHERS' ? remarks.trim() : undefined,
         items: items.map((i) => ({ material_id: i.material.id, grn_qty: toBase(i.material, i.qty_disp) })),
         grn_date: grnDate,
       };
@@ -775,17 +781,34 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
           className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
       </div>
 
-      <div>
+      <div className="relative">
         <label className="block text-xs font-medium text-slate-500 mb-1">Type of GRN</label>
-        <div className="grid grid-cols-1 gap-2">
-          {GRN_TYPES.map((t) => (
-            <button key={t.value} onClick={() => setGrnType(t.value)}
-              className={`text-left px-3 py-2.5 rounded-xl border text-sm ${grnType === t.value ? 'border-blue-400 bg-blue-50 text-blue-800 font-medium' : 'border-slate-200 text-slate-600'}`}>
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <button type="button" onClick={() => setShowGrnTypeDd((v) => !v)}
+          onBlur={() => setTimeout(() => setShowGrnTypeDd(false), 150)}
+          className="w-full flex items-center justify-between border border-slate-200 rounded-xl px-3 py-3 text-sm text-left bg-white">
+          <span className="text-slate-800">{GRN_TYPES.find((t) => t.value === grnType)?.label || 'Select…'}</span>
+          <ChevronDown size={16} className="text-slate-400" />
+        </button>
+        {showGrnTypeDd && (
+          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-60 overflow-y-auto">
+            {GRN_TYPES.map((t) => (
+              <button key={t.value} type="button" onMouseDown={() => { setGrnType(t.value); setShowGrnTypeDd(false); }}
+                className={`w-full text-left px-3 py-2.5 text-sm border-b border-slate-100 last:border-0 ${grnType === t.value ? 'bg-blue-50 text-blue-800 font-medium' : 'text-slate-600 hover:bg-slate-50'}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
+
+      {grnType === 'OTHERS' && (
+        <div>
+          <label className="block text-xs font-medium text-slate-500 mb-1">Remarks <span className="text-red-400">*</span></label>
+          <textarea value={remarks} onChange={(e) => setRemarks(e.target.value)}
+            placeholder="Explain the reason for this GRN…" rows={2}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" />
+        </div>
+      )}
 
       <div className="relative">
         <label className="block text-xs font-medium text-slate-500 mb-1">

@@ -1457,7 +1457,10 @@ app.get('/api/v1/goods-receipts/:id/invoice-image', authenticate, requireRole('P
 const adhocGrnSchema = z.object({
   warehouse_id: z.coerce.number().int().positive(),
   vendor_name: z.string().min(1),
-  grn_type: z.enum(['NO_PO_INVOICE', 'DELIVERY_CHALLAN', 'PETTY_CASH', 'PO_NOT_UPLOADED']),
+  grn_type: z.enum(['NO_PO_INVOICE', 'DELIVERY_CHALLAN', 'PETTY_CASH', 'PO_NOT_UPLOADED', 'STO_NOT_FOUND', 'OTHERS']),
+  // Mandatory only for grn_type='OTHERS' — enforced below, not here, since it
+  // depends on another field's value.
+  remarks: z.string().optional(),
   // multipart/form-data carries no native arrays — the client JSON-stringifies
   // items into this one field (same convention as other multipart endpoints
   // with array fields in this file).
@@ -1468,6 +1471,9 @@ const adhocGrnSchema = z.object({
     grn_qty: z.coerce.number().positive(),
   })).min(1)),
   grn_date: z.string().min(1),
+}).refine((d) => d.grn_type !== 'OTHERS' || !!d.remarks?.trim(), {
+  message: 'Remarks are mandatory when Type of GRN is "Others"',
+  path: ['remarks'],
 });
 
 app.post('/api/v1/goods-receipts/adhoc', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'),
@@ -1513,14 +1519,14 @@ app.post('/api/v1/goods-receipts/adhoc', authenticate, requireRole('PM_STORE_EXE
         const unitCost = Number(matMap.get(item.material_id).master_price) || 0;
         const grnRef = genRef('GRN');
         const grnIns = await client.query(
-          `INSERT INTO goods_receipts (grn_ref, po_id, warehouse_id, material_id, grn_qty, unit_price, grn_date, vendor_name, grn_type, received_by_user_id, invoice_image_path)
-           VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-          [grnRef, warehouseId, item.material_id, item.grn_qty, unitCost, d.grn_date, d.vendor_name, d.grn_type, req.user.id, r2Key]
+          `INSERT INTO goods_receipts (grn_ref, po_id, warehouse_id, material_id, grn_qty, unit_price, grn_date, vendor_name, grn_type, received_by_user_id, invoice_image_path, notes)
+           VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+          [grnRef, warehouseId, item.material_id, item.grn_qty, unitCost, d.grn_date, d.vendor_name, d.grn_type, req.user.id, r2Key, d.remarks?.trim() || null]
         );
         const grnId = grnIns.rows[0].id;
 
         await postLedgerEntry(client, { warehouseId, materialId: item.material_id, movementType: 'GRN_INWARD', qtyDelta: item.grn_qty, unitCost, refTable: 'goods_receipts', refId: grnId, movementDate: d.grn_date });
-        await writeAudit(client, { userId: req.user.id, action: 'ADHOC_GRN_CREATED', entityTable: 'goods_receipts', entityId: grnId, detail: { grnRef, vendor_name: d.vendor_name, grn_type: d.grn_type, material_id: item.material_id, qty: item.grn_qty } });
+        await writeAudit(client, { userId: req.user.id, action: 'ADHOC_GRN_CREATED', entityTable: 'goods_receipts', entityId: grnId, detail: { grnRef, vendor_name: d.vendor_name, grn_type: d.grn_type, material_id: item.material_id, qty: item.grn_qty, remarks: d.remarks?.trim() || null } });
         grnRefs.push(grnRef);
       }
 
@@ -1532,7 +1538,7 @@ app.post('/api/v1/goods-receipts/adhoc', authenticate, requireRole('PM_STORE_EXE
 
 app.get('/api/v1/procurement/unmapped-grns', authenticate, requireRole('PROCUREMENT', 'ADMIN'), asyncHandler(async (req, res) => {
   const r = await pool.query(
-    `SELECT gr.id, gr.grn_ref, gr.vendor_name, gr.grn_type, gr.grn_qty, gr.grn_date,
+    `SELECT gr.id, gr.grn_ref, gr.vendor_name, gr.grn_type, gr.grn_qty, gr.grn_date, gr.notes,
             gr.material_id, m.code AS material_code, m.name AS material_name, m.unit,
             gr.warehouse_id, w.name AS warehouse_name, w.code AS warehouse_code,
             (gr.invoice_image_path IS NOT NULL) AS has_invoice, u.name AS received_by_name,
