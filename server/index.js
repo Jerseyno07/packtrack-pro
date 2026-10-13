@@ -1705,10 +1705,16 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       lineDataList.push({ item, line, remaining });
     }
 
-    // Validate stock per material (cumulative across all items)
+    // Validate stock per material (cumulative across all items). Always
+    // enforced, even when force_complete_reason is set on the batch — that
+    // flag closes out an indent line's status, it does not exempt the qty
+    // actually being dispatched from a stock-sufficiency check. (Previously
+    // force_complete_reason waived this check for the whole batch, which let
+    // non-force-complete items in the same request bypass it too — fixed
+    // 2026-10-13.)
     for (const [materialId, totalQty] of materialTotals) {
       const onHand = await getOnHandQty(client, fromWhId, materialId);
-      if (totalQty > onHand && !force_complete_reason) {
+      if (totalQty > onHand) {
         const sampleLine = lineDataList.find((ld) => ld.line.material_id === materialId)?.line;
         throw new ApiError(422, 'INSUFFICIENT_STOCK', `Insufficient stock for ${sampleLine?.mat_code ?? materialId}: need ${fmtDispQty(totalQty, sampleLine ?? {})}, have ${fmtDispQty(onHand, sampleLine ?? {})}`, { onHand, totalQty });
       }
