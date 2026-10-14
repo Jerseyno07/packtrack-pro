@@ -695,6 +695,18 @@ function toBase(l, disp) {
   return n;
 }
 
+// Fixed vendor master list (from Vendor Dump.xlsx, 2026-10-14) — "Others"
+// lets the Vendor Name field fall back to free text for adhoc vendors.
+const VENDOR_NAMES = [
+  'ELEGENTA ELITE ENTERPRISES LLP', 'Chirantana Equipack Pvt Ltd', 'PUJA ENTERPRISES',
+  'PROWRRAP PACKAGING PRIVATE LIMITED', 'R K POLYMERS', 'INVITEE MARKETING', 'Cistro Inc',
+  'BANSI OFFICE SOLUTIONS PRIVATE LIMITED', 'PACK N FILTER', 'PRAKASH POLYNET',
+  'PRO PACK INDUSTRIES LLP', 'DEALBERG TECHNOLOGIES PRIVATE LIMITED', 'MULTIPLES PACKAGING',
+  'STALLION ONEBYTE PRIVATE LIMITED', 'SKY OFFICE STATIONERS', 'MAC PAC LLP',
+  'AUMSONS PACKAGING', 'BHARAT MARKETING', 'TQP ( True Quality Products )',
+  'HI-TECH INTERNATIONAL', 'PRABHA ENTERPRISE',
+];
+
 const GRN_TYPES = [
   { value: 'NO_PO_INVOICE', label: 'Invoice without PO number' },
   { value: 'DELIVERY_CHALLAN', label: 'Delivery Challan' },
@@ -713,6 +725,8 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
   const [showMatDd, setShowMatDd] = useState(false);
   const [items, setItems] = useState([]); // [{ material, qty_disp }]
   const [vendorName, setVendorName] = useState('');
+  const [showVendorDd, setShowVendorDd] = useState(false);
+  const [vendorOther, setVendorOther] = useState('');
   const [grnType, setGrnType] = useState('NO_PO_INVOICE');
   const [showGrnTypeDd, setShowGrnTypeDd] = useState(false);
   const [remarks, setRemarks] = useState('');
@@ -741,7 +755,8 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
   function removeItem(materialId) { setItems((prev) => prev.filter((i) => i.material.id !== materialId)); }
   function setQty(materialId, val) { setItems((prev) => prev.map((i) => (i.material.id === materialId ? { ...i, qty_disp: val } : i))); }
 
-  const canSubmit = !!warehouseId && !!vendorName.trim() && !!grnType && items.length > 0
+  const finalVendorName = vendorName === 'OTHERS' ? vendorOther.trim() : vendorName;
+  const canSubmit = !!warehouseId && !!finalVendorName && !!grnType && items.length > 0
     && items.every((i) => Number(i.qty_disp) > 0) && !!grnDate && !!image
     && (grnType !== 'OTHERS' || !!remarks.trim()) && !submitting;
 
@@ -751,7 +766,7 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
     try {
       const fields = {
         warehouse_id: warehouseId,
-        vendor_name: vendorName.trim(),
+        vendor_name: finalVendorName,
         grn_type: grnType,
         remarks: grnType === 'OTHERS' ? remarks.trim() : undefined,
         items: items.map((i) => ({ material_id: i.material.id, grn_qty: toBase(i.material, i.qty_disp) })),
@@ -774,12 +789,38 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
         <p className="text-sm text-slate-500">Record a receipt with no PO yet — Procurement will map it to the PO once it's uploaded.</p>
       </div>
 
-      <div>
+      <div className="relative">
         <label className="block text-xs font-medium text-slate-500 mb-1">Vendor Name</label>
-        <input type="text" value={vendorName} onChange={(e) => setVendorName(e.target.value)}
-          placeholder="Vendor name as on the invoice/challan"
-          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+        <button type="button" onClick={() => setShowVendorDd((v) => !v)}
+          onBlur={() => setTimeout(() => setShowVendorDd(false), 150)}
+          className="w-full flex items-center justify-between border border-slate-200 rounded-xl px-3 py-3 text-sm text-left bg-white">
+          <span className={vendorName ? 'text-slate-800' : 'text-slate-400'}>{vendorName === 'OTHERS' ? 'Others' : (vendorName || 'Select vendor…')}</span>
+          <ChevronDown size={16} className="text-slate-400" />
+        </button>
+        {showVendorDd && (
+          <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-60 overflow-y-auto">
+            {VENDOR_NAMES.map((v) => (
+              <button key={v} type="button" onMouseDown={() => { setVendorName(v); setShowVendorDd(false); }}
+                className={`w-full text-left px-3 py-2.5 text-sm border-b border-slate-100 ${vendorName === v ? 'bg-blue-50 text-blue-800 font-medium' : 'text-slate-600 hover:bg-slate-50'}`}>
+                {v}
+              </button>
+            ))}
+            <button type="button" onMouseDown={() => { setVendorName('OTHERS'); setShowVendorDd(false); }}
+              className={`w-full text-left px-3 py-2.5 text-sm font-medium ${vendorName === 'OTHERS' ? 'bg-blue-50 text-blue-800' : 'text-slate-600 hover:bg-slate-50'}`}>
+              Others
+            </button>
+          </div>
+        )}
       </div>
+
+      {vendorName === 'OTHERS' && (
+        <div>
+          <label className="block text-xs font-medium text-slate-500 mb-1">Vendor Name (Others)</label>
+          <input type="text" value={vendorOther} onChange={(e) => setVendorOther(e.target.value)}
+            placeholder="Vendor name as on the invoice/challan"
+            className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+        </div>
+      )}
 
       <div className="relative">
         <label className="block text-xs font-medium text-slate-500 mb-1">Type of GRN</label>
