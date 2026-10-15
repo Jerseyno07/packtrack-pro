@@ -8,9 +8,11 @@
 // Cron schedule (Asia/Kolkata / IST) — all Bangalore facilities only (BLR_FACILITIES):
 //   21:00  — CC consumption run and auto-accept (CC_FACILITIES) — moved earlier 2026-10-15
 //   00:00  — FC consumption run and auto-accept (FC_FACILITIES) — unchanged
-//   09:00  — Indents Uploaded (date & facility-wise)
-//   15:00  — Indent Fulfillment Status (uploaded vs issued/force-completed/pending)
-//   21:00  — FC Dispatch vs CC GRN report (today's dispatches + backlog from earlier dates)
+//   21:05  — PM Zero-Sum (CS-001) if today's audit is logged, else "audit not done" alert — added 2026-10-15
+//   21:10  — CC/FC inventory vs prior-week avg consumption, flags 2x+ overstock — added 2026-10-15
+//   09:00  — Indents Uploaded (date & facility-wise) — disabled 2026-10-15
+//   15:00  — Indent Fulfillment Status (uploaded vs issued/force-completed/pending) — disabled 2026-10-15
+//   21:00  — FC Dispatch vs CC GRN report (today's dispatches + backlog from earlier dates) — disabled 2026-10-15
 //   CC Balance vs Audit — sendCCBalanceVsAudit() is ready; cron TBD
 
 // Bangalore FC (9382) + all Bangalore CCs — only these run in the nightly cron.
@@ -567,6 +569,158 @@ async function sendCCBalanceVsAudit() {
   return postSlack(text);
 }
 
+// ── Report 4: PM Zero-Sum (loss/gain) — CS-001, or audit-not-done alert (21:05 IST) ──
+
+const CS001_WAREHOUSE_ID = 1;
+
+async function sendPmZeroSumOrAuditAlert() {
+  const todayIst = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const dateLabel = istDateLabel();
+
+  const todayAudit = await pool.query(
+    `SELECT id, audit_ref, audit_date FROM audit_entries
+     WHERE warehouse_id = $1 AND audit_date::text = $2
+     ORDER BY id DESC LIMIT 1`,
+    [CS001_WAREHOUSE_ID, todayIst]
+  );
+
+  if (todayAudit.rows.length === 0) {
+    return postSlack(`⚠️ *PM Audit — CS-001*  |  ${dateLabel}\n*Audit not done today.* Zero-sum report will fire once today's audit is logged.`);
+  }
+
+  const todayEntry = todayAudit.rows[0];
+
+  const prevAudit = await pool.query(
+    `SELECT id, audit_date FROM audit_entries
+     WHERE warehouse_id = $1 AND audit_date < $2
+     ORDER BY audit_date DESC, id DESC LIMIT 1`,
+    [CS001_WAREHOUSE_ID, todayEntry.audit_date]
+  );
+  const prevEntryId = prevAudit.rows[0]?.id ?? null;
+  const windowStart = prevAudit.rows[0]?.audit_date ?? null; // null = since beginning
+
+  const prevLines = prevEntryId
+    ? await pool.query(`SELECT material_id, physical_qty FROM audit_entry_lines WHERE audit_entry_id = $1`, [prevEntryId])
+    : { rows: [] };
+  const openingMap = new Map(prevLines.rows.map((r) => [r.material_id, Number(r.physical_qty)]));
+
+  const todayLines = await pool.query(`
+    SELECT ael.material_id, ael.physical_qty, m.code AS material_code, m.unit, m.meters_per_unit, m.stickers_per_roll
+    FROM audit_entry_lines ael
+    JOIN materials m ON m.id = ael.material_id
+    WHERE ael.audit_entry_id = $1
+    ORDER BY m.code
+  `, [todayEntry.id]);
+
+  const movements = await pool.query(`
+    SELECT material_id, movement_type,
+           SUM(CASE WHEN movement_type IN ('GRN_INWARD','RECEIPT_IN') THEN qty_delta ELSE 0 END) AS inward,
+           SUM(CASE WHEN movement_type = 'ISSUE_OUT' THEN -qty_delta ELSE 0 END) AS issuance
+    FROM stock_ledger
+    WHERE warehouse_id = $1
+      AND movement_date <= $2
+      AND ($3::date IS NULL OR movement_date > $3)
+    GROUP BY material_id
+  `, [CS001_WAREHOUSE_ID, todayEntry.audit_date, windowStart]);
+  const moveMap = new Map(movements.rows.map((r) => [r.material_id, { inward: Number(r.inward), issuance: Number(r.issuance) }]));
+
+  const lines = todayLines.rows.map((r) => {
+    const opening = openingMap.get(r.material_id) ?? 0;
+    const closing = Number(r.physical_qty);
+    const { inward, issuance } = moveMap.get(r.material_id) ?? { inward: 0, issuance: 0 };
+    const lossGain = (closing + inward) - (opening + issuance);
+    return { ...r, opening, inward, issuance, closing, lossGain };
+  });
+
+  const windowLabel = windowStart ? `${String(windowStart).slice(0, 10)} → ${todayIst}` : `(first audit) → ${todayIst}`;
+  const nonZero = lines.filter((l) => l.lossGain !== 0);
+
+  let text = `📒 *PM Zero-Sum — CS-001*  |  ${dateLabel}\nAudit window: ${windowLabel} · ${todayEntry.audit_ref}\n`;
+  text += nonZero.length === 0
+    ? `✅ All ${lines.length} PM codes balanced — no loss/gain.\n`
+    : `⚠️ ${nonZero.length}/${lines.length} PM codes show loss/gain.\n`;
+  text += `\nFull detail attached as CSV.`;
+
+  let csv = 'Material,Unit,Opening,Inward,Issuance,Closing,Loss/Gain\n';
+  for (const l of lines) {
+    const u = displayUnit(l);
+    csv += `"${l.material_code}","${u}",${l.opening},${l.inward},${l.issuance},${l.closing},${l.lossGain}\n`;
+  }
+
+  const dateSlug = todayIst.replace(/-/g, '');
+  await sendReport(text, csv, `pm-zero-sum-cs001-${dateSlug}.csv`, `PM Zero-Sum — CS-001 — ${dateLabel}`);
+}
+
+// ── Report 5: CC/FC Inventory vs Prior-Week Avg Consumption (21:10 IST) ─────
+
+async function sendInventoryVsAvgConsumption() {
+  const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  const todayIst = nowIst.toISOString().slice(0, 10);
+  const dateLabel = istDateLabel();
+  const dow = nowIst.getUTCDay(); // 0=Sun..6=Sat
+  const mondayOffset = dow === 0 ? 6 : dow - 1; // days since this week's Monday
+  const numDays = mondayOffset + 1;
+
+  const rangeStart = new Date(nowIst);
+  rangeStart.setUTCDate(rangeStart.getUTCDate() - mondayOffset - 7);
+  const rangeEnd = new Date(nowIst);
+  rangeEnd.setUTCDate(rangeEnd.getUTCDate() - 7);
+  const rangeStartStr = rangeStart.toISOString().slice(0, 10);
+  const rangeEndStr = rangeEnd.toISOString().slice(0, 10);
+
+  const { rows } = await pool.query(`
+    SELECT
+      w.name AS warehouse_name, w.code AS warehouse_code,
+      m.code AS material_code, m.unit, m.meters_per_unit, m.stickers_per_roll,
+      COALESCE(cs.on_hand_qty, 0) AS today_inventory,
+      COALESCE(cons.total_consumed, 0) AS week_consumed
+    FROM warehouses w
+    CROSS JOIN materials m
+    LEFT JOIN v_current_stock cs ON cs.warehouse_id = w.id AND cs.material_id = m.id
+    LEFT JOIN (
+      SELECT warehouse_id, material_id, SUM(-qty_delta) AS total_consumed
+      FROM stock_ledger
+      WHERE movement_type = 'CONSUMPTION' AND movement_date BETWEEN $2 AND $3
+      GROUP BY warehouse_id, material_id
+    ) cons ON cons.warehouse_id = w.id AND cons.material_id = m.id
+    WHERE w.code = ANY($1) AND m.is_active = true
+      AND (cs.on_hand_qty IS NOT NULL OR cons.total_consumed IS NOT NULL)
+    ORDER BY w.name, m.code
+  `, [BLR_FACILITIES, rangeStartStr, rangeEndStr]);
+
+  if (rows.length === 0) {
+    return postSlack(`📊 *CC/FC Inventory vs Avg Consumption*  |  ${dateLabel}\n_No data found._`);
+  }
+
+  const byWh = new Map();
+  for (const r of rows) {
+    const key = r.warehouse_code;
+    if (!byWh.has(key)) byWh.set(key, { name: r.warehouse_name, code: r.warehouse_code, lines: [] });
+    const avgConsumption = Number(r.week_consumed) / numDays;
+    const flag = avgConsumption > 0 ? Number(r.today_inventory) >= 2 * avgConsumption : null;
+    byWh.get(key).lines.push({ ...r, avgConsumption, flag });
+  }
+
+  const flaggedCount = rows.length ? [...byWh.values()].reduce((n, f) => n + f.lines.filter((l) => l.flag === true).length, 0) : 0;
+
+  let text = `📊 *CC/FC Inventory vs Avg Weekly Consumption*  |  ${dateLabel}\n`;
+  text += `Window: avg consumption ${rangeStartStr} → ${rangeEndStr} (${numDays}d) vs today's inventory\n`;
+  text += `⚠️ ${flaggedCount} material/facility combos flagged as overstocked (≥2x avg consumption)\n`;
+  text += `\nFull detail attached as CSV.`;
+
+  let csv = 'Facility,Material,Unit,Today Inventory,Avg Weekly Consumption,Overstocked (2x+)\n';
+  for (const { name, code, lines } of byWh.values()) {
+    for (const l of lines) {
+      const u = displayUnit(l);
+      const flagStr = l.flag === null ? 'N/A' : l.flag ? 'TRUE' : 'FALSE';
+      csv += `"${name} (${code})","${l.material_code}","${u}",${l.today_inventory},${l.avgConsumption.toFixed(2)},${flagStr}\n`;
+    }
+  }
+
+  const dateSlug = todayIst.replace(/-/g, '');
+  await sendReport(text, csv, `inventory-vs-consumption-${dateSlug}.csv`, `Inventory vs Avg Consumption — ${dateLabel}`);
+}
+
 // ── Cron jobs (timezone: Asia/Kolkata / IST) ──────────────────────────────────
 
 // 21:00 IST — CC consumption run and auto-accept (CC_FACILITIES only)
@@ -579,6 +733,18 @@ cron.schedule('0 21 * * *', () => {
 cron.schedule('0 0 * * *', () => {
   console.log('[slackReports] 00:00 IST — starting FC consumption run');
   runAndAcceptConsumption(FC_FACILITIES).catch((e) => console.error('[slackReports] FC consumption run failed:', e.message));
+}, { timezone: 'Asia/Kolkata' });
+
+// 21:05 IST — PM Zero-Sum (CS-001) if today's audit is logged, else "audit not done" alert
+cron.schedule('5 21 * * *', () => {
+  console.log('[slackReports] 21:05 IST — PM zero-sum / audit check (CS-001)');
+  sendPmZeroSumOrAuditAlert().catch((e) => console.error('[slackReports] PM zero-sum report failed:', e.message));
+}, { timezone: 'Asia/Kolkata' });
+
+// 21:10 IST — CC/FC inventory vs prior-week avg consumption
+cron.schedule('10 21 * * *', () => {
+  console.log('[slackReports] 21:10 IST — inventory vs avg consumption report');
+  sendInventoryVsAvgConsumption().catch((e) => console.error('[slackReports] Inventory vs consumption report failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
 // Disabled 2026-10-15 pending new report formats — functions kept below/exported
@@ -608,5 +774,7 @@ module.exports = {
   sendCCBalanceVsAudit,
   sendIndentsUploadedReport,
   sendIndentFulfillmentReport,
+  sendPmZeroSumOrAuditAlert,
+  sendInventoryVsAvgConsumption,
   runAndAcceptConsumption,
 };
