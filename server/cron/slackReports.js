@@ -8,7 +8,8 @@
 // Cron schedule (Asia/Kolkata / IST) — all Bangalore facilities only (BLR_FACILITIES):
 //   21:00  — CC consumption run and auto-accept (CC_FACILITIES) — moved earlier 2026-10-15
 //   00:00  — FC consumption run and auto-accept (FC_FACILITIES) — unchanged
-//   21:05  — PM Zero-Sum (CS-001) if today's audit is logged, else "audit not done" alert — added 2026-10-15
+//   PM Zero-Sum (CS-001) — fires dynamically when the audit is closed (POST /api/v1/audits), not on a cron — added 2026-10-15
+//   21:05  — Audit-not-done alert (CS-001), only fires if no audit landed that day — added 2026-10-15
 //   21:10  — CC/FC inventory vs prior-week avg consumption, flags 2x+ overstock — added 2026-10-15
 //   09:00  — Indents Uploaded (date & facility-wise) — disabled 2026-10-15
 //   15:00  — Indent Fulfillment Status (uploaded vs issued/force-completed/pending) — disabled 2026-10-15
@@ -569,32 +570,38 @@ async function sendCCBalanceVsAudit() {
   return postSlack(text);
 }
 
-// ── Report 4: PM Zero-Sum (loss/gain) — CS-001, or audit-not-done alert (21:05 IST) ──
+// ── Report 4: PM Zero-Sum (loss/gain) — CS-001 ───────────────────────────────
+// Fires dynamically right when an audit for CS-001 is closed (called from
+// POST /api/v1/audits in server/index.js), not on a fixed schedule. The 9pm
+// cron below only sends the "audit not done" alert when no audit landed that day.
 
 const CS001_WAREHOUSE_ID = 1;
 
-async function sendPmZeroSumOrAuditAlert() {
-  const todayIst = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-  const dateLabel = istDateLabel();
+// Track entry ids already reported this process lifetime, mirroring the
+// consumption-run dedup guard — guards double-send if ever called twice for the same entry.
+const _reportedAuditEntryIds = new Set();
 
-  const todayAudit = await pool.query(
-    `SELECT id, audit_ref, audit_date FROM audit_entries
-     WHERE warehouse_id = $1 AND audit_date::text = $2
-     ORDER BY id DESC LIMIT 1`,
-    [CS001_WAREHOUSE_ID, todayIst]
-  );
-
-  if (todayAudit.rows.length === 0) {
-    return postSlack(`⚠️ *PM Audit — CS-001*  |  ${dateLabel}\n*Audit not done today.* Zero-sum report will fire once today's audit is logged.`);
+async function sendPmZeroSumForEntry(entryId) {
+  if (_reportedAuditEntryIds.has(entryId)) {
+    console.log(`[slackReports] Audit entry ${entryId} already reported — skipping duplicate Slack send`);
+    return;
   }
 
-  const todayEntry = todayAudit.rows[0];
+  const entryRes = await pool.query(
+    `SELECT id, warehouse_id, audit_ref, audit_date FROM audit_entries WHERE id = $1`,
+    [entryId]
+  );
+  const todayEntry = entryRes.rows[0];
+  if (!todayEntry) throw new Error(`Audit entry ${entryId} not found`);
+
+  const todayIst = String(todayEntry.audit_date).slice(0, 10);
+  const dateLabel = istDateLabel(new Date(todayEntry.audit_date));
 
   const prevAudit = await pool.query(
     `SELECT id, audit_date FROM audit_entries
      WHERE warehouse_id = $1 AND audit_date < $2
      ORDER BY audit_date DESC, id DESC LIMIT 1`,
-    [CS001_WAREHOUSE_ID, todayEntry.audit_date]
+    [todayEntry.warehouse_id, todayEntry.audit_date]
   );
   const prevEntryId = prevAudit.rows[0]?.id ?? null;
   const windowStart = prevAudit.rows[0]?.audit_date ?? null; // null = since beginning
@@ -613,7 +620,7 @@ async function sendPmZeroSumOrAuditAlert() {
   `, [todayEntry.id]);
 
   const movements = await pool.query(`
-    SELECT material_id, movement_type,
+    SELECT material_id,
            SUM(CASE WHEN movement_type IN ('GRN_INWARD','RECEIPT_IN') THEN qty_delta ELSE 0 END) AS inward,
            SUM(CASE WHEN movement_type = 'ISSUE_OUT' THEN -qty_delta ELSE 0 END) AS issuance
     FROM stock_ledger
@@ -621,7 +628,7 @@ async function sendPmZeroSumOrAuditAlert() {
       AND movement_date <= $2
       AND ($3::date IS NULL OR movement_date > $3)
     GROUP BY material_id
-  `, [CS001_WAREHOUSE_ID, todayEntry.audit_date, windowStart]);
+  `, [todayEntry.warehouse_id, todayEntry.audit_date, windowStart]);
   const moveMap = new Map(movements.rows.map((r) => [r.material_id, { inward: Number(r.inward), issuance: Number(r.issuance) }]));
 
   const lines = todayLines.rows.map((r) => {
@@ -649,6 +656,25 @@ async function sendPmZeroSumOrAuditAlert() {
 
   const dateSlug = todayIst.replace(/-/g, '');
   await sendReport(text, csv, `pm-zero-sum-cs001-${dateSlug}.csv`, `PM Zero-Sum — CS-001 — ${dateLabel}`);
+  _reportedAuditEntryIds.add(entryId);
+}
+
+// ── Report 4b: Audit-not-done alert (21:00 IST) ──────────────────────────────
+// The zero-sum report itself now fires dynamically (see sendPmZeroSumForEntry,
+// called from POST /api/v1/audits) — this cron only covers the "nothing happened" case.
+
+async function sendAuditNotDoneAlertIfMissing() {
+  const todayIst = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const dateLabel = istDateLabel();
+
+  const todayAudit = await pool.query(
+    `SELECT id FROM audit_entries WHERE warehouse_id = $1 AND audit_date::text = $2 LIMIT 1`,
+    [CS001_WAREHOUSE_ID, todayIst]
+  );
+
+  if (todayAudit.rows.length === 0) {
+    return postSlack(`⚠️ *PM Audit — CS-001*  |  ${dateLabel}\n*Audit not done today.* Zero-sum report will fire as soon as today's audit is logged.`);
+  }
 }
 
 // ── Report 5: CC/FC Inventory vs Prior-Week Avg Consumption (21:10 IST) ─────
@@ -735,10 +761,11 @@ cron.schedule('0 0 * * *', () => {
   runAndAcceptConsumption(FC_FACILITIES).catch((e) => console.error('[slackReports] FC consumption run failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
-// 21:05 IST — PM Zero-Sum (CS-001) if today's audit is logged, else "audit not done" alert
+// 21:05 IST — Audit-not-done alert (CS-001); the zero-sum report itself fires
+// dynamically from POST /api/v1/audits as soon as the audit is closed.
 cron.schedule('5 21 * * *', () => {
-  console.log('[slackReports] 21:05 IST — PM zero-sum / audit check (CS-001)');
-  sendPmZeroSumOrAuditAlert().catch((e) => console.error('[slackReports] PM zero-sum report failed:', e.message));
+  console.log('[slackReports] 21:05 IST — audit-done check (CS-001)');
+  sendAuditNotDoneAlertIfMissing().catch((e) => console.error('[slackReports] Audit-not-done check failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
 // 21:10 IST — CC/FC inventory vs prior-week avg consumption
@@ -774,7 +801,8 @@ module.exports = {
   sendCCBalanceVsAudit,
   sendIndentsUploadedReport,
   sendIndentFulfillmentReport,
-  sendPmZeroSumOrAuditAlert,
+  sendPmZeroSumForEntry,
+  sendAuditNotDoneAlertIfMissing,
   sendInventoryVsAvgConsumption,
   runAndAcceptConsumption,
 };

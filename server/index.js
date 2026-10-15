@@ -3221,6 +3221,11 @@ app.post('/api/v1/audits', authenticate, requireRole('PM_STORE_EXEC', 'CC_EXEC',
       await writeAudit(client, { userId: req.user.id, action: 'AUDIT_CONDUCTED', entityTable: 'audit_entries', entityId: entryId, detail: { auditRef, warehouse_id: d.warehouse_id, lines: d.lines.length } });
       await client.query('COMMIT');
       res.status(201).json({ audit_ref: auditRef, audit_entry_id: entryId, lines: summary });
+
+      if (d.warehouse_id === 1) { // CS-001 — fire the PM zero-sum report now that the audit is closed
+        const { sendPmZeroSumForEntry } = require('./cron/slackReports');
+        sendPmZeroSumForEntry(entryId).catch((e) => console.error('[audits] PM zero-sum report failed:', e.message));
+      }
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   })
 );
