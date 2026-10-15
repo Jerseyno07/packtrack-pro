@@ -229,7 +229,9 @@ async function runAndAcceptConsumption(facilityCodes = null) {
   await runConsumption({ runId, facilityCodes });
   const committed = await acceptRun(runId);
   console.log(`[slackReports] Run ${runId} accepted — ${committed} lines committed`);
-  await sendDailyConsumption(runId);
+  // Slack report disabled 2026-10-15 pending new report formats — consumption
+  // deduction above still runs on schedule as normal, only this Slack send is off.
+  // await sendDailyConsumption(runId);
   return runId;
 }
 
@@ -579,23 +581,26 @@ cron.schedule('0 0 * * *', () => {
   runAndAcceptConsumption(FC_FACILITIES).catch((e) => console.error('[slackReports] FC consumption run failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
-// 09:00 IST — Indents Uploaded (date & facility-wise)
-cron.schedule('0 9 * * *', () => {
-  console.log('[slackReports] 09:00 IST — sending indents uploaded report');
-  sendIndentsUploadedReport().catch((e) => console.error('[slackReports] Indents uploaded report failed:', e.message));
-}, { timezone: 'Asia/Kolkata' });
-
-// 15:00 IST — Indent Fulfillment Status
-cron.schedule('0 15 * * *', () => {
-  console.log('[slackReports] 15:00 IST — sending indent fulfillment report');
-  sendIndentFulfillmentReport().catch((e) => console.error('[slackReports] Indent fulfillment report failed:', e.message));
-}, { timezone: 'Asia/Kolkata' });
-
-// 21:00 IST — FC Dispatch vs CC GRN
-cron.schedule('0 21 * * *', () => {
-  console.log('[slackReports] 21:00 IST — sending FC dispatch vs CC GRN report');
-  sendFCDispatchVsCCGRN().catch((e) => console.error('[slackReports] FC vs CC report failed:', e.message));
-}, { timezone: 'Asia/Kolkata' });
+// Disabled 2026-10-15 pending new report formats — functions kept below/exported
+// so they can be re-wired once the new formats are ready.
+//
+// // 09:00 IST — Indents Uploaded (date & facility-wise)
+// cron.schedule('0 9 * * *', () => {
+//   console.log('[slackReports] 09:00 IST — sending indents uploaded report');
+//   sendIndentsUploadedReport().catch((e) => console.error('[slackReports] Indents uploaded report failed:', e.message));
+// }, { timezone: 'Asia/Kolkata' });
+//
+// // 15:00 IST — Indent Fulfillment Status
+// cron.schedule('0 15 * * *', () => {
+//   console.log('[slackReports] 15:00 IST — sending indent fulfillment report');
+//   sendIndentFulfillmentReport().catch((e) => console.error('[slackReports] Indent fulfillment report failed:', e.message));
+// }, { timezone: 'Asia/Kolkata' });
+//
+// // 21:00 IST — FC Dispatch vs CC GRN
+// cron.schedule('0 21 * * *', () => {
+//   console.log('[slackReports] 21:00 IST — sending FC dispatch vs CC GRN report');
+//   sendFCDispatchVsCCGRN().catch((e) => console.error('[slackReports] FC vs CC report failed:', e.message));
+// }, { timezone: 'Asia/Kolkata' });
 
 module.exports = {
   sendFCDispatchVsCCGRN,
