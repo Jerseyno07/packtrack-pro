@@ -6,14 +6,17 @@
 //   DATABASE_URL           — Neon connection string (shared with index.js)
 //
 // Cron schedule (Asia/Kolkata / IST) — all Bangalore facilities only (BLR_FACILITIES):
-//   00:00  — auto-trigger consumption run and auto-accept
+//   21:00  — CC consumption run and auto-accept (CC_FACILITIES) — moved earlier 2026-10-15
+//   00:00  — FC consumption run and auto-accept (FC_FACILITIES) — unchanged
 //   09:00  — Indents Uploaded (date & facility-wise)
 //   15:00  — Indent Fulfillment Status (uploaded vs issued/force-completed/pending)
 //   21:00  — FC Dispatch vs CC GRN report (today's dispatches + backlog from earlier dates)
 //   CC Balance vs Audit — sendCCBalanceVsAudit() is ready; cron TBD
 
 // Bangalore FC (9382) + all Bangalore CCs — only these run in the nightly cron.
-const BLR_FACILITIES = ['9382', '3202', '3404', '3949', '9924', '9948', '10013', '10023', '10070', '10147', '10152'];
+const FC_FACILITIES = ['9382'];
+const CC_FACILITIES = ['3202', '3404', '3949', '9924', '9948', '10013', '10023', '10070', '10147', '10152'];
+const BLR_FACILITIES = [...FC_FACILITIES, ...CC_FACILITIES];
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
@@ -564,10 +567,16 @@ async function sendCCBalanceVsAudit() {
 
 // ── Cron jobs (timezone: Asia/Kolkata / IST) ──────────────────────────────────
 
-// 00:00 IST — auto-run and auto-accept consumption (Bangalore facilities only)
+// 21:00 IST — CC consumption run and auto-accept (CC_FACILITIES only)
+cron.schedule('0 21 * * *', () => {
+  console.log('[slackReports] 21:00 IST — starting CC consumption run');
+  runAndAcceptConsumption(CC_FACILITIES).catch((e) => console.error('[slackReports] CC consumption run failed:', e.message));
+}, { timezone: 'Asia/Kolkata' });
+
+// 00:00 IST — FC consumption run and auto-accept (FC_FACILITIES only)
 cron.schedule('0 0 * * *', () => {
-  console.log('[slackReports] 00:00 IST — starting nightly consumption run (Bangalore only)');
-  runAndAcceptConsumption(BLR_FACILITIES).catch((e) => console.error('[slackReports] Nightly run failed:', e.message));
+  console.log('[slackReports] 00:00 IST — starting FC consumption run');
+  runAndAcceptConsumption(FC_FACILITIES).catch((e) => console.error('[slackReports] FC consumption run failed:', e.message));
 }, { timezone: 'Asia/Kolkata' });
 
 // 09:00 IST — Indents Uploaded (date & facility-wise)
