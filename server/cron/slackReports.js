@@ -27,6 +27,10 @@ const cron = require('node-cron');
 const { runConsumption } = require('./consumptionScraper');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// Neon periodically kills idle connections ("terminating connection due to
+// administrator command"); without this handler that error is uncaught and
+// crashes the whole process (seen 2026-10-20, orphaned consumption_runs id 103).
+pool.on('error', (err) => console.error('[slackReports] pool error (connection dropped, pool recovers):', err.message));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -746,6 +750,14 @@ async function sendInventoryVsAvgConsumption() {
   const dateSlug = todayIst.replace(/-/g, '');
   await sendReport(text, csv, `inventory-vs-consumption-${dateSlug}.csv`, `Inventory vs Avg Consumption — ${dateLabel}`);
 }
+
+// On boot, mark any consumption_runs row still stuck in RUNNING as FAILED —
+// it means the process died mid-run (e.g. the pg crash on 2026-10-20) before
+// writing any lines. Marking it FAILED lets runAndAcceptConsumption's cleanup
+// step delete and retry it if a future run ever targets the same run_date.
+pool.query(`UPDATE consumption_runs SET status = 'FAILED' WHERE status = 'RUNNING'`)
+  .then((r) => { if (r.rowCount) console.log(`[slackReports] Marked ${r.rowCount} orphaned RUNNING run(s) as FAILED on boot`); })
+  .catch((e) => console.error('[slackReports] Failed to clean up orphaned runs on boot:', e.message));
 
 // ── Cron jobs (timezone: Asia/Kolkata / IST) ──────────────────────────────────
 

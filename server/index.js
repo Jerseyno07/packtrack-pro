@@ -148,6 +148,10 @@ app.use(cors({ credentials: true, origin: corsOrigin }));
 app.use(express.json({ limit: '2mb' }));
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
+// Neon periodically kills idle connections ("terminating connection due to
+// administrator command"); without this handler that error is uncaught and
+// crashes the whole process (seen 2026-10-20, orphaned consumption_runs id 103).
+pool.on('error', (err) => console.error('[pool] error (connection dropped, pool recovers):', err.message));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 
