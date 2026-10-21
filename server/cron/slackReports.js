@@ -639,7 +639,7 @@ async function sendPmZeroSumForEntry(entryId) {
     const opening = openingMap.get(r.material_id) ?? 0;
     const closing = Number(r.physical_qty);
     const { inward, issuance } = moveMap.get(r.material_id) ?? { inward: 0, issuance: 0 };
-    const lossGain = (closing + inward) - (opening + issuance);
+    const lossGain = (opening + inward) - (closing + issuance);
     return { ...r, opening, inward, issuance, closing, lossGain };
   });
 
