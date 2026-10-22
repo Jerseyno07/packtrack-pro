@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ClipboardList, CheckCircle2, AlertTriangle, RefreshCw, X } from 'lucide-react';
 
-const BASE_URL = 'https://packtrack-pro-production.up.railway.app';
+const BASE_URL = '';
 
 // ── Unit helpers ──────────────────────────────────────────────────────────────
 // Roll materials: user sees/enters in rolls; DB stores in stickers or meters.

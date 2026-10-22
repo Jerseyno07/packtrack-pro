@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
 
-const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
+const BASE_URL = '';
 
 // DICE PO lines whose item_code isn't mapped to a PackTrack material yet —
 // flagged instead of silently rejected. An admin/procurement user maps the
