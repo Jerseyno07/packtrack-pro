@@ -17,7 +17,7 @@ Sentry.init({
 
 // Flip to false to bring all 5 apps back once the Railway incident is resolved
 // and credentials are rotated — see 05 - Change Log.md, October 22 2026.
-const MAINTENANCE_MODE = true;
+const MAINTENANCE_MODE = false;
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
