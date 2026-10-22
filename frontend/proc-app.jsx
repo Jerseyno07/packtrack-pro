@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Package, LogOut, LogIn, RefreshCw, AlertTriangle, X, FileImage, ExternalLink } from 'lucide-react';
 import DicePendingSection from './DicePendingSection.jsx';
 
-const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
+const BASE_URL = '';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
 function makeApi(token) {

@@ -27,7 +27,7 @@ import AuditScreen from './AuditScreen.jsx';
 import TourOverlay from './TourOverlay.jsx';
 import TransferSendScreen from './TransferSendScreen.jsx';
 
-const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
+const BASE_URL = '';
 
 function poDispFactor(po) {
   if (po.meters_per_unit) return Number(po.meters_per_unit);

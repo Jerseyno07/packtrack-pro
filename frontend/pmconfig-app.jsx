@@ -25,7 +25,7 @@ function useInstallPrompt() {
   return { canInstall: !isStandalone, install, showInstructions, setShowInstructions };
 }
 
-const BASE_URL = import.meta.env.DEV ? '' : 'https://packtrack-pro-production.up.railway.app';
+const BASE_URL = '';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
 // IST is UTC+5:30 — mirrors the backend's own IST_OFFSET_MS arithmetic in
