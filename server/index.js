@@ -278,9 +278,12 @@ async function postLedgerEntry(client, { warehouseId, materialId, movementType, 
 // FC destinations are untouched — FC_EXEC still receives manually.
 // Call this inside the same transaction as the issue insert, right after its
 // ISSUE_OUT ledger entry, before COMMIT.
-async function autoReceiveIfCc(client, { issueId, toWarehouseId, materialId, issuedQty, unitCost, issueDate, dispatchedByUserId }) {
+async function autoReceiveIfEligible(client, { issueId, toWarehouseId, materialId, issuedQty, unitCost, issueDate, dispatchedByUserId }) {
   const whRes = await client.query('SELECT warehouse_type FROM warehouses WHERE id=$1', [toWarehouseId]);
-  if (whRes.rows[0]?.warehouse_type !== 'CC') return null;
+  // Auto-receive for CC and FC — FC was added 2026-10-23 after 154 issues to
+  // FC Bengaluru (9382) sat unreceived in DISPATCHED for 14+ days, since FC
+  // has no manual-acknowledgment step in practice either.
+  if (!['CC', 'FC'].includes(whRes.rows[0]?.warehouse_type)) return null;
 
   const receiptRef = genRef('RCV');
   const receiptIns = await client.query(
@@ -1657,7 +1660,7 @@ app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADM
 
     await postLedgerEntry(client, { warehouseId: fromWhId, materialId: line.material_id, movementType: 'ISSUE_OUT', qtyDelta: -d.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: d.issue_date });
     await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, indent_line_id: line.id, qty: d.issued_qty } });
-    const autoReceiptId = await autoReceiveIfCc(client, { issueId, toWarehouseId: line.warehouse_id, materialId: line.material_id, issuedQty: d.issued_qty, unitCost, issueDate: d.issue_date, dispatchedByUserId: req.user.id });
+    const autoReceiptId = await autoReceiveIfEligible(client, { issueId, toWarehouseId: line.warehouse_id, materialId: line.material_id, issuedQty: d.issued_qty, unitCost, issueDate: d.issue_date, dispatchedByUserId: req.user.id });
     await client.query('COMMIT');
     if (autoReceiptId) await checkAndNotifyFlashIfFacilityClear(client, line.warehouse_id);
     res.status(201).json({ issue_id: issueId, issue_ref: issueRef, status: autoReceiptId ? 'RECEIVED' : 'DISPATCHED', unit_cost_snapshot: unitCost });
@@ -1776,7 +1779,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       // 2026-09-15) — do not add one back; force-complete below is the only
       // status the trigger doesn't own.
       await writeAudit(client, { userId: req.user.id, action: 'STOCK_ISSUED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, indent_line_id: line.id, qty: item.issued_qty } });
-      const autoReceiptId = await autoReceiveIfCc(client, { issueId, toWarehouseId: line.warehouse_id, materialId: line.material_id, issuedQty: item.issued_qty, unitCost, issueDate: issue_date, dispatchedByUserId: req.user.id });
+      const autoReceiptId = await autoReceiveIfEligible(client, { issueId, toWarehouseId: line.warehouse_id, materialId: line.material_id, issuedQty: item.issued_qty, unitCost, issueDate: issue_date, dispatchedByUserId: req.user.id });
       if (autoReceiptId) clearedCcWarehouseIds.add(line.warehouse_id);
       issueRefs.push(issueRef);
     }
@@ -1901,7 +1904,7 @@ app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EX
       // carries CC<->FC, FC<->PM, etc. transfers, which must still go through
       // manual receiving.
       if (fromWh.warehouse_type === 'PM_STORE') {
-        const autoReceiptId = await autoReceiveIfCc(client, { issueId, toWarehouseId: to_warehouse_id, materialId: item.material_id, issuedQty: item.issued_qty, unitCost, issueDate: issue_date, dispatchedByUserId: req.user.id });
+        const autoReceiptId = await autoReceiveIfEligible(client, { issueId, toWarehouseId: to_warehouse_id, materialId: item.material_id, issuedQty: item.issued_qty, unitCost, issueDate: issue_date, dispatchedByUserId: req.user.id });
         if (autoReceiptId) autoReceived = true;
       }
       issueRefs.push(issueRef);
