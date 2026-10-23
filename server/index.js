@@ -161,6 +161,7 @@ app.get('/health', (req, res) => res.json({
   consumption_env: {
     CONSUMPTION_DASHBOARD_URL: process.env.CONSUMPTION_DASHBOARD_URL ? 'SET' : 'MISSING',
     CONSUMPTION_DASHBOARD_API_KEY: process.env.CONSUMPTION_DASHBOARD_API_KEY ? 'SET' : 'MISSING',
+    CONSUMPTION_CC_DASHBOARD_API_KEY: process.env.CONSUMPTION_CC_DASHBOARD_API_KEY ? 'SET' : 'MISSING',
     CONSUMPTION_QUERY_ID: process.env.CONSUMPTION_QUERY_ID ? 'SET' : 'MISSING',
     CONSUMPTION_CC_QUERY_ID: process.env.CONSUMPTION_CC_QUERY_ID ? 'SET' : 'MISSING',
   },
@@ -3340,7 +3341,7 @@ app.post('/api/v1/admin/consumption/run-now', authenticate, requireRole('ADMIN')
 }));
 
 app.get('/api/v1/admin/consumption/env-check', authenticate, requireRole('ADMIN'), (req, res) => {
-  const vars = ['CONSUMPTION_DASHBOARD_URL', 'CONSUMPTION_DASHBOARD_API_KEY', 'CONSUMPTION_QUERY_ID', 'CONSUMPTION_CC_QUERY_ID'];
+  const vars = ['CONSUMPTION_DASHBOARD_URL', 'CONSUMPTION_DASHBOARD_API_KEY', 'CONSUMPTION_CC_DASHBOARD_API_KEY', 'CONSUMPTION_QUERY_ID', 'CONSUMPTION_CC_QUERY_ID'];
   const result = {};
   for (const k of vars) result[k] = process.env[k] ? `SET (${process.env[k].slice(0, 8)}…)` : 'MISSING';
   res.json(result);

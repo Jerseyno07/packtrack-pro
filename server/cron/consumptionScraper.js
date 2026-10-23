@@ -2,9 +2,13 @@
 // Schedule: 0 5 * * * (5am daily)
 // Environment vars required:
 //   CONSUMPTION_DASHBOARD_URL      — e.g. https://analytics-new-k8s.ninjacart.in
-//   CONSUMPTION_DASHBOARD_API_KEY  — Redash API key
+//   CONSUMPTION_DASHBOARD_API_KEY  — Redash API key, scoped to the FC query (53716)
+//   CONSUMPTION_CC_DASHBOARD_API_KEY — Redash API key, scoped to the CC query (53767)
 //   CONSUMPTION_QUERY_ID           — FC query ID (53716)
 //   CONSUMPTION_CC_QUERY_ID        — CC query ID (53767)
+// Redash issues one API key per query (not one shared key), so each query
+// needs its own key here — confirmed 2026-10-23 during the Railway breach
+// credential rotation, when the FC/CC keys turned out to differ.
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
@@ -34,9 +38,8 @@ async function fetchRedashCsvRows(url, hdrs) {
 //   FromFacilityId → warehouses.code, fsncode → sku_code, AllocatedQuantity → qty
 //   Parameters: "from date", "to date"
 
-async function executeRedashQuery(qid, params) {
+async function executeRedashQuery(qid, params, apiKey) {
   const base = process.env.CONSUMPTION_DASHBOARD_URL;
-  const apiKey = process.env.CONSUMPTION_DASHBOARD_API_KEY;
   const hdrs = { 'Authorization': `Key ${apiKey}`, 'Content-Type': 'application/json' };
 
   const triggerRes = await fetch(`${base}/api/queries/${qid}/results`, {
@@ -72,8 +75,8 @@ async function scrapePackagedQty(fromDate, toDate) {
   const ccQid = process.env.CONSUMPTION_CC_QUERY_ID;
 
   const [fcRows, ccRows] = await Promise.all([
-    executeRedashQuery(fcQid, { from: fromDate, to: toDate }),
-    executeRedashQuery(ccQid, { 'from date': fromDate, 'to date': toDate }),
+    executeRedashQuery(fcQid, { from: fromDate, to: toDate }, process.env.CONSUMPTION_DASHBOARD_API_KEY),
+    executeRedashQuery(ccQid, { 'from date': fromDate, 'to date': toDate }, process.env.CONSUMPTION_CC_DASHBOARD_API_KEY),
   ]);
   console.log(`[consumption] FC rows: ${fcRows.length}, CC rows: ${ccRows.length}`);
 

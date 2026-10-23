@@ -5,7 +5,7 @@ const { parse: parseCsv } = require('csv-parse');
 const { Readable } = require('stream');
 
 const base   = process.env.CONSUMPTION_DASHBOARD_URL;
-const apiKey = process.env.CONSUMPTION_DASHBOARD_API_KEY;
+const apiKey = process.env.CONSUMPTION_CC_DASHBOARD_API_KEY;
 const ccQid  = process.env.CONSUMPTION_CC_QUERY_ID;
 const hdrs   = { 'Authorization': `Key ${apiKey}`, 'Content-Type': 'application/json' };
 
