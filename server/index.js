@@ -1900,9 +1900,9 @@ app.post('/api/v1/stock-issues/transfer', authenticate, requireRole('PM_STORE_EX
       const issueId = issueIns.rows[0].id;
       await postLedgerEntry(client, { warehouseId: from_warehouse_id, materialId: item.material_id, movementType: 'ISSUE_OUT', qtyDelta: -item.issued_qty, unitCost, refTable: 'stock_issues', refId: issueId, movementDate: issue_date });
       await writeAudit(client, { userId: req.user.id, action: 'STOCK_TRANSFER_DISPATCHED', entityTable: 'stock_issues', entityId: issueId, detail: { issueRef, material_id: item.material_id, qty: item.issued_qty, from_warehouse_id, to_warehouse_id } });
-      // Auto-receive only for PM Store -> CC adhoc transfers — this endpoint also
-      // carries CC<->FC, FC<->PM, etc. transfers, which must still go through
-      // manual receiving.
+      // Auto-receive for PM Store -> CC/FC adhoc transfers (autoReceiveIfEligible
+      // checks destination type) — this endpoint also carries CC<->FC, FC<->PM,
+      // etc. transfers, which must still go through manual receiving.
       if (fromWh.warehouse_type === 'PM_STORE') {
         const autoReceiptId = await autoReceiveIfEligible(client, { issueId, toWarehouseId: to_warehouse_id, materialId: item.material_id, issuedQty: item.issued_qty, unitCost, issueDate: issue_date, dispatchedByUserId: req.user.id });
         if (autoReceiptId) autoReceived = true;
