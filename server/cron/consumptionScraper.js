@@ -12,21 +12,22 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
-const { parse: parseCsv } = require('csv-parse');
-const { Readable } = require('stream');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// Fetch Redash result as a streaming CSV to avoid loading large JSON payloads into memory.
-async function fetchRedashCsvRows(url, hdrs) {
-  const res = await fetch(url, { headers: hdrs });
-  if (!res.ok) throw new Error(`Redash CSV fetch failed: ${res.status} ${url}`);
-  return new Promise((resolve, reject) => {
-    const rows = [];
-    const parser = parseCsv({ columns: true, skip_empty_lines: true, cast: false });
-    parser.on('readable', () => { let r; while ((r = parser.read()) !== null) rows.push(r); });
-    parser.on('error', reject);
-    parser.on('end', () => resolve(rows));
-    Readable.fromWeb(res.body).pipe(parser);
+// Redash per-query API keys (one per query, not a shared user key — see the
+// env var comment below) can't reach /api/jobs/:id or /api/query_results/:id.csv;
+// both 404 under those keys even though they belong to the same query (confirmed
+// 2026-10-26, broke the 23-Oct key rotation's daily runs). The only endpoint a
+// query-scoped key can use is this same trigger endpoint, which also returns the
+// finished result inline as JSON once ready — so polling means re-POSTing it
+// with a generous max_age until it stops returning a job and starts returning
+// query_result.data directly.
+function rowsFromQueryResult(queryResult) {
+  const { columns, rows } = queryResult.data;
+  return rows.map((row) => {
+    const out = {};
+    for (const col of columns) out[col.name] = row[col.name] == null ? '' : String(row[col.name]);
+    return out;
   });
 }
 
@@ -42,30 +43,28 @@ async function executeRedashQuery(qid, params, apiKey) {
   const base = process.env.CONSUMPTION_DASHBOARD_URL;
   const hdrs = { 'Authorization': `Key ${apiKey}`, 'Content-Type': 'application/json' };
 
-  const triggerRes = await fetch(`${base}/api/queries/${qid}/results`, {
-    method: 'POST',
-    headers: hdrs,
-    body: JSON.stringify({ parameters: params, max_age: 0 }),
-  });
-  if (!triggerRes.ok) throw new Error(`Redash trigger error ${triggerRes.status} for query ${qid}`);
-  const triggerData = await triggerRes.json();
+  const trigger = async (maxAge) => {
+    const res = await fetch(`${base}/api/queries/${qid}/results`, {
+      method: 'POST',
+      headers: hdrs,
+      body: JSON.stringify({ parameters: params, max_age: maxAge }),
+    });
+    if (!res.ok) throw new Error(`Redash trigger error ${res.status} for query ${qid}`);
+    return res.json();
+  };
 
-  // Immediate cached result — fetch as CSV to avoid large JSON in memory
-  if (triggerData.query_result) {
-    return fetchRedashCsvRows(`${base}/api/query_results/${triggerData.query_result.id}.csv`, hdrs);
-  }
-
-  const jobId = triggerData.job?.id;
-  if (!jobId) throw new Error(`Redash returned neither job nor query_result for query ${qid}`);
+  let data = await trigger(0); // max_age 0 forces a fresh run, never a stale cached result
+  if (data.query_result) return rowsFromQueryResult(data.query_result);
+  if (!data.job?.id) throw new Error(`Redash returned neither job nor query_result for query ${qid}`);
 
   for (let i = 0; i < 100; i++) {
     await new Promise((r) => setTimeout(r, 3000));
-    const jobRes = await fetch(`${base}/api/jobs/${jobId}`, { headers: hdrs });
-    const job = (await jobRes.json()).job;
-    if (job.status === 3) {
-      return fetchRedashCsvRows(`${base}/api/query_results/${job.query_result_id}.csv`, hdrs);
-    }
-    if (job.status === 4) throw new Error(`Redash job failed for query ${qid}: ${job.error}`);
+    // Re-trigger (not a separate jobs/:id poll — see comment above) with a
+    // max_age generous enough to pick up the job we just started once it
+    // finishes, rather than queuing a new run each time.
+    data = await trigger(3600);
+    if (data.query_result) return rowsFromQueryResult(data.query_result);
+    if (data.job?.status === 4) throw new Error(`Redash job failed for query ${qid}: ${data.job.error}`);
   }
   throw new Error(`Redash query ${qid} timed out after 5 minutes`);
 }
