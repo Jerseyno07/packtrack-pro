@@ -190,9 +190,16 @@ async function acceptRun(runId) {
 async function runAndAcceptConsumption(facilityCodes = null) {
   const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
   const runDate = nowIst.toISOString().slice(0, 10);
-  const yest = new Date(nowIst);
-  yest.setUTCDate(yest.getUTCDate() - 1);
-  const scrapedDate = yest.toISOString().slice(0, 10);
+  // CC: same day as the run (no lag, since 2026-10-28). FC (and any other call): previous day.
+  const isCcOnly = facilityCodes?.length > 0 && facilityCodes.every((c) => CC_FACILITIES.includes(c));
+  let scrapedDate;
+  if (isCcOnly) {
+    scrapedDate = runDate;
+  } else {
+    const yest = new Date(nowIst);
+    yest.setUTCDate(yest.getUTCDate() - 1);
+    scrapedDate = yest.toISOString().slice(0, 10);
+  }
   const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
 
   // If a non-failed run already exists for today (matching same facility scope), accept or skip.
@@ -233,7 +240,7 @@ async function runAndAcceptConsumption(facilityCodes = null) {
   );
 
   console.log(`[slackReports] Nightly consumption run ${runId} started for ${scrapedDate} (facilities: ${facilityFilter ?? 'all'})`);
-  await runConsumption({ runId, facilityCodes });
+  await runConsumption({ runId, facilityCodes, scrapedDate });
   const committed = await acceptRun(runId);
   console.log(`[slackReports] Run ${runId} accepted — ${committed} lines committed`);
   // Slack report disabled 2026-10-15 pending new report formats — consumption

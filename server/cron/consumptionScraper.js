@@ -116,29 +116,43 @@ async function scrapePackagedQty(fromDate, toDate) {
 // options.facilityCodes — array of warehouse codes; if set, only process rows for those facilities
 // options.runId: if the caller (HTTP endpoint) already pre-created the RUNNING row, pass it here
 //   to skip the DELETE+INSERT and jump straight into the scraper body.
+// CC facilities target the same day's deliveries (no lag) since 2026-10-28 — FC keeps
+// the previous-day lag. See ~/Documents/ninjacart/PackTrack Pro/05 - Change Log.md.
+const CC_FACILITY_CODES = ['3202', '3404', '3949', '9924', '9948', '10013', '10023', '10070', '10147', '10152'];
+const isCcOnly = (facilityCodes) => !!facilityCodes?.length && facilityCodes.every((c) => CC_FACILITY_CODES.includes(c));
+
 async function runConsumption(options = {}) {
   const { facilityCodes = null, runId: preRunId = null, scrapedDate = null } = options;
   const facilityFilter = facilityCodes ? [...facilityCodes].sort().join(',') : null;
 
   // scrapedDate lets a caller backfill a specific past day (e.g. retrying a run
-  // that failed before a bug fix landed) instead of always targeting "yesterday".
+  // that failed before a bug fix landed) instead of always targeting "yesterday"/"today".
   let runDate, scraped_from, scraped_to;
   if (scrapedDate) {
     scraped_from = scraped_to = scrapedDate;
-    const next = new Date(`${scrapedDate}T00:00:00Z`);
-    next.setUTCDate(next.getUTCDate() + 1);
-    runDate = next.toISOString().slice(0, 10);
+    if (isCcOnly(facilityCodes)) {
+      runDate = scrapedDate; // CC: run date == delivery date, no lag
+    } else {
+      const next = new Date(`${scrapedDate}T00:00:00Z`);
+      next.setUTCDate(next.getUTCDate() + 1);
+      runDate = next.toISOString().slice(0, 10);
+    }
   } else {
     // Compute dates in IST (UTC+5:30) — cron fires at midnight IST which is 18:30 UTC the
     // previous calendar day, so new Date() would give the wrong date without this offset.
     const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
     runDate = nowIst.toISOString().slice(0, 10);
 
-    // Always scrape only the previous day — one run per day covers yesterday's data
-    const yest = new Date(nowIst);
-    yest.setUTCDate(yest.getUTCDate() - 1);
-    scraped_from = yest.toISOString().slice(0, 10);
-    scraped_to   = yest.toISOString().slice(0, 10);
+    if (isCcOnly(facilityCodes)) {
+      // CC: same day as the run itself — accepts partial-day data for the 9pm-midnight window.
+      scraped_from = scraped_to = runDate;
+    } else {
+      // FC (and any mixed/all-facility call): previous day — one run per day covers yesterday's data.
+      const yest = new Date(nowIst);
+      yest.setUTCDate(yest.getUTCDate() - 1);
+      scraped_from = yest.toISOString().slice(0, 10);
+      scraped_to   = yest.toISOString().slice(0, 10);
+    }
   }
 
   let runId;
