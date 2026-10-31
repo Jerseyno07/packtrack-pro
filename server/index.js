@@ -813,11 +813,14 @@ app.get('/api/v1/indents/uploaded-facilities', authenticate, requireRole('CC_EXE
 
 app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STORE_EXEC', 'ADMIN'), asyncHandler(async (req, res) => {
   const params = [];
-  // PM_STORE_EXEC only ever sees the most recently uploaded indent batch —
+  // PM_STORE_EXEC sees every pending line indented for today (IST), regardless of which
+  // batch/upload it came from — so multiple indents placed for the same date all show up.
   // ADMIN sees everything pending, optionally narrowed by ?date=YYYY-MM-DD.
   let extraWhere = '';
   if (req.user.role !== 'ADMIN') {
-    extraWhere = `AND il.batch_id = (SELECT id FROM indent_batches ORDER BY id DESC LIMIT 1)`;
+    const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    params.push(nowIst.toISOString().slice(0, 10));
+    extraWhere = `AND il.indent_date = $${params.length}`;
   } else if (req.query.date) {
     params.push(req.query.date);
     extraWhere = `AND il.indent_date = $${params.length}`;
