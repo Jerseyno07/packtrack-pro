@@ -1657,7 +1657,7 @@ export default function PMStoreOps() {
       <div className="px-4 pt-3 pb-8">
         {tab === 'grn' && <GRNScreen api={client} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'issue' && <IssueScreen api={client} isAdmin={user?.role === 'ADMIN'} />}
-        {tab === 'transfer' && <TransferSendScreen api={client} sourceWarehouseId={user?.warehouse_ids?.[0]} />}
+        {tab === 'transfer' && <TransferSendScreen api={client} sourceWarehouseId={user?.warehouse_ids?.[0]} lockDateToToday />}
         {tab === 'stock' && <StoreStockView token={token} warehouseId={user?.warehouse_ids?.[0]} />}
         {tab === 'audit' && <AuditScreen token={token} warehouseId={user?.warehouse_ids?.[0]} />}
       </div>

@@ -18,7 +18,7 @@ function toBase(l, disp) {
   return n;
 }
 
-export default function TransferSendScreen({ api, sourceWarehouseId, sourceWarehouseName }) {
+export default function TransferSendScreen({ api, sourceWarehouseId, sourceWarehouseName, lockDateToToday }) {
   const todayIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const [facilities, setFacilities] = useState([]);
   const [materials, setMaterials] = useState([]);
@@ -245,8 +245,12 @@ export default function TransferSendScreen({ api, sourceWarehouseId, sourceWareh
       <div className="flex gap-2">
         <div className="flex-1">
           <label className="block text-xs font-medium text-slate-500 mb-1">Transfer Date</label>
-          <input type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)}
-            className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+          {lockDateToToday ? (
+            <div className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm bg-slate-50 text-slate-500">{issueDate}</div>
+          ) : (
+            <input type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+          )}
         </div>
         <div className="flex-1">
           <label className="block text-xs font-medium text-slate-500 mb-1">Vehicle No <span className="text-slate-300">(optional)</span></label>
