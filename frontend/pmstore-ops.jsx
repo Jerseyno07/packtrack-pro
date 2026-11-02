@@ -1125,8 +1125,8 @@ function IssueScreen({ api, isAdmin }) {
   });
   const hasOverIndent = summaryItems.some((i) => i.actualQty > toDisp(i, i.pending_qty));
   const hasAnyForceComplete = forceCompleteIds.size > 0;
-  const needsDispatchRemark = hasStockError || hasOverIndent || hasAnyForceComplete;
-  const canDispatch = hasAnyQty && (!needsDispatchRemark || dispatchRemark.trim()) && !submitting;
+  const needsDispatchRemark = hasAnyForceComplete;
+  const canDispatch = hasAnyQty && !hasStockError && !hasOverIndent && (!needsDispatchRemark || dispatchRemark.trim()) && !submitting;
 
   return (
     <div className="space-y-4 pb-32">
@@ -1184,8 +1184,8 @@ function IssueScreen({ api, isAdmin }) {
                 <label className="text-xs font-medium text-slate-500 mb-1 block">Dispatch Qty ({unit})</label>
                 <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(l.id, e.target.value)}
                   className={`w-full px-3 py-3 border rounded-lg text-base focus:outline-none focus:ring-2 ${overStock ? 'border-red-300 focus:ring-red-400 bg-red-50' : overIndent ? 'border-amber-300 focus:ring-amber-400 bg-amber-50' : 'border-slate-300 focus:ring-blue-500'}`} />
-                {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} {unit} available) — add a remark in the dispatch summary</p>}
-                {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">Exceeds indent qty — add a remark in the dispatch summary</p>}
+                {overStock && <p className="text-xs text-red-600 mt-1">Exceeds PM Store stock ({pmStock} {unit} available) — reduce qty to dispatch</p>}
+                {!overStock && overIndent && <p className="text-xs text-amber-600 mt-1">Exceeds indent qty ({pending} {unit} requested) — reduce qty to dispatch</p>}
               </div>
 
               <label className="flex items-start gap-2 pt-2 border-t border-slate-100 cursor-pointer">
@@ -1208,8 +1208,9 @@ function IssueScreen({ api, isAdmin }) {
       {/* Sticky dispatch bar */}
       <div className="fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 p-4">
         <div className="max-w-lg mx-auto">
-          {needsDispatchRemark && <p className="text-xs text-amber-600 text-center mb-2">{hasAnyForceComplete ? 'Closing an indent — add a remark in the summary to continue.' : 'Qty mismatch detected — add a remark in the summary to continue.'}</p>}
-          <button onClick={() => setShowSummary(true)} disabled={!hasAnyQty}
+          {(hasStockError || hasOverIndent) && <p className="text-xs text-red-600 text-center mb-2">Fix qty exceeding {hasStockError ? 'PM Store stock' : 'indent qty'} before dispatching.</p>}
+          {!hasStockError && !hasOverIndent && needsDispatchRemark && <p className="text-xs text-amber-600 text-center mb-2">Closing an indent — add a remark in the summary to continue.</p>}
+          <button onClick={() => setShowSummary(true)} disabled={!hasAnyQty || hasStockError || hasOverIndent}
             className="w-full py-4 bg-blue-600 text-white rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:bg-blue-700">
             <Truck size={18} /> Review & Dispatch ({summaryItems.length} item{summaryItems.length !== 1 ? 's' : ''})
           </button>

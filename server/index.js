@@ -1728,6 +1728,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       if (!line) throw new ApiError(404, 'INDENT_LINE_NOT_FOUND', `Indent line ${item.indent_line_id} not found`);
       if (['CANCELLED', 'FORCE_COMPLETED'].includes(line.status)) throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is ${line.status}`);
       const remaining = Number(line.requested_qty) - Number(line.issued_qty);
+      if (item.issued_qty > remaining) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${item.issued_qty} exceeds remaining indent qty ${remaining} for ${line.indent_ref}`, { remaining, indent_line_id: line.id });
       materialTotals.set(line.material_id, (materialTotals.get(line.material_id) || 0) + item.issued_qty);
       lineDataList.push({ item, line, remaining });
     }
