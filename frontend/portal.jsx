@@ -1008,6 +1008,9 @@ function AdminPanel({ token, tabOverride }) {
     if (inviteForm.role === 'PM_STORE_EXEC' && inviteForm.warehouse_ids.length === 0) {
       setInviteError('Select at least one PM Store facility.'); return;
     }
+    if (['CC_EXEC', 'FC_EXEC'].includes(inviteForm.role) && inviteForm.warehouse_ids.length === 0) {
+      setInviteError('Select at least one facility.'); return;
+    }
     setInviteSubmitting(true);
     try {
       const res = await fetch(`${BASE_URL}/api/v1/users`, {
@@ -1015,7 +1018,7 @@ function AdminPanel({ token, tabOverride }) {
         body: JSON.stringify({
           email: inviteForm.email.trim(),
           role: inviteForm.role,
-          warehouse_ids: inviteForm.role === 'PM_STORE_EXEC' ? inviteForm.warehouse_ids : [],
+          warehouse_ids: ['PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC'].includes(inviteForm.role) ? inviteForm.warehouse_ids : [],
           auth_provider: 'GOOGLE',
         }),
       });
@@ -1036,6 +1039,9 @@ function AdminPanel({ token, tabOverride }) {
     setEditUserError('');
     if (editUserModal.role === 'PM_STORE_EXEC' && editUserModal.warehouse_ids.length === 0) {
       setEditUserError('Select at least one PM Store facility.'); return;
+    }
+    if (['CC_EXEC', 'FC_EXEC'].includes(editUserModal.role) && editUserModal.warehouse_ids.length === 0) {
+      setEditUserError('Select at least one facility.'); return;
     }
     setEditUserSubmitting(true);
     try {
@@ -1149,7 +1155,7 @@ function AdminPanel({ token, tabOverride }) {
         .catch(() => {});
     }
   }, [tab]);
-  useEffect(() => { if (tab === 'users') { fetchUsers(); fetchPmStoreWarehouses(); } }, [tab, fetchUsers, fetchPmStoreWarehouses]);
+  useEffect(() => { if (tab === 'users') { fetchUsers(); fetchPmStoreWarehouses(); fetchFacilityWarehouses(); } }, [tab, fetchUsers, fetchPmStoreWarehouses]);
 
   async function submitReverse() {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
@@ -2277,6 +2283,9 @@ function AdminPanel({ token, tabOverride }) {
                   <select value={inviteForm.role} onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value, warehouse_ids: [] }))}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                     <option value="PM_STORE_EXEC">PM Store Exec</option>
+                    <option value="CC_EXEC">CC Exec</option>
+                    <option value="FC_EXEC">FC Exec</option>
+                    <option value="FAC_INDENT">Facility Indent Only</option>
                     <option value="ADMIN">Admin</option>
                     <option value="PROCUREMENT">Procurement</option>
                     <option value="PM_CONFIG">PM Config</option>
@@ -2302,6 +2311,28 @@ function AdminPanel({ token, tabOverride }) {
                       );
                     })}
                     {pmStoreWarehouses.length === 0 && <span className="text-xs text-slate-400">No PM Store facilities found.</span>}
+                  </div>
+                </div>
+              )}
+              {['CC_EXEC', 'FC_EXEC'].includes(inviteForm.role) && (
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">Facility <span className="text-red-500">*</span></label>
+                  <div className="flex flex-wrap gap-2">
+                    {facilityWarehouses.filter((w) => w.warehouse_type === (inviteForm.role === 'CC_EXEC' ? 'CC' : 'FC')).map((w) => {
+                      const checked = inviteForm.warehouse_ids.includes(Number(w.id));
+                      return (
+                        <button key={w.id} type="button"
+                          onClick={() => setInviteForm((p) => ({
+                            ...p,
+                            warehouse_ids: checked ? p.warehouse_ids.filter((id) => id !== Number(w.id)) : [...p.warehouse_ids, Number(w.id)],
+                          }))}
+                          className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium ${checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-600'}`}
+                        >
+                          {w.name}
+                        </button>
+                      );
+                    })}
+                    {facilityWarehouses.filter((w) => w.warehouse_type === (inviteForm.role === 'CC_EXEC' ? 'CC' : 'FC')).length === 0 && <span className="text-xs text-slate-400">No {inviteForm.role === 'CC_EXEC' ? 'CC' : 'FC'} facilities found.</span>}
                   </div>
                 </div>
               )}
@@ -2369,7 +2400,7 @@ function AdminPanel({ token, tabOverride }) {
           <div className="space-y-3">
             <div>
               <h4 className="font-semibold text-slate-800 text-sm">Password Accounts</h4>
-              <p className="text-xs text-slate-500 mt-0.5">CC/FC facility accounts and the local test admin account. Not moving to Google sign-in this phase — reset passwords here.</p>
+              <p className="text-xs text-slate-500 mt-0.5">Legacy CC/FC facility accounts and the local test admin account, created before Google sign-in supported these roles. Reset passwords here.</p>
             </div>
             {usersLoading ? (
               <div className="py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
@@ -2426,6 +2457,9 @@ function AdminPanel({ token, tabOverride }) {
               <select value={editUserModal.role} onChange={(e) => setEditUserModal((p) => ({ ...p, role: e.target.value, warehouse_ids: [] }))}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="PM_STORE_EXEC">PM Store Exec</option>
+                <option value="CC_EXEC">CC Exec</option>
+                <option value="FC_EXEC">FC Exec</option>
+                <option value="FAC_INDENT">Facility Indent Only</option>
                 <option value="ADMIN">Admin</option>
                 <option value="PROCUREMENT">Procurement</option>
                 <option value="PM_CONFIG">PM Config</option>
@@ -2442,6 +2476,27 @@ function AdminPanel({ token, tabOverride }) {
                         onClick={() => setEditUserModal((p) => ({
                           ...p,
                           warehouse_ids: checked ? p.warehouse_ids.filter((id) => id !== w.id) : [...p.warehouse_ids, w.id],
+                        }))}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium ${checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-600'}`}
+                      >
+                        {w.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {['CC_EXEC', 'FC_EXEC'].includes(editUserModal.role) && (
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Facility</label>
+                <div className="flex flex-wrap gap-2">
+                  {facilityWarehouses.filter((w) => w.warehouse_type === (editUserModal.role === 'CC_EXEC' ? 'CC' : 'FC')).map((w) => {
+                    const checked = editUserModal.warehouse_ids.includes(Number(w.id));
+                    return (
+                      <button key={w.id} type="button"
+                        onClick={() => setEditUserModal((p) => ({
+                          ...p,
+                          warehouse_ids: checked ? p.warehouse_ids.filter((id) => id !== Number(w.id)) : [...p.warehouse_ids, Number(w.id)],
                         }))}
                         className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium ${checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-600'}`}
                       >
@@ -2923,7 +2978,7 @@ export default function App() {
             { target: 'run-now', title: 'Run Consumption Scraper', body: 'Triggers the daily scraper immediately without waiting for the 5am schedule. Use after uploading a new SKU master or if yesterday\'s run failed.', onEnter: () => setAdminTabForTour('consumption') },
             { target: 'msl-filter', title: 'Min Stock Levels — Filter', body: 'Narrows the threshold grid to PM Store, FC, or CC facilities so you can focus edits on one type at a time.', onEnter: () => setAdminTabForTour('msl') },
             { target: null, title: 'Min Stock Levels — Save', body: 'Edit any threshold cell inline — it highlights amber. A Save button appears top-right once edits exist. Hit it to commit all changes at once.' },
-            { target: 'users-table', title: 'User Accounts', body: 'Two sections: Invite User adds an email + role for Admin/PM Store Exec/Procurement — that person signs in with their Ninjacart Google account, no password involved. Password Accounts (further down) covers CC/FC facility logins and the local test admin account — Reset Password there still works exactly as before. Every invite, role change, and password reset is logged in the audit trail.', onEnter: () => setAdminTabForTour('users') },
+            { target: 'users-table', title: 'User Accounts', body: 'Two sections: Invite User adds an email + role (Admin/PM Store Exec/CC Exec/FC Exec/Facility Indent Only/Procurement/PM Config) — that person signs in with their Ninjacart Google account, no password involved; CC/FC/Facility Indent Only roles need a facility picked too. Password Accounts (further down) covers legacy CC/FC facility logins and the local test admin account — Reset Password there still works exactly as before. Every invite, role change, and password reset is logged in the audit trail.', onEnter: () => setAdminTabForTour('users') },
             { target: 'tour-btn-portal', title: "You're all set!", body: 'Hit this ? button at the bottom-right any time to replay the tour.' },
           ]}
         />

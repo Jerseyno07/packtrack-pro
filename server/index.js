@@ -359,7 +359,7 @@ app.post('/api/v1/auth/login', asyncHandler(async (req, res) => {
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_WORKSPACE_DOMAIN = process.env.GOOGLE_WORKSPACE_DOMAIN;
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
-const GOOGLE_AUTH_ROLES = ['ADMIN', 'PM_STORE_EXEC', 'PROCUREMENT', 'PM_CONFIG']; // phase-1 scope only
+const GOOGLE_AUTH_ROLES = ['ADMIN', 'PM_STORE_EXEC', 'PROCUREMENT', 'PM_CONFIG', 'CC_EXEC', 'FC_EXEC', 'FAC_INDENT']; // phase-1 scope only
 
 app.post('/api/v1/auth/google', asyncHandler(async (req, res) => {
   if (!googleClient) throw new ApiError(503, 'GOOGLE_AUTH_NOT_CONFIGURED', 'Google sign-in is not configured on this server');
