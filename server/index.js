@@ -466,7 +466,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
     name: z.string().min(1).optional(),
     email: z.string().email(),
     password: z.string().min(8).optional(),
-    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG']),
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG', 'FAC_INDENT']),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional().default([]),
     auth_provider: z.enum(['LOCAL', 'GOOGLE']).optional().default('LOCAL'),
   });
@@ -507,7 +507,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
 
 app.patch('/api/v1/admin/users/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const schema = z.object({
-    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG']).optional(),
+    role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG', 'FAC_INDENT']).optional(),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional(),
     is_active: z.boolean().optional(),
   });
@@ -664,7 +664,7 @@ const indentRowSchema = z.object({
   remarks: z.string().optional(),
 });
 
-app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), upload.single('file'),
+app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'FAC_INDENT', 'ADMIN'), upload.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw new ApiError(400, 'FILE_REQUIRED', 'No file uploaded under field "file"');
     const indentDate = req.body.indent_date; // the date this whole batch is "for" — required per request
@@ -783,7 +783,7 @@ app.post('/api/v1/indents/upload', authenticate, requireRole('CC_EXEC', 'FC_EXEC
   })
 );
 
-app.get('/api/v1/indents/batches/:ref/download', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
+app.get('/api/v1/indents/batches/:ref/download', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'FAC_INDENT', 'ADMIN'), asyncHandler(async (req, res) => {
   const { rows } = await pool.query('SELECT source_file_key, source_filename FROM indent_batches WHERE batch_ref = $1', [req.params.ref]);
   if (!rows.length) throw new ApiError(404, 'NOT_FOUND', 'Batch not found');
   const { source_file_key, source_filename } = rows[0];
@@ -792,7 +792,7 @@ app.get('/api/v1/indents/batches/:ref/download', authenticate, requireRole('CC_E
   res.json({ url });
 }));
 
-app.get('/api/v1/indents/uploaded-facilities', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'), asyncHandler(async (req, res) => {
+app.get('/api/v1/indents/uploaded-facilities', authenticate, requireRole('CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'FAC_INDENT', 'ADMIN'), asyncHandler(async (req, res) => {
   const { date } = req.query;
   if (!date) throw new ApiError(400, 'DATE_REQUIRED', 'date query param (YYYY-MM-DD) is required');
   const rows = await pool.query(

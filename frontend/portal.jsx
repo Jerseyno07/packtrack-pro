@@ -2840,7 +2840,7 @@ export default function App() {
   if (!user) return (
     <LoginScreen onLogin={(t, u) => {
       setToken(t); setUser(u);
-      setSection(['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP'].includes(u.role) ? 'indent' : u.role === 'ADMIN' ? 'admin' : 'dashboard');
+      setSection(['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'FAC_INDENT'].includes(u.role) ? 'indent' : u.role === 'ADMIN' ? 'admin' : 'dashboard');
       let tourDone = false; try { tourDone = !!localStorage.getItem(`packtrack_tour_done_${u.role}`); } catch (_) {}
       if (!tourDone) setShowTour(true);
     }} />
@@ -2848,7 +2848,7 @@ export default function App() {
 
   const NAV = [
     { id: 'dashboard', label: 'PM Store Dashboard', icon: TrendingUp, roles: ['PM_STORE_EXEC', 'ADMIN'] },
-    { id: 'indent', label: 'Upload Indent', icon: Box, roles: ['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'ADMIN'] },
+    { id: 'indent', label: 'Upload Indent', icon: Box, roles: ['CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'FAC_INDENT', 'ADMIN'] },
     { id: 'po', label: 'Upload Purchase Orders', icon: Truck, roles: ['PM_STORE_EXEC', 'ADMIN'] },
     { id: 'ledger', label: 'Stock Ledger', icon: BookOpen, roles: ['PM_STORE_EXEC', 'ADMIN'] },
     { id: 'downloads', label: 'Downloads', icon: Download, roles: ['PM_STORE_EXEC', 'ADMIN'] },
