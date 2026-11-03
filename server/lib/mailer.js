@@ -2,14 +2,14 @@
 // index.js: never blocks or fails the caller's request on the email call, always
 // records the outcome via the audit_log writer passed in.
 //
-// Sends via Brevo's transactional email HTTPS API (plain fetch, no SDK, matching
-// the rest of this codebase's outbound-integration style). Deliberately NOT
-// SMTP: Railway blocks outbound SMTP entirely (confirmed live — both IPv4 and
-// IPv6 connections to smtp.gmail.com timed out), so this must be a REST call.
-// BREVO_SENDER_EMAIL is a single verified sender (Brevo's "Single Sender"
-// verification — a code emailed to that address, no DNS/domain ownership
-// needed), not a verified domain, so deliverability is weaker than a fully
-// DKIM-authenticated domain but functional for this volume.
+// Sends via Ninjacart's internal workflow-engine ("gmail-notification-sender"
+// workflow), which relays through Google Workspace server-side — real
+// authenticated Gmail sending, so no DNS/DKIM/DMARC setup needed (unlike the
+// prior Brevo integration, which bounced on every @ninjacart.com recipient).
+// NC_WORKFLOW_AUTH is a Basic-auth credential tied to a specific employee's
+// workflow-engine identity, not a dedicated PackTrack service account —
+// ask the workflow team for a dedicated credential if this needs to be
+// decoupled from that person's account later.
 
 const ROLE_LABEL = {
   ADMIN: 'Admin',
@@ -52,45 +52,46 @@ function inviteEmailHtml({ appUrl, roleLabel }) {
 </table>`;
 }
 
-function inviteEmailText({ appUrl, roleLabel }) {
-  return [
-    'Hi,',
-    '',
-    `You've been given ${roleLabel} access to PackTrack Pro. Sign in with your Ninjacart Google account — no password to set or remember.`,
-    '',
-    `Sign in: ${appUrl}`,
-    '',
-    "You're receiving this because an admin added you to PackTrack Pro.",
-  ].join('\n');
-}
+const WORKFLOW_REALM = '669df6c5-83de-4ddf-8029-fbaab0c19fb7';
 
 async function sendInviteEmail({ toEmail, role, invitedUserId, writeAudit, pool }) {
-  if (!process.env.BREVO_API_KEY || !process.env.BREVO_SENDER_EMAIL) return; // unset — integration disabled, matches FLASH_OUTBOUND_URL convention
+  if (!process.env.NC_WORKFLOW_AUTH || !process.env.NC_WORKFLOW_USER_ID || !process.env.NC_WORKFLOW_TOOL_ID) return; // unset — integration disabled, matches FLASH_OUTBOUND_URL convention
 
   const appUrl = process.env.FRONTEND_ORIGIN || '';
   const roleLabel = ROLE_LABEL[role] || role;
+  const userId = process.env.NC_WORKFLOW_USER_ID;
 
-  let messageId = null;
+  let requestId = null;
   let errorMessage = null;
   try {
-    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    requestId = require('crypto').randomUUID();
+    const res = await fetch(`https://api.ninjacart.in/workflow-engine/realm/${WORKFLOW_REALM}/user/${userId}/v1/execution/request`, {
       method: 'POST',
       headers: {
-        'api-key': process.env.BREVO_API_KEY,
+        'authorization': `Basic ${process.env.NC_WORKFLOW_AUTH}`,
+        'x-nc-system-user-id': userId,
+        'x-nc-tool-id': process.env.NC_WORKFLOW_TOOL_ID,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
       body: JSON.stringify({
-        sender: { email: process.env.BREVO_SENDER_EMAIL, name: 'PackTrack Pro' },
-        to: [{ email: toEmail }],
-        subject: "You've been added to PackTrack Pro",
-        htmlContent: inviteEmailHtml({ appUrl, roleLabel }),
-        textContent: inviteEmailText({ appUrl, roleLabel }),
+        userId: Number(userId),
+        requestId,
+        workflowName: 'gmail-notification-sender',
+        dataMap: {
+          input: {
+            to: toEmail,
+            subject: "You've been added to PackTrack Pro",
+            body: inviteEmailHtml({ appUrl, roleLabel }),
+            attachments: [],
+            cc: [],
+            bcc: [],
+          },
+        },
       }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) errorMessage = data?.message || `HTTP ${res.status}`;
-    else messageId = data?.messageId || null;
   } catch (e) {
     errorMessage = e.message;
   }
@@ -100,7 +101,7 @@ async function sendInviteEmail({ toEmail, role, invitedUserId, writeAudit, pool 
     action: errorMessage ? 'INVITE_EMAIL_FAILED' : 'INVITE_EMAIL_SENT',
     entityTable: 'users',
     entityId: invitedUserId,
-    detail: { to: toEmail, role, message_id: messageId, error: errorMessage },
+    detail: { to: toEmail, role, request_id: requestId, error: errorMessage },
   }).catch(() => {});
 }
 
