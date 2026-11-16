@@ -3,8 +3,10 @@
 
 const { PM_STORE_CODE } = require('../config/pmStoreFacilities');
 const { unitsPerUom, costingUom, conversionBasis, unitCostPerUom, fmtDbDate } = require('./materialCost');
+const { fmtDMon, fmtNum, fmtMoney, table, wrapEmail } = require('./emailTemplate');
 
 const WINDOW_DAYS = 7;
+const STATUS_ORDER = ['Stock-out', 'Critical (≤3d)', 'Low (≤7d)', 'No movement', 'OK'];
 
 function statusFor(avgDailyIssue, inventoryQty, doi) {
   if (avgDailyIssue === 0) return 'No movement';
@@ -79,13 +81,17 @@ async function getData(pool, { asOfDate }) {
     return { asOfDate, audit: null, windowStart, windowEnd, rows: [], summary: [] };
   }
 
+  // INNER JOIN, not LEFT — only materials actually counted in this specific
+  // audit (confirmed against the sample: its own "SKUs listed vs SKUs with
+  // audit stock or 7-day issues" check row ties the row count to the audit's
+  // own line count, not the full, larger materials master).
   const matRes = await pool.query(
     `SELECT m.code, m.name, m.category, m.unit, m.master_price,
             m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
-            COALESCE(ael.physical_qty, 0) AS physical_qty
-       FROM materials m
-       LEFT JOIN audit_entry_lines ael ON ael.material_id = m.id AND ael.audit_entry_id = $1
-      WHERE m.is_active
+            ael.physical_qty AS physical_qty
+       FROM audit_entry_lines ael
+       JOIN materials m ON m.id = ael.material_id
+      WHERE ael.audit_entry_id = $1 AND m.is_active
       ORDER BY m.code`,
     [audit.id]
   );
@@ -129,8 +135,11 @@ async function getData(pool, { asOfDate }) {
     cur.value += r.inventoryValue;
     summaryMap.set(r.status, cur);
   }
+  // Fixed status order (Stock-out, Critical, Low, No movement, OK) matching
+  // the sample's Summary table, including zero-count statuses.
+  const summary = STATUS_ORDER.map((status) => summaryMap.get(status) || { status, count: 0, value: 0 });
 
-  return { asOfDate, audit, windowStart, windowEnd, days, rows, summary: [...summaryMap.values()] };
+  return { asOfDate, audit, windowStart, windowEnd, days, rows, summary };
 }
 
 function buildWorkbook(ExcelJS, data) {
@@ -177,17 +186,44 @@ function buildWorkbook(ExcelJS, data) {
 function round2(n) { return Math.round(n * 100) / 100; }
 function round3(n) { return Math.round(n * 1000) / 1000; }
 
+// Matches "BLR QuickCom Central PM Store Holding Inventory Report" sample.
 function buildSummaryHtml(data) {
-  const rows = data.summary
-    .map((s) => `<tr><td>${s.status}</td><td style="text-align:right">${s.count}</td><td style="text-align:right">${s.value.toFixed(2)}</td></tr>`)
-    .join('');
-  return `
-  <h3>PM Store SKU-wise DOI — ${data.asOfDate}</h3>
-  <p>Inventory as of latest audit${data.audit ? `: ${data.audit.audit_ref} (${fmtDbDate(data.audit.audit_date)})` : ' — no audit found'}.</p>
-  <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">
-    <tr><th>Status</th><th>Count of SKU</th><th>Inventory Value (Rs.)</th></tr>
-    ${rows}
-  </table>`;
+  const totalCount = data.summary.reduce((a, s) => a + s.count, 0);
+  const totalValue = data.summary.reduce((a, s) => a + s.value, 0);
+  const summaryTable = table(
+    ['Status', 'Count of SKU Code', 'Sum of Inventory value (Rs.)'],
+    [
+      ...data.summary.map((s) => [s.status, fmtNum(s.count), fmtMoney(s.value)]),
+      [`<b>Grand Total</b>`, `<b>${fmtNum(totalCount)}</b>`, `<b>${fmtMoney(totalValue)}</b>`],
+    ]
+  );
+
+  const auditLabel = data.audit ? fmtDMon(data.audit.audit_date) : 'n/a';
+  const dayHeaders = (data.days || []).map(fmtDMon);
+  const detailTable = table(
+    ['SKU Name', 'Category', 'UoM', `Audit Inventory Qty (${auditLabel})`, 'Unit cost incl. GST (Rs.)', 'Inventory value (Rs.)',
+      ...dayHeaders, '7-Day Issue Qty', 'Avg Daily Issue', 'Days of Inventory', 'Status', 'Units per Roll', 'Conversion Basis'],
+    data.rows.map((r) => [
+      r.skuName, r.category, r.uom, fmtNum(r.inventoryQty, r.inventoryQty % 1 ? 1 : 0), fmtMoney(r.unitCost), fmtMoney(r.inventoryValue),
+      ...r.dailyIssuesUom.map((q) => (q ? fmtNum(q, q % 1 ? 1 : 0) : '-')),
+      fmtNum(r.issueQty7d, r.issueQty7d % 1 ? 1 : 0), fmtNum(r.avgDailyIssue, 1),
+      r.doi === null ? 'No issues' : fmtNum(r.doi, 1), r.status,
+      r.unitsPerUom === 1 ? '' : r.unitsPerUom, r.conversionBasis || '',
+    ])
+  );
+
+  const intro = `
+  <p>PFB the daily Holding Inventory report for the Central PM Store in QuickCom BLR.</p>
+  <p>This report tracks the current PM Store Inventory value and estimated Days of Inventory (DOI) based on a rolling 7-day average daily consumption, to identify stock-outs, critical shortages, and non-moving packing materials.</p>
+  <p>The Summary and Detail views are shown below along with the attached working file.</p>`;
+
+  const bodyHtml = `
+  <p><b>Summary</b></p>
+  ${summaryTable}
+  <p><b>Detail</b></p>
+  ${detailTable}`;
+
+  return wrapEmail({ intro, bodyHtml });
 }
 
 module.exports = { getData, buildWorkbook, buildSummaryHtml, computeRow, statusFor };

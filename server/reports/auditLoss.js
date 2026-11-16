@@ -11,6 +11,19 @@
 
 const { PM_STORE_CODE } = require('../config/pmStoreFacilities');
 const { unitsPerUom, costingUom, conversionBasis, unitCostPerUom, fmtDbDate } = require('./materialCost');
+const { fmtDMonY, fmtDMon, fmtIstDateTime, fmtNum, fmtMoney, table, wrapEmail } = require('./emailTemplate');
+
+function datesBetweenExclusive(startStr, endStr) {
+  const out = [];
+  const d = new Date(`${startStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  const end = new Date(`${endStr}T00:00:00Z`);
+  while (d < end) {
+    out.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return out;
+}
 
 function mondayOnOrBefore(dateStr) {
   const d = new Date(`${dateStr}T00:00:00Z`);
@@ -40,7 +53,7 @@ async function getData(pool, { asOfDate }) {
   const warehouseId = whRes.rows[0]?.id;
 
   const auditsRes = await pool.query(
-    `SELECT id, audit_ref, audit_date::text AS audit_date FROM audit_entries
+    `SELECT id, audit_ref, audit_date::text AS audit_date, created_at FROM audit_entries
       WHERE warehouse_id = $1 AND audit_date BETWEEN $2 AND $3
       ORDER BY audit_date ASC, created_at ASC`,
     [warehouseId, weekStart, weekEnd]
@@ -56,6 +69,7 @@ async function getData(pool, { asOfDate }) {
   const inwardRows = [];
   const issueRows = [];
   const backupRows = [];
+  const summaryByAudit = [];
 
   for (const audit of audits) {
     const prevRes = await pool.query(
@@ -67,6 +81,15 @@ async function getData(pool, { asOfDate }) {
     const prevAudit = prevRes.rows[0] || null;
     const periodStart = prevAudit ? prevAudit.audit_date : null; // exclusive
     const periodEndExclusiveDate = audit.audit_date;
+
+    // "Opening Period From" label, matching the sample's "Audit DD-Mon (no
+    // audit on DD-Mon)" format when there's a gap of skipped calendar days.
+    let openingPeriodFrom = 'No prior audit';
+    if (prevAudit) {
+      openingPeriodFrom = `Audit ${fmtDMon(prevAudit.audit_date)}`;
+      const missing = datesBetweenExclusive(prevAudit.audit_date, audit.audit_date);
+      if (missing.length) openingPeriodFrom += ` (no audit on ${missing.map(fmtDMon).join(', ')})`;
+    }
 
     const lineRes = await pool.query(
       `SELECT material_id, system_qty, physical_qty FROM audit_entry_lines WHERE audit_entry_id = $1`,
@@ -175,6 +198,7 @@ async function getData(pool, { asOfDate }) {
         issueNormalBase: issue.normal,
         issueAdhocBase: issue.adhoc,
         closingBase,
+        lossBase,
         openingUom: openingBase / upu,
         inwardNormalUom: inward.normal / upu,
         inwardAdhocUom: inward.adhoc / upu,
@@ -187,6 +211,28 @@ async function getData(pool, { asOfDate }) {
         costFlag: unitCost === 0 ? 'NO COST' : '',
       });
     }
+
+    const auditRows = backupRows.filter((r) => r.auditRef === audit.audit_ref);
+    const sum = (field) => auditRows.reduce((a, r) => a + r[field], 0);
+    summaryByAudit.push({
+      auditRef: audit.audit_ref,
+      auditDate: audit.audit_date,
+      postedAt: audit.created_at,
+      openingPeriodFrom,
+      openingQty: sum('openingBase'),
+      inwardNormal: sum('inwardNormalBase'),
+      inwardAdhoc: sum('inwardAdhocBase'),
+      totalInward: sum('inwardNormalBase') + sum('inwardAdhocBase'),
+      issueNormal: sum('issueNormalBase'),
+      issueAdhoc: sum('issueAdhocBase'),
+      totalIssue: sum('issueNormalBase') + sum('issueAdhocBase'),
+      closingQty: sum('closingBase'),
+      lossQtyNet: sum('lossBase'),
+      grossLossQty: auditRows.filter((r) => r.lossBase > 0).reduce((a, r) => a + r.lossBase, 0),
+      lossValueNet: sum('lossValue'),
+      pmLinesWithLoss: auditRows.filter((r) => r.lossBase !== 0).length,
+      lossLinesWithNoCost: auditRows.filter((r) => r.lossBase !== 0 && r.costFlag === 'NO COST').length,
+    });
   }
 
   const summaryMap = new Map(); // auditRef -> { auditRef, auditDate, lossValue }
@@ -206,6 +252,7 @@ async function getData(pool, { asOfDate }) {
     issueRows,
     backupRows,
     summary: [...summaryMap.values()],
+    summaryByAudit,
   };
 }
 
@@ -266,16 +313,45 @@ function materialCode(data, materialId) {
   return m ? m.code : String(materialId);
 }
 
+// Matches "BLR QuickCom Central PM Store Audit Loss Report" sample — a
+// single per-audit table (no separate Summary/Detail split in the email
+// body; per-PM breakdown is attachment-only, in PM_Audit_Backup).
 function buildSummaryHtml(data) {
-  const rows = data.summary
-    .map((s) => `<tr><td>${s.auditRef}</td><td>${fmtDate(s.auditDate)}</td><td style="text-align:right">${s.lossValue.toFixed(2)}</td></tr>`)
-    .join('');
-  return `
-  <h3>Central PM Store Audit-wise Loss — ${data.weekStart} to ${data.weekEnd}</h3>
-  <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">
-    <tr><th>Audit Ref</th><th>Audit Date</th><th>Loss Value (Rs.)</th></tr>
-    ${rows}
-  </table>`;
+  const rows = data.summaryByAudit || [];
+  const total = (field) => rows.reduce((a, r) => a + r[field], 0);
+  const anyLoss = rows.some((r) => r.lossQtyNet !== 0);
+
+  const mainTable = table(
+    ['Audit Date', 'Audit Ref', 'Posted (IST)', 'Opening Period From', 'Opening Qty', 'Inward - Normal', 'Inward - Adhoc', 'Total Inward',
+      'Issue - Normal', 'Issue - Adhoc', 'Total Issue', 'Closing Qty (Physical)', 'Loss Qty (Net)', 'Gross Loss Qty (shortages only)',
+      'Loss Value (Net, INR)', 'PM Lines with Loss', 'Loss Lines with No Cost'],
+    [
+      ...rows.map((r) => [
+        fmtDMonY(r.auditDate), r.auditRef, fmtIstDateTime(r.postedAt), r.openingPeriodFrom,
+        fmtNum(r.openingQty), fmtNum(r.inwardNormal), fmtNum(r.inwardAdhoc), fmtNum(r.totalInward),
+        fmtNum(r.issueNormal), fmtNum(r.issueAdhoc), fmtNum(r.totalIssue), fmtNum(r.closingQty),
+        r.lossQtyNet === 0 ? '-' : fmtNum(r.lossQtyNet), r.grossLossQty === 0 ? '-' : fmtNum(r.grossLossQty),
+        r.lossValueNet === 0 ? '-' : fmtMoney(r.lossValueNet),
+        r.pmLinesWithLoss === 0 ? '-' : fmtNum(r.pmLinesWithLoss), r.lossLinesWithNoCost === 0 ? '-' : fmtNum(r.lossLinesWithNoCost),
+      ]),
+      ['<b>Total (all audits)</b>', '', '', '', '', fmtNum(total('inwardNormal')), fmtNum(total('inwardAdhoc')), fmtNum(total('totalInward')),
+        fmtNum(total('issueNormal')), fmtNum(total('issueAdhoc')), fmtNum(total('totalIssue')), '',
+        total('lossQtyNet') === 0 ? '-' : fmtNum(total('lossQtyNet')), total('grossLossQty') === 0 ? '-' : fmtNum(total('grossLossQty')),
+        total('lossValueNet') === 0 ? '-' : fmtMoney(total('lossValueNet')),
+        total('pmLinesWithLoss') === 0 ? '-' : fmtNum(total('pmLinesWithLoss')), total('lossLinesWithNoCost') === 0 ? '-' : fmtNum(total('lossLinesWithNoCost'))],
+    ]
+  );
+
+  const intro = `
+  <p>PFB the weekly Central PM Store Audit Loss Report for QuickCom BLR.</p>
+  <p>This report tracks daily audit losses for the Central PM store between consecutive audits and reports them on a weekly basis.</p>
+  <p>The Summary and Loss/Gain details are shown below along with the attached working file.</p>`;
+
+  const bodyHtml = `
+  ${mainTable}
+  ${anyLoss ? '' : '<p>No Audit loss or gain occurred during this time period.</p>'}`;
+
+  return wrapEmail({ intro, bodyHtml });
 }
 
 module.exports = { getData, buildWorkbook, buildSummaryHtml };
