@@ -195,7 +195,7 @@ async function runConsumption(options = {}) {
     await setProgress(40, `Data fetched — ${rows.length} rows. Loading lookup tables…`);
 
     const skuMap = new Map(
-      (await pool.query('SELECT sku_code, primary_pm_code, secondary_pm_code, tertiary_pm_code FROM sku_packaging_master')).rows.map((r) => [r.sku_code, r])
+      (await pool.query('SELECT sku_code, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_consumption_rate, secondary_consumption_rate, tertiary_consumption_rate FROM sku_packaging_master')).rows.map((r) => [r.sku_code, r])
     );
     const whMap = new Map(
       (await pool.query('SELECT id, code FROM warehouses WHERE is_active')).rows.map((r) => [r.code, r.id])
@@ -230,12 +230,12 @@ async function runConsumption(options = {}) {
       }
 
       const tiers = [
-        { tier: 'PRIMARY',   code: sku.primary_pm_code },
-        { tier: 'SECONDARY', code: sku.secondary_pm_code },
-        { tier: 'TERTIARY',  code: sku.tertiary_pm_code },
+        { tier: 'PRIMARY',   code: sku.primary_pm_code,   fsnRate: sku.primary_consumption_rate },
+        { tier: 'SECONDARY', code: sku.secondary_pm_code, fsnRate: sku.secondary_consumption_rate },
+        { tier: 'TERTIARY',  code: sku.tertiary_pm_code,  fsnRate: sku.tertiary_consumption_rate },
       ].filter((t) => t.code);
 
-      for (const { tier, code } of tiers) {
+      for (const { tier, code, fsnRate } of tiers) {
         const mat = matMap.get(code);
         if (!mat) {
           await pool.query(
@@ -246,10 +246,12 @@ async function runConsumption(options = {}) {
           errored++; continue;
         }
 
-        // For roll materials, deduct consumption_rate (m/unit) × packaged_qty
-        const deductQty = mat.consumption_rate
-          ? row.packaged_qty * Number(mat.consumption_rate)
-          : row.packaged_qty;
+        // For roll materials, deduct a per-unit rate × packaged_qty. Prefer
+        // this FSN's own rate (sku_packaging_master) over the material's
+        // global consumption_rate, so pack-size differences between SKUs
+        // mapped to the same PM material are no longer averaged away.
+        const rate = fsnRate ?? mat.consumption_rate;
+        const deductQty = rate ? row.packaged_qty * Number(rate) : row.packaged_qty;
 
         // Store as PENDING — no ledger entry yet. User must Accept the run to commit to stock.
         try {

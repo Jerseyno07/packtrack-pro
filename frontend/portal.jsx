@@ -663,6 +663,12 @@ function AdminPanel({ token, tabOverride }) {
   const [skuResult, setSkuResult] = useState(null);
   const [skuError, setSkuError] = useState('');
 
+  const [priceFile, setPriceFile] = useState(null);
+  const [priceUploading, setPriceUploading] = useState(false);
+  const [priceResult, setPriceResult] = useState(null);
+  const [priceError, setPriceError] = useState('');
+  const [priceHistory, setPriceHistory] = useState([]);
+
   const [allMaterials, setAllMaterials] = useState([]);
   const [matForm, setMatForm] = useState({ name: '', category: '', unit: 'Pcs', master_price: '', meters_per_unit: '', stickers_per_roll: '', consumption_rate: '', pieces_per_kg: '' });
   const [matSaving, setMatSaving] = useState(false);
@@ -869,6 +875,35 @@ function AdminPanel({ token, tabOverride }) {
       setSkuResult(data);
     } catch (e) { setSkuError(e.message); }
     finally { setSkuUploading(false); }
+  }
+
+  async function fetchPriceHistory() {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/materials/price-history`, { headers: hdrs });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed');
+      setPriceHistory(data.data ?? []);
+    } catch { /* silent */ }
+  }
+
+  async function uploadPrices() {
+    if (!priceFile) { setPriceError('Select a file first.'); return; }
+    setPriceUploading(true); setPriceError(''); setPriceResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', priceFile);
+      const res = await fetch(`${BASE_URL}/api/v1/materials/price-upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Upload failed');
+      setPriceResult(data);
+      fetchMaterials();
+      fetchPriceHistory();
+    } catch (e) { setPriceError(e.message); }
+    finally { setPriceUploading(false); }
   }
 
   async function fetchFacilityWarehouses() {
@@ -1113,7 +1148,7 @@ function AdminPanel({ token, tabOverride }) {
 
   useEffect(() => { fetchOverview(); }, [fetchOverview]);
   useEffect(() => { if (tab === 'audit') fetchAuditLog(1); }, [tab, fetchAuditLog]);
-  useEffect(() => { if (tab === 'materials') fetchMaterials(); }, [tab]);
+  useEffect(() => { if (tab === 'materials') { fetchMaterials(); fetchPriceHistory(); } }, [tab]);
   useEffect(() => { if (tab === 'consumption') { fetchConsumptionRuns(); fetchFacilityWarehouses(); } }, [tab, fetchConsumptionRuns]);
 
   // Poll while progress modal is open; when run reaches PENDING_REVIEW, fetch summary
@@ -1727,6 +1762,66 @@ function AdminPanel({ token, tabOverride }) {
               </tbody>
             </table>
           </div>
+
+          {/* Bulk price upload */}
+          <div data-tour="price-section" className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
+            <h3 className="font-semibold text-slate-800">Bulk Update PM Prices</h3>
+            <p className="text-xs text-slate-500">Upload the PM cost file — required columns: <code>PackTrack Code</code>, <code>Cost per UOM mentioned</code>. <code>PackTrack Name</code>, <code>Item</code>, and <code>UOM</code> may also be present but are informational only. Every changed price is recorded below — nothing is overwritten silently.</p>
+            <div className="flex gap-2">
+              <label className={`flex-1 flex items-center gap-2 px-3 py-2.5 border rounded-lg cursor-pointer text-sm ${priceFile ? 'border-green-400 bg-green-50 text-green-700' : 'border-dashed border-slate-300 text-slate-500 hover:border-blue-400'}`}>
+                <FileSpreadsheet size={15} />
+                {priceFile ? priceFile.name : 'Choose CSV / Excel file'}
+                <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { setPriceFile(e.target.files?.[0] ?? null); setPriceResult(null); setPriceError(''); }} />
+              </label>
+              <button data-tour="price-upload-btn" onClick={uploadPrices} disabled={priceUploading || !priceFile}
+                className="px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-1.5">
+                {priceUploading ? <RefreshCw size={14} className="animate-spin" /> : <Upload size={14} />}
+                {priceUploading ? 'Uploading…' : 'Upload'}
+              </button>
+            </div>
+            <button onClick={() => downloadCSV('pm_price_sample.csv', [
+              ['PackTrack Code', 'PackTrack Name', 'Item', 'UOM', 'Cost per UOM mentioned'],
+              ['LDPE-0912', 'LDPE 9x12', 'LDPE 9x12', 'Pcs', '1.45'],
+              ['CLNG-01', 'CLING_WRAPPING', 'Cling Wrap Roll', 'Roll', '410.64'],
+            ])} className="mt-1 text-xs text-blue-600 hover:underline">↓ Download sample CSV</button>
+            {priceError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{priceError}</div>}
+            {priceResult && (
+              <div className="rounded-xl border border-green-200 bg-green-50 p-4 space-y-1 text-sm">
+                <div className="flex items-center gap-2 font-semibold"><CheckCircle2 size={16} className="text-green-600" />{priceResult.updated.length} updated · {priceResult.unchanged.length} unchanged · {priceResult.notFound.length} not found</div>
+                {priceResult.notFound.length > 0 && <div className="text-xs text-amber-700">Not found: {priceResult.notFound.join(', ')}</div>}
+              </div>
+            )}
+          </div>
+
+          {/* Price change history */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <h3 className="font-semibold text-slate-800 px-4 pt-4">Price Change History</h3>
+            <table className="w-full text-sm mt-2">
+              <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="px-4 py-2.5 text-left">Code</th>
+                  <th className="px-4 py-2.5 text-left">Old Price</th>
+                  <th className="px-4 py-2.5 text-left">New Price</th>
+                  <th className="px-4 py-2.5 text-left">Changed By</th>
+                  <th className="px-4 py-2.5 text-left">File</th>
+                  <th className="px-4 py-2.5 text-left">When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {priceHistory.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">No price changes recorded yet.</td></tr>}
+                {priceHistory.map((h) => (
+                  <tr key={h.id} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-2.5 font-mono text-xs text-slate-700">{h.material_code}</td>
+                    <td className="px-4 py-2.5 text-slate-500">₹{h.old_price}</td>
+                    <td className="px-4 py-2.5 text-slate-800 font-medium">₹{h.new_price}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{h.changed_by_name ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-400">{h.source_file ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-400">{new Date(h.created_at).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -1734,7 +1829,7 @@ function AdminPanel({ token, tabOverride }) {
         <div data-tour="sku-section" className="space-y-4 max-w-xl">
           <div>
             <h3 className="font-semibold text-slate-800 mb-1">Upload SKU Packaging Master</h3>
-            <p className="text-xs text-slate-500 mb-3">Use your existing master CSV — required column: <code>FSN ID</code>. Also read: <code>Weight Lot</code> (stored as the SKU's descriptive name — not the <code>SKU Name</code> column), <code>Source</code>, <code>EAN</code>, <code>Packing Type</code>, <code>Packing Material</code>, and any <code>Sec. packing (…)</code> columns for secondary/tertiary materials. Other columns in your file are ignored.</p>
+            <p className="text-xs text-slate-500 mb-3">Use your existing master CSV — required column: <code>FSN ID</code>. Also read: <code>Weight Lot</code> (stored as the SKU's descriptive name — not the <code>SKU Name</code> column), <code>Source</code>, <code>EAN</code>, <code>Packing Type</code>, <code>Packing Material</code>, any <code>Sec. packing (…)</code> columns for secondary/tertiary materials, and optional <code>primary_consumption_rate</code> / <code>secondary_consumption_rate</code> / <code>tertiary_consumption_rate</code> columns (meters deducted per packed unit, for roll materials — overrides that material's default rate for this FSN only). Other columns in your file are ignored.</p>
             <div className="flex gap-2">
               <label className={`flex-1 flex items-center gap-2 px-3 py-2.5 border rounded-lg cursor-pointer text-sm ${skuFile ? 'border-green-400 bg-green-50 text-green-700' : 'border-dashed border-slate-300 text-slate-500 hover:border-blue-400'}`}>
                 <FileSpreadsheet size={15} />
@@ -1748,9 +1843,9 @@ function AdminPanel({ token, tabOverride }) {
               </button>
             </div>
             <button data-tour="sku-sample" onClick={() => downloadCSV('sku_master_sample.csv', [
-              ['FSN ID','Weight Lot','SKU Name','Source','EAN','Packing Type','Packing Material','Sec. packing (Cling wrap)','Sec. packing (Foam Roll)','Sec. packing (Butter Paper)','Sec. packing (Foam Net)'],
-              ['VEGFFHGDAHJVZQEN','Beans (cluster) 500g','Beans (cluster)','Vendor A','8901030895563','Bag','LDPE Cover 6 Kg','','','',''],
-              ['VEGHZA5FHUVZRZ7C','Fresh Yam 1kg','Fresh Yam','Vendor B','8901030895570','Net','Net Roll','1','','',''],
+              ['FSN ID','Weight Lot','SKU Name','Source','EAN','Packing Type','Packing Material','Sec. packing (Cling wrap)','Sec. packing (Foam Roll)','Sec. packing (Butter Paper)','Sec. packing (Foam Net)','primary_consumption_rate','secondary_consumption_rate'],
+              ['VEGFFHGDAHJVZQEN','Beans (cluster) 500g','Beans (cluster)','Vendor A','8901030895563','Bag','LDPE Cover 6 Kg','','','','','',''],
+              ['VEGHZA5FHUVZRZ7C','Fresh Yam 1kg','Fresh Yam','Vendor B','8901030895570','Net','Net Roll','1','','','','0.42',''],
             ])} className="mt-2 text-xs text-blue-600 hover:underline">↓ Download sample CSV</button>
           </div>
           {skuError && <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2"><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{skuError}</div>}
@@ -2972,8 +3067,9 @@ export default function App() {
             { target: 'issues-table', title: 'Stock Issues', body: 'Every dispatch from the PM Store to an FC or CC facility appears here. The Cancel button removes a pending dispatch before it is received at the destination.', onEnter: () => setAdminTabForTour('issues') },
             { target: 'transit-diff-table', title: 'Transit Difference', body: 'Flags dispatches that closed (fully received or force-completed) with a mismatch between what was issued and what was actually accounted for at the destination. Red = short-received, amber = over-received. Only closed dispatches appear here — an in-progress one might still be topped up.', onEnter: () => setAdminTabForTour('transit-diff') },
             { target: 'audit-pagination', title: 'Audit Log', body: 'Every system action is recorded here with the real user who did it — GRNs, force completes, password resets, cancellations. Use Prev and Next to page through 50 records at a time.', onEnter: () => setAdminTabForTour('audit') },
-            { target: 'sku-section', title: 'SKU Packaging Master', body: 'Maps each FSN (Ninjacart product code) to its packaging materials. The daily consumption scraper uses this mapping to deduct PM stock when units are packed at FC/CC.', onEnter: () => setAdminTabForTour('sku') },
-            { target: 'sku-sample', title: 'Download SKU Sample', body: 'Download the sample to see the columns read: FSN ID (required), Weight Lot (stored as the SKU\'s name — not the SKU Name column), Source, EAN, Packing Type, Packing Material, plus optional secondary/tertiary columns for multi-material SKUs.' },
+            { target: 'price-section', title: 'Bulk Update PM Prices', body: 'Upload the PM cost file (PackTrack Code + Cost per UOM mentioned) to bulk-update material prices. Every changed price is recorded in the Price Change History table below it — the previous value is never lost.', onEnter: () => setAdminTabForTour('materials') },
+            { target: 'sku-section', title: 'SKU Packaging Master', body: 'Maps each FSN (Ninjacart product code) to its packaging materials, plus an optional per-FSN consumption rate (meters deducted per packed unit, for roll materials) that overrides the material\'s default rate. The daily consumption scraper uses this mapping to deduct PM stock when units are packed at FC/CC.', onEnter: () => setAdminTabForTour('sku') },
+            { target: 'sku-sample', title: 'Download SKU Sample', body: 'Download the sample to see the columns read: FSN ID (required), Weight Lot (stored as the SKU\'s name — not the SKU Name column), Source, EAN, Packing Type, Packing Material, optional secondary/tertiary columns for multi-material SKUs, and optional per-tier consumption rate columns for roll materials.' },
             { target: 'sku-upload-btn', title: 'Upload SKU Master', body: 'Upload your filled SKU master CSV here. Existing FSN rows are updated; new ones are inserted. Re-upload whenever the packaging mapping changes.' },
             { target: 'run-now', title: 'Run Consumption Scraper', body: 'Triggers the daily scraper immediately without waiting for the 5am schedule. Use after uploading a new SKU master or if yesterday\'s run failed.', onEnter: () => setAdminTabForTour('consumption') },
             { target: 'msl-filter', title: 'Min Stock Levels — Filter', body: 'Narrows the threshold grid to PM Store, FC, or CC facilities so you can focus edits on one type at a time.', onEnter: () => setAdminTabForTour('msl') },

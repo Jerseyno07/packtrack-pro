@@ -2613,6 +2613,83 @@ app.post('/api/v1/materials', authenticate, requireRole('ADMIN'), asyncHandler(a
   res.status(201).json({ data: r.rows[0] });
 }));
 
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE: MATERIAL PRICE BULK UPLOAD + HISTORY
+// ═══════════════════════════════════════════════════════════════════════════
+// Same file format as the PM cost file already used manually for the PM
+// Store reports (see server/reports/doi.js's "Unit Cost" sheet): PackTrack
+// Code, PackTrack Name, Item, UOM, Cost per UOM mentioned. Only "PackTrack
+// Code" (→ materials.code) and "Cost per UOM mentioned" (→ master_price)
+// are actually written; Name/Item/UOM are informational, for the uploader
+// to visually confirm the row against the right material.
+app.post('/api/v1/materials/price-upload', authenticate, requireRole('ADMIN'), upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new ApiError(400, 'FILE_REQUIRED', 'No file uploaded under field "file"');
+    const rawRows = parseUploadedFile(req.file);
+    if (!rawRows.length) throw new ApiError(400, 'EMPTY_FILE', 'File contains no data rows');
+
+    const matRows = (await pool.query('SELECT id, code, master_price FROM materials')).rows;
+    const matByCode = new Map(matRows.map((r) => [r.code.toLowerCase().trim(), r]));
+
+    const updated = [];
+    const unchanged = [];
+    const notFound = [];
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const row of rawRows) {
+        const code = String(row['packtrack_code'] ?? row['pm_code'] ?? '').trim();
+        const priceRaw = row['cost_per_uom_mentioned'] ?? row['cost_per_uom'];
+        if (!code || priceRaw === '' || priceRaw === null || priceRaw === undefined) continue;
+        const newPrice = Number(priceRaw);
+        if (Number.isNaN(newPrice)) continue;
+
+        const mat = matByCode.get(code.toLowerCase());
+        if (!mat) { notFound.push(code); continue; }
+
+        const oldPrice = Number(mat.master_price);
+        if (oldPrice === newPrice) { unchanged.push(code); continue; }
+
+        await client.query(
+          `INSERT INTO material_price_history (material_id, material_code, old_price, new_price, changed_by, source_file) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [mat.id, mat.code, oldPrice, newPrice, req.user.id, req.file.originalname]
+        );
+        await client.query(`UPDATE materials SET master_price = $1 WHERE id = $2`, [newPrice, mat.id]);
+        mat.master_price = newPrice; // keep in-memory map correct if the file repeats a code
+        updated.push(code);
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    await writeAudit(pool, { userId: req.user.id, action: 'MATERIAL_PRICE_UPLOADED', entityTable: 'materials', entityId: 0, detail: { updated: updated.length, unchanged: unchanged.length, not_found: notFound.length, source_file: req.file.originalname } });
+    res.status(201).json({ updated, unchanged, notFound });
+  })
+);
+
+app.get('/api/v1/materials/price-history', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const { material_id } = req.query;
+  const params = [];
+  let where = '';
+  if (material_id) { params.push(material_id); where = `WHERE h.material_id = $${params.length}`; }
+  const r = await pool.query(
+    `SELECT h.id, h.material_id, h.material_code, h.old_price, h.new_price, h.source_file, h.created_at,
+            u.name AS changed_by_name
+       FROM material_price_history h
+       LEFT JOIN users u ON u.id = h.changed_by
+      ${where}
+      ORDER BY h.created_at DESC
+      LIMIT 500`,
+    params
+  );
+  res.json({ data: r.rows });
+}));
+
 // ─────────────────────────────────────────────────────────────────────────
 // Error handling
 // ─────────────────────────────────────────────────────────────────────────
@@ -2669,6 +2746,10 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       const ean = String(row['ean'] ?? '').trim() || null;
       const packing_type = String(row['packing_type'] ?? '').trim() || null;
       const primaryRaw = String(row['packing_material'] ?? row['primary_pm_code'] ?? '').trim();
+      const parseRate = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+      const primary_consumption_rate = parseRate(row['primary_consumption_rate']);
+      const secondary_consumption_rate = parseRate(row['secondary_consumption_rate']);
+      const tertiary_consumption_rate = parseRate(row['tertiary_consumption_rate']);
 
       if (!sku_code) { errors.push({ row: rowNum, error: 'FSN ID is required' }); continue; }
 
@@ -2703,6 +2784,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
         sku_code, sku_name, source, ean, packing_type, primary_pm_code,
         secondary_pm_code: secCodes[0] ?? null,
         tertiary_pm_code: secCodes[1] ?? null,
+        primary_consumption_rate, secondary_consumption_rate, tertiary_consumption_rate,
       });
     }
 
@@ -2720,10 +2802,10 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
     for (let i = 0; i < dedupedRows.length; i += BATCH_SIZE) {
       const chunk = dedupedRows.slice(i, i + BATCH_SIZE);
       await pool.query(
-        `INSERT INTO sku_packaging_master (sku_code, sku_name, source, ean, packing_type, primary_pm_code, secondary_pm_code, tertiary_pm_code, uploaded_by, uploaded_at)
-         SELECT sku_code, sku_name, source, ean, packing_type, primary_pm_code, secondary_pm_code, tertiary_pm_code, $9, now()
-         FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[])
-           AS t(sku_code, sku_name, source, ean, packing_type, primary_pm_code, secondary_pm_code, tertiary_pm_code)
+        `INSERT INTO sku_packaging_master (sku_code, sku_name, source, ean, packing_type, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_consumption_rate, secondary_consumption_rate, tertiary_consumption_rate, uploaded_by, uploaded_at)
+         SELECT sku_code, sku_name, source, ean, packing_type, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_consumption_rate, secondary_consumption_rate, tertiary_consumption_rate, $12, now()
+         FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::numeric[], $10::numeric[], $11::numeric[])
+           AS t(sku_code, sku_name, source, ean, packing_type, primary_pm_code, secondary_pm_code, tertiary_pm_code, primary_consumption_rate, secondary_consumption_rate, tertiary_consumption_rate)
          ON CONFLICT (sku_code) DO UPDATE SET
            -- sku_name/source/ean/packing_type: a file that doesn't carry that
            -- column (or leaves it blank for this row) must not blank out a
@@ -2733,6 +2815,9 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
            -- primary/secondary/tertiary material codes stay unconditional —
            -- blanking Packing Material is an established, intentional action
            -- (MRP-sticker-only SKUs), not a value this upload just doesn't carry.
+           -- consumption rates follow the same COALESCE convention as the
+           -- display-only fields: a file without rate columns must not wipe
+           -- rates a previous, rate-carrying upload set.
            sku_name = COALESCE(EXCLUDED.sku_name, sku_packaging_master.sku_name),
            source = COALESCE(EXCLUDED.source, sku_packaging_master.source),
            ean = COALESCE(EXCLUDED.ean, sku_packaging_master.ean),
@@ -2740,6 +2825,9 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
            primary_pm_code = EXCLUDED.primary_pm_code,
            secondary_pm_code = EXCLUDED.secondary_pm_code,
            tertiary_pm_code = EXCLUDED.tertiary_pm_code,
+           primary_consumption_rate = COALESCE(EXCLUDED.primary_consumption_rate, sku_packaging_master.primary_consumption_rate),
+           secondary_consumption_rate = COALESCE(EXCLUDED.secondary_consumption_rate, sku_packaging_master.secondary_consumption_rate),
+           tertiary_consumption_rate = COALESCE(EXCLUDED.tertiary_consumption_rate, sku_packaging_master.tertiary_consumption_rate),
            uploaded_by = EXCLUDED.uploaded_by,
            uploaded_at = EXCLUDED.uploaded_at`,
         [
@@ -2751,6 +2839,9 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
           chunk.map((r) => r.primary_pm_code),
           chunk.map((r) => r.secondary_pm_code),
           chunk.map((r) => r.tertiary_pm_code),
+          chunk.map((r) => r.primary_consumption_rate),
+          chunk.map((r) => r.secondary_consumption_rate),
+          chunk.map((r) => r.tertiary_consumption_rate),
           req.user.id,
         ]
       );
