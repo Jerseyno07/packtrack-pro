@@ -3566,6 +3566,8 @@ app.put('/api/v1/admin/users/:id/reset-password', authenticate, requireRole('ADM
   res.json({ message: 'Password reset successfully' });
 }));
 
+require('./reports/routes').registerReportRoutes(app, { pool, authenticate, requireRole, asyncHandler });
+
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   const index = path.join(frontendDist, 'index.html');
@@ -3574,6 +3576,7 @@ app.get('*', (req, res, next) => {
 
 app.use((req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: `No route for ${req.method} ${req.path}` } }));
 app.use(Sentry.expressErrorHandler());
+
 app.use((err, req, res, next) => {
   if (err instanceof ApiError) return res.status(err.status).json({ error: { code: err.code, message: err.message, details: err.details } });
   if (err instanceof multer.MulterError) {
@@ -3597,6 +3600,7 @@ app.use((err, req, res, next) => {
 
 require('./cron/consumptionScraper');
 require('./cron/slackReports');
+require('./reports/scheduler').registerReportCrons(pool, new (require('./reports/mailer').LogMailer)());
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`PackTrack API listening on :${PORT}`));

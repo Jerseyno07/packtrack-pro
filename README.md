@@ -395,3 +395,36 @@ Both `/ops` and `/receipt` are installable as Progressive Web Apps.
 - **iOS (Safari)**: Share → Add to Home Screen
 
 Once installed, the app opens in standalone mode (no browser chrome). If the device goes offline, a branded splash screen is shown with a Retry button. All data operations require an active connection — there is no offline data sync.
+
+---
+
+## PM Store Reports Engine
+
+Automates reports Vishal (SCM Projects) previously built by hand: PM Issued vs Consumption Variance (not yet built), PM Store SKU-wise DOI, and Central PM Store Audit-wise Loss. Lives in `server/reports/`.
+
+### Layout
+- `server/reports/doi.js`, `server/reports/auditLoss.js` — one module per report, each exporting `getData(pool, {asOfDate})`, `buildWorkbook(ExcelJS, data)`, `buildSummaryHtml(data)`.
+- `server/reports/materialCost.js` — shared base-unit → costing-UoM cost/conversion logic (see its header comment for a real master-data inconsistency it works around: `materials.master_price` is per-costing-UoM for roll/sticker materials but per-base-unit for the one `pieces_per_kg` material, Butter Paper).
+- `server/reports/reportService.js` — `generate(pool, reportKey, {asOfDate})` → `{subject, html, attachments}`.
+- `server/reports/runner.js` — idempotent `runReport(pool, mailer, reportKey, {asOfDate, dryRun, recipients})`, logs to `report_runs` (migration `db/043_report_runs.sql`).
+- `server/reports/mailer.js` — `LogMailer` (default; writes attachments to `/tmp`, sends nothing) and `WorkflowMailer` (stub — delivery channel not decided yet, do not fill in without explicit confirmation).
+- `server/reports/scheduler.js` — node-cron registrations, gated by `REPORT_CRON_ENABLED`.
+- `server/reports/routes.js` — ADMIN-only `GET /api/reports/:key/download?date=YYYY-MM-DD` and `POST /api/reports/:key/run?dryRun=true`.
+- `server/config/pmStoreFacilities.js` — Bangalore pilot facility codes (10 CCs incl. Palacode/9924, FC 9382, CS-001) and the `previousOpsDay()` cutoff constant.
+- `server/config/reportRecipients.json` — per-report `to`/`cc` lists (empty until supplied).
+
+### Running
+```
+npm run report:diff -- <reportKey> <sample.xlsx> <date>   # diff generated output vs a hand-built sample, cell by cell
+npm test                                                    # unit tests (DOI edge cases: zero-issue, stock-out, no-audit)
+```
+Manual trigger (ADMIN session required): `POST /api/reports/doi/run?dryRun=true` or `GET /api/reports/doi/download?date=2026-10-31`.
+
+### Env vars
+- `REPORT_CRON_ENABLED` — must be `true` for the 12:00 IST daily (DOI; Variance once built) and Friday 12:00 IST (Audit Loss) crons to register. Default/unset = disabled.
+- Mailer selection and `WorkflowMailer`'s endpoint/payload are not wired up yet — `LogMailer` is hardcoded as the active mailer in both `scheduler.js` and `routes.js` until that's decided.
+
+### Known open items (see chat for full discussion)
+- **Variance report not built yet** — its consumption math doesn't cleanly map to current schema (sample file explicitly doesn't use the PackTrack consumption scraper); needs a decision before building.
+- **Recipient lists** (`server/config/reportRecipients.json`) are empty — need the real `to`/`cc` lists.
+- **`report:diff` mismatches**: core data-selection logic was fixed during validation (wrong "latest audit" picked; an IST date-truncation bug per the CLAUDE.md pg-date gotcha, now fixed via `::text` casts — see `materialCost.js`'s `fmtDbDate`). Remaining diffs are layout/structural (our sheets use fewer columns and no manual notes rows vs. the hand-built samples) rather than calculation errors — worth a follow-up pass to tighten column-for-column fidelity if exact layout match matters for the email recipients.
