@@ -2767,6 +2767,8 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       const source = String(row['source'] ?? '').trim() || null;
       const ean = String(row['ean'] ?? '').trim() || null;
       const packing_type = String(row['packing_type'] ?? '').trim() || null;
+      const pmCodeRaw = String(row['pm_code'] ?? '').trim();
+      const pmPacktrackNameRaw = String(row['pm_packtrack_name'] ?? '').trim();
       const primaryRaw = String(row['packing_material'] ?? row['primary_pm_code'] ?? '').trim();
       const parseRate = (v) => (v === '' || v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v));
       // "Consumption Qty" (Vishal's PM map file) is the primary material's
@@ -2781,8 +2783,26 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       // wax ribbon) deduction only requires the FSN to have a sku_packaging_master
       // row — it does not depend on primary_pm_code resolving to anything. If a
       // value IS provided, it must still resolve to a real material.
+      //
+      // PM Code / PM Packtrack Name (added 2026-11-17) are the authoritative
+      // PackTrack identifiers and take priority over the free-text "Packing
+      // Material" column when present — found live that the vendor's own
+      // "Packing Material" text can have typos (e.g. "SOOOW" vs "Soow") that
+      // fail to resolve even though the row is otherwise valid.
       let primary_pm_code = null;
-      if (primaryRaw) {
+      if (pmCodeRaw) {
+        primary_pm_code = resolveMaterial(pmCodeRaw);
+        if (!primary_pm_code) {
+          errors.push({ row: rowNum, error: `PM Code '${pmCodeRaw}' not found in materials` });
+          continue;
+        }
+      } else if (pmPacktrackNameRaw) {
+        primary_pm_code = resolveMaterial(pmPacktrackNameRaw);
+        if (!primary_pm_code) {
+          errors.push({ row: rowNum, error: `PM Packtrack Name '${pmPacktrackNameRaw}' not found in materials` });
+          continue;
+        }
+      } else if (primaryRaw) {
         primary_pm_code = resolveMaterial(primaryRaw);
         if (!primary_pm_code) {
           errors.push({ row: rowNum, error: `Packing Material '${primaryRaw}' not found in materials (match by name or code)` });
