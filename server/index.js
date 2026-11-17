@@ -1396,6 +1396,12 @@ app.post('/api/v1/goods-receipts', authenticate, requireRole('PM_STORE_EXEC', 'A
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid GRN payload', parsed.error.issues);
   const d = parsed.data;
   if (!d.has_invoice_attachment) throw new ApiError(422, 'INVOICE_REQUIRED', 'Invoice copy attachment is mandatory for GRN posting');
+  // GRN date is fixed to today for PM Store users — server-side enforced (not
+  // just a locked UI field) since the client payload can't be trusted as the
+  // only guard. ADMIN keeps the client-supplied date for testing/backdating.
+  if (req.user.role === 'PM_STORE_EXEC') {
+    d.grn_date = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  }
 
   const client = await pool.connect();
   try {
@@ -1504,6 +1510,11 @@ app.post('/api/v1/goods-receipts/adhoc', authenticate, requireRole('PM_STORE_EXE
     if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid adhoc GRN payload', parsed.error.issues);
     const d = parsed.data;
     if (!req.file) throw new ApiError(422, 'INVOICE_REQUIRED', 'An invoice/challan photo is mandatory for Adhoc GRN');
+    // GRN date is fixed to today for PM Store users — server-side enforced,
+    // same as the regular GRN endpoint above. ADMIN keeps the client-supplied date.
+    if (req.user.role === 'PM_STORE_EXEC') {
+      d.grn_date = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    }
 
     // Client sends its own warehouse (from the login response's warehouse_ids,
     // same as TransferSendScreen's sourceWarehouseId) rather than this trusting

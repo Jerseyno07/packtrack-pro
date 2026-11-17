@@ -274,7 +274,7 @@ function GRNScreen({ api, warehouseId }) {
   const [transferSuccess, setTransferSuccess] = useState(null);
   const [adhocMode, setAdhocMode] = useState(false);
   const [adhocSuccess, setAdhocSuccess] = useState(null);
-  const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
+  const [grnDate] = useState(new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const [invoiceNo, setInvoiceNo] = useState('');
   const [inwardQty, setInwardQty] = useState('');
   const [fcReason, setFcReason] = useState('');
@@ -577,7 +577,7 @@ function GRNScreen({ api, warehouseId }) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">GRN Date</label>
-            <input type="date" value={grnDate} onChange={(e) => setGrnDate(e.target.value)} className="w-full px-3 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <div className="w-full px-3 py-3 border border-slate-200 rounded-lg text-base bg-slate-50 text-slate-500">{grnDate}</div>
           </div>
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">Invoice Number</label>
@@ -730,7 +730,7 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
   const [grnType, setGrnType] = useState('NO_PO_INVOICE');
   const [showGrnTypeDd, setShowGrnTypeDd] = useState(false);
   const [remarks, setRemarks] = useState('');
-  const [grnDate, setGrnDate] = useState(new Date().toISOString().slice(0, 10));
+  const [grnDate] = useState(new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const [image, setImage] = useState(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -909,8 +909,7 @@ function AdhocGrnForm({ api, warehouseId, onBack, onSubmitted }) {
 
       <div>
         <label className="block text-xs font-medium text-slate-500 mb-1">GRN Date</label>
-        <input type="date" value={grnDate} onChange={(e) => setGrnDate(e.target.value)}
-          className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm" />
+        <div className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm bg-slate-50 text-slate-500">{grnDate}</div>
       </div>
 
       <div>
