@@ -2,13 +2,21 @@
 // Schedule: 0 5 * * * (5am daily)
 // Environment vars required:
 //   CONSUMPTION_DASHBOARD_URL      — e.g. https://analytics-new-k8s.ninjacart.in
-//   CONSUMPTION_DASHBOARD_API_KEY  — Redash API key, scoped to the FC query (53716)
-//   CONSUMPTION_CC_DASHBOARD_API_KEY — Redash API key, scoped to the CC query (53767)
-//   CONSUMPTION_QUERY_ID           — FC query ID (53716)
-//   CONSUMPTION_CC_QUERY_ID        — CC query ID (53767)
+//   CONSUMPTION_DASHBOARD_API_KEY  — Redash API key, scoped to the FC query (57634, "FC - Consumption - Packtrack - New")
+//   CONSUMPTION_CC_DASHBOARD_API_KEY — Redash API key, scoped to the CC query (57635)
+//   CONSUMPTION_QUERY_ID           — FC query ID (57634)
+//   CONSUMPTION_CC_QUERY_ID        — CC query ID (57635)
 // Redash issues one API key per query (not one shared key), so each query
 // needs its own key here — confirmed 2026-10-23 during the Railway breach
 // credential rotation, when the FC/CC keys turned out to differ.
+//
+// Switched from the old FC (53716) / CC (53767) queries to these on
+// 2026-11-17, per direct instruction. Confirmed the new column/parameter
+// shapes live via the Redash results API before changing anything below:
+//   FC: FacilityId -> Facilityid (lowercase "id"), Billedlot -> No_Of_Units,
+//       params from/to -> "from date"/"to date" (now matches CC's convention).
+//   CC: fsncode -> FSN (same casing FC always used); FromFacilityId and
+//       AllocatedQuantity unchanged.
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
@@ -31,12 +39,12 @@ function rowsFromQueryResult(queryResult) {
   });
 }
 
-// FC query (CONSUMPTION_QUERY_ID):
-//   FacilityId → warehouses.code, FSN → sku_code, Billedlot → qty
-//   Parameters: from, to
+// FC query (CONSUMPTION_QUERY_ID, 57634):
+//   Facilityid → warehouses.code, FSN → sku_code, No_Of_Units → qty
+//   Parameters: "from date", "to date"
 //
-// CC query (CONSUMPTION_CC_QUERY_ID):
-//   FromFacilityId → warehouses.code, fsncode → sku_code, AllocatedQuantity → qty
+// CC query (CONSUMPTION_CC_QUERY_ID, 57635):
+//   FromFacilityId → warehouses.code, FSN → sku_code, AllocatedQuantity → qty
 //   Parameters: "from date", "to date"
 
 async function executeRedashQuery(qid, params, apiKey) {
@@ -74,7 +82,7 @@ async function scrapePackagedQty(fromDate, toDate) {
   const ccQid = process.env.CONSUMPTION_CC_QUERY_ID;
 
   const [fcRows, ccRows] = await Promise.all([
-    executeRedashQuery(fcQid, { from: fromDate, to: toDate }, process.env.CONSUMPTION_DASHBOARD_API_KEY),
+    executeRedashQuery(fcQid, { 'from date': fromDate, 'to date': toDate }, process.env.CONSUMPTION_DASHBOARD_API_KEY),
     executeRedashQuery(ccQid, { 'from date': fromDate, 'to date': toDate }, process.env.CONSUMPTION_CC_DASHBOARD_API_KEY),
   ]);
   console.log(`[consumption] FC rows: ${fcRows.length}, CC rows: ${ccRows.length}`);
@@ -83,14 +91,14 @@ async function scrapePackagedQty(fromDate, toDate) {
 
   for (const row of fcRows) {
     const fsn = row['FSN'];
-    const facilityId = String(row['FacilityId'] ?? '').trim();
-    const qty = Number(row['Billedlot'] ?? 0);
+    const facilityId = String(row['Facilityid'] ?? '').trim();
+    const qty = Number(row['No_Of_Units'] ?? 0);
     if (!fsn || !facilityId || qty <= 0) continue;
     out.push({ facility_id: facilityId, sku_code: fsn, packaged_qty: qty });
   }
 
   for (const row of ccRows) {
-    const fsn = row['fsncode'];
+    const fsn = row['FSN'];
     const facilityId = String(row['FromFacilityId'] ?? '').trim();
     const qty = Number(row['AllocatedQuantity'] ?? 0);
     if (!fsn || !facilityId || qty <= 0) continue;
