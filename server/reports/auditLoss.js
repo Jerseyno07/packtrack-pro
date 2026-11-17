@@ -25,25 +25,20 @@ function datesBetweenExclusive(startStr, endStr) {
   return out;
 }
 
-function mondayOnOrBefore(dateStr) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  const dow = d.getUTCDay(); // 0=Sun..6=Sat
-  const diff = dow === 0 ? 6 : dow - 1;
-  d.setUTCDate(d.getUTCDate() - diff);
-  return d.toISOString().slice(0, 10);
-}
 function addDays(dateStr, n) {
   const d = new Date(`${dateStr}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
-// Previous ISO week (Mon-Sun) relative to asOfDate.
+// Rolling 7-day window ending the day before asOfDate (the report's
+// reference date) — NOT a calendar Mon-Sun week. Per direct correction: a
+// report referenced to the 20th covers the previous Friday (13th) through
+// this Thursday (19th) — i.e. [asOfDate-7, asOfDate-1].
 function previousWeekRange(asOfDate) {
-  const thisMonday = mondayOnOrBefore(asOfDate);
-  const prevMonday = addDays(thisMonday, -7);
-  const prevSunday = addDays(prevMonday, 6);
-  return { weekStart: prevMonday, weekEnd: prevSunday };
+  const weekEnd = addDays(asOfDate, -1);
+  const weekStart = addDays(weekEnd, -6);
+  return { weekStart, weekEnd };
 }
 
 async function getData(pool, { asOfDate }) {
