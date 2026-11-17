@@ -15,7 +15,7 @@ const STATUS_ROW_COLOR = {
 };
 
 const WINDOW_DAYS = 7;
-const STATUS_ORDER = ['Stock-out', 'Critical (≤3d)', 'Low (≤7d)', 'No movement', 'OK'];
+const STATUS_ORDER = ['Stock-out', 'Critical (≤3d)', 'Low (≤7d)', 'OK', 'No movement'];
 // Fixed go-live cutoff, per direct instruction — not relative to asOfDate.
 // Only SKUs that actually held nonzero stock at CS-001 at some point in
 // [ELIGIBILITY_START_DATE, this report's own audit date] are shown; a
