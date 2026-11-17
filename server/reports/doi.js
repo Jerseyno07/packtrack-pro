@@ -3,7 +3,16 @@
 
 const { PM_STORE_CODE, BLR_FACILITY_CODES } = require('../config/pmStoreFacilities');
 const { unitsPerUom, costingUom, conversionBasis, unitCostPerUom, fmtDbDate } = require('./materialCost');
-const { fmtDMon, fmtNum, fmtMoney, table, wrapEmail } = require('./emailTemplate');
+const { fmtDMon, fmtNum, fmtMoney, table, sectionTitle, wrapEmail, COLOR, GUIDE_URL } = require('./emailTemplate');
+
+// Same status->color mapping as the xlsx Summary sheet.
+const STATUS_ROW_COLOR = {
+  'Stock-out': [COLOR.bad, COLOR.badText],
+  'Critical (≤3d)': [COLOR.bad, COLOR.badText],
+  'Low (≤7d)': [COLOR.warn, COLOR.warnText],
+  'No movement': [COLOR.neutral, COLOR.neutralText],
+  'OK': [COLOR.good, COLOR.goodText],
+};
 
 const WINDOW_DAYS = 7;
 const STATUS_ORDER = ['Stock-out', 'Critical (≤3d)', 'Low (≤7d)', 'No movement', 'OK'];
@@ -350,12 +359,15 @@ function buildSummarySheet(wb, data) {
 function buildSummaryHtml(data) {
   const totalCount = data.summary.reduce((a, s) => a + s.count, 0);
   const totalValue = data.summary.reduce((a, s) => a + s.value, 0);
+  const summaryRows = [...data.summary.map((s) => [s.status, fmtNum(s.count), fmtMoney(s.value)]), ['Grand Total', fmtNum(totalCount), fmtMoney(totalValue)]];
   const summaryTable = table(
     ['Status', 'Count of SKU Code', 'Sum of Inventory value (Rs.)'],
-    [
-      ...data.summary.map((s) => [s.status, fmtNum(s.count), fmtMoney(s.value)]),
-      [`<b>Grand Total</b>`, `<b>${fmtNum(totalCount)}</b>`, `<b>${fmtMoney(totalValue)}</b>`],
-    ]
+    summaryRows,
+    {
+      rowBg: (i) => (i === summaryRows.length - 1 ? COLOR.totalBg : (STATUS_ROW_COLOR[data.summary[i]?.status] || [COLOR.band])[0]),
+      cellText: (i) => (i === summaryRows.length - 1 ? null : (STATUS_ROW_COLOR[data.summary[i]?.status] || [null, null])[1]),
+      bold: (i) => i === summaryRows.length - 1,
+    }
   );
 
   const auditLabel = data.audit ? fmtDMon(data.audit.audit_date) : 'n/a';
@@ -369,21 +381,28 @@ function buildSummaryHtml(data) {
       fmtNum(r.issueQty7d, r.issueQty7d % 1 ? 1 : 0), fmtNum(r.avgDailyIssue, 1),
       r.doi === null ? 'No issues' : fmtNum(r.doi, 1), r.status,
       r.unitsPerUom === 1 ? '' : r.unitsPerUom, r.conversionBasis || '',
-    ])
+    ]),
+    {
+      // Only the Status cell (last-but-2 column, index 10) gets a strong
+      // color fill, so the row stays readable while the status still jumps
+      // out at a glance — same idea as the xlsx sheet's full-row shading,
+      // toned down since this table has many more columns to scan.
+      cellBg: (i, c) => (c === 10 ? (STATUS_ROW_COLOR[data.rows[i]?.status] || [null])[0] : null),
+      cellText: (i, c) => (c === 10 ? (STATUS_ROW_COLOR[data.rows[i]?.status] || [null, null])[1] : null),
+    }
   );
 
   const intro = `
   <p>PFB the daily Holding Inventory report for the Central PM Store in QuickCom BLR.</p>
-  <p>This report tracks the current PM Store Inventory value and estimated Days of Inventory (DOI) based on a rolling 7-day average daily consumption, to identify stock-outs, critical shortages, and non-moving packing materials.</p>
-  <p>The Summary and Detail views are shown below along with the attached working file.</p>`;
+  <p>This report tracks the current PM Store Inventory value and estimated Days of Inventory (DOI) based on a rolling 7-day average daily consumption, to identify stock-outs, critical shortages, and non-moving packing materials.</p>`;
 
   const bodyHtml = `
-  <p><b>Summary</b></p>
+  ${sectionTitle('Summary')}
   ${summaryTable}
-  <p><b>Detail</b></p>
+  ${sectionTitle('Detail')}
   ${detailTable}`;
 
-  return wrapEmail({ intro, bodyHtml });
+  return wrapEmail({ intro, bodyHtml, guideUrl: GUIDE_URL });
 }
 
 module.exports = { getData, buildWorkbook, buildSummaryHtml, computeRow, statusFor };

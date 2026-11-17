@@ -11,7 +11,7 @@
 
 const { PM_STORE_CODE } = require('../config/pmStoreFacilities');
 const { unitsPerUom, costingUom, conversionBasis, unitCostPerUom, fmtDbDate } = require('./materialCost');
-const { fmtDMonY, fmtDMon, fmtIstDateTime, fmtNum, fmtMoney, table, wrapEmail } = require('./emailTemplate');
+const { fmtDMonY, fmtDMon, fmtIstDateTime, fmtNum, fmtMoney, table, sectionTitle, wrapEmail, COLOR, GUIDE_URL } = require('./emailTemplate');
 
 function datesBetweenExclusive(startStr, endStr) {
   const out = [];
@@ -514,35 +514,42 @@ function buildSummaryHtml(data) {
   const total = (field) => rows.reduce((a, r) => a + r[field], 0);
   const anyLoss = rows.some((r) => r.lossQtyNet !== 0);
 
-  const mainTable = table(
-    SUMMARY_HEADERS,
-    [
-      ...rows.map((r) => [
-        fmtDMonY(r.auditDate), r.auditRef, fmtIstDateTime(r.postedAt), r.openingPeriodFrom,
-        fmtNum(r.openingQty, 2), fmtNum(r.inwardNormal, 2), fmtNum(r.inwardAdhoc, 2), fmtNum(r.totalInward, 2),
-        fmtNum(r.issueNormal, 2), fmtNum(r.issueAdhoc, 2), fmtNum(r.totalIssue, 2), fmtNum(r.closingQty, 2),
-        r.lossQtyNet === 0 ? '-' : fmtNum(r.lossQtyNet, 2), r.grossLossQty === 0 ? '-' : fmtNum(r.grossLossQty, 2),
-        r.lossValueNet === 0 ? '-' : fmtMoney(r.lossValueNet),
-        r.pmLinesWithLoss === 0 ? '-' : fmtNum(r.pmLinesWithLoss), r.lossLinesWithNoCost === 0 ? '-' : fmtNum(r.lossLinesWithNoCost),
-      ]),
-      ['<b>Total (all audits)</b>', '', '', '', '', fmtNum(total('inwardNormal'), 2), fmtNum(total('inwardAdhoc'), 2), fmtNum(total('totalInward'), 2),
-        fmtNum(total('issueNormal'), 2), fmtNum(total('issueAdhoc'), 2), fmtNum(total('totalIssue'), 2), '',
-        total('lossQtyNet') === 0 ? '-' : fmtNum(total('lossQtyNet'), 2), total('grossLossQty') === 0 ? '-' : fmtNum(total('grossLossQty'), 2),
-        total('lossValueNet') === 0 ? '-' : fmtMoney(total('lossValueNet')),
-        total('pmLinesWithLoss') === 0 ? '-' : fmtNum(total('pmLinesWithLoss')), total('lossLinesWithNoCost') === 0 ? '-' : fmtNum(total('lossLinesWithNoCost'))],
-    ]
-  );
+  const tableRows = [
+    ...rows.map((r) => [
+      fmtDMonY(r.auditDate), r.auditRef, fmtIstDateTime(r.postedAt), r.openingPeriodFrom,
+      fmtNum(r.openingQty, 2), fmtNum(r.inwardNormal, 2), fmtNum(r.inwardAdhoc, 2), fmtNum(r.totalInward, 2),
+      fmtNum(r.issueNormal, 2), fmtNum(r.issueAdhoc, 2), fmtNum(r.totalIssue, 2), fmtNum(r.closingQty, 2),
+      r.lossQtyNet === 0 ? '-' : fmtNum(r.lossQtyNet, 2), r.grossLossQty === 0 ? '-' : fmtNum(r.grossLossQty, 2),
+      r.lossValueNet === 0 ? '-' : fmtMoney(r.lossValueNet),
+      r.pmLinesWithLoss === 0 ? '-' : fmtNum(r.pmLinesWithLoss), r.lossLinesWithNoCost === 0 ? '-' : fmtNum(r.lossLinesWithNoCost),
+    ]),
+    ['Total (all audits)', '', '', '', '', fmtNum(total('inwardNormal'), 2), fmtNum(total('inwardAdhoc'), 2), fmtNum(total('totalInward'), 2),
+      fmtNum(total('issueNormal'), 2), fmtNum(total('issueAdhoc'), 2), fmtNum(total('totalIssue'), 2), '',
+      total('lossQtyNet') === 0 ? '-' : fmtNum(total('lossQtyNet'), 2), total('grossLossQty') === 0 ? '-' : fmtNum(total('grossLossQty'), 2),
+      total('lossValueNet') === 0 ? '-' : fmtMoney(total('lossValueNet')),
+      total('pmLinesWithLoss') === 0 ? '-' : fmtNum(total('pmLinesWithLoss')), total('lossLinesWithNoCost') === 0 ? '-' : fmtNum(total('lossLinesWithNoCost'))],
+  ];
+  const isTotalRow = (i) => i === tableRows.length - 1;
+  const lossOf = (i) => (isTotalRow(i) ? total('lossQtyNet') : rows[i].lossQtyNet);
+  const LOSS_COLS = new Set([12, 13, 14]); // Loss Qty (Net), Gross Loss Qty, Loss Value (Net, INR)
+
+  const mainTable = table(SUMMARY_HEADERS, tableRows, {
+    rowBg: (i) => (isTotalRow(i) ? COLOR.totalBg : null),
+    bold: (i) => isTotalRow(i),
+    cellBg: (i, c) => (LOSS_COLS.has(c) ? (lossOf(i) > 0 ? COLOR.bad : COLOR.good) : null),
+    cellText: (i, c) => (LOSS_COLS.has(c) ? (lossOf(i) > 0 ? COLOR.badText : COLOR.goodText) : null),
+  });
 
   const intro = `
   <p>PFB the weekly Central PM Store Audit Loss Report for QuickCom BLR.</p>
-  <p>This report tracks daily audit losses for the Central PM store between consecutive audits and reports them on a weekly basis.</p>
-  <p>The Summary and Loss/Gain details are shown below along with the attached working file.</p>`;
+  <p>This report tracks daily audit losses for the Central PM store between consecutive audits and reports them on a weekly basis.</p>`;
 
   const bodyHtml = `
+  ${sectionTitle('Audit-wise Summary')}
   ${mainTable}
-  ${anyLoss ? '' : '<p>No Audit loss or gain occurred during this time period.</p>'}`;
+  ${anyLoss ? '' : `<p style="background:${COLOR.good};color:${COLOR.goodText};padding:8px 12px;border-radius:4px;font-weight:600;">No audit loss or gain occurred during this time period.</p>`}`;
 
-  return wrapEmail({ intro, bodyHtml });
+  return wrapEmail({ intro, bodyHtml, guideUrl: GUIDE_URL });
 }
 
 module.exports = { getData, buildWorkbook, buildSummaryHtml };

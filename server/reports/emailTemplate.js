@@ -40,31 +40,76 @@ function fmtMoney(n) {
   return fmtNum(n, 2);
 }
 
-function table(headers, rows) {
-  const th = headers.map((h) => `<th style="border:1px solid #ccc;padding:4px 8px;background:#f3f3f3;text-align:left;">${h}</th>`).join('');
-  const trs = rows
-    .map((cells) => `<tr>${cells.map((c) => `<td style="border:1px solid #ccc;padding:4px 8px;">${c}</td>`).join('')}</tr>`)
+// Same palette as the xlsx Summary sheets (auditLoss.js / doi.js) — kept
+// here too so the email body and the attachment read as one consistent
+// design language rather than two different-looking reports.
+const COLOR = {
+  headerBg: '#2E75B6', headerText: '#FFFFFF',
+  titleBg: '#1F4E78', titleText: '#FFFFFF',
+  band: '#F2F2F2',
+  totalBg: '#D9E1F2',
+  bad: '#FFC7CE', badText: '#9C0006',
+  warn: '#FFEB9C', warnText: '#9C6500',
+  neutral: '#D9D9D9', neutralText: '#595959',
+  good: '#C6EFCE', goodText: '#006100',
+  border: '#BFBFBF',
+};
+
+// opts: { rowBg(rowIdx)->color|null, cellBg(rowIdx,colIdx)->color|null,
+//         cellText(rowIdx,colIdx)->color|null, bold(rowIdx)->bool }
+// — lets callers color a whole row (status/result) or just one cell
+// (e.g. only the Loss Value column) without the table layout itself caring
+// what the data means.
+function table(headers, rows, opts = {}) {
+  const th = headers
+    .map((h) => `<th style="border:1px solid ${COLOR.border};padding:6px 10px;background:${COLOR.headerBg};color:${COLOR.headerText};text-align:left;font-weight:600;">${h}</th>`)
     .join('');
-  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">
+  const trs = rows
+    .map((cells, rowIdx) => {
+      const rowBg = opts.rowBg ? opts.rowBg(rowIdx) : (rowIdx % 2 === 1 ? COLOR.band : '#FFFFFF');
+      const isBold = opts.bold ? opts.bold(rowIdx) : false;
+      const tds = cells
+        .map((c, colIdx) => {
+          const cellBg = opts.cellBg ? opts.cellBg(rowIdx, colIdx) : null;
+          const cellText = opts.cellText ? opts.cellText(rowIdx, colIdx) : null;
+          const bg = cellBg || rowBg;
+          const style = [
+            `border:1px solid ${COLOR.border}`,
+            'padding:5px 10px',
+            `background:${bg}`,
+            cellText ? `color:${cellText}` : '',
+            isBold ? 'font-weight:600' : '',
+          ].filter(Boolean).join(';');
+          return `<td style="${style}">${c}</td>`;
+        })
+        .join('');
+      return `<tr>${tds}</tr>`;
+    })
+    .join('');
+  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px;margin:8px 0 16px 0;">
     <tr>${th}</tr>
     ${trs}
   </table>`;
 }
 
-// guideUrl is intentionally left null for now — the sample emails link
-// "this guide" to an internal doc we don't have a URL for yet.
+function sectionTitle(text) {
+  return `<p style="background:${COLOR.titleBg};color:${COLOR.titleText};padding:8px 12px;margin:20px 0 0 0;font-weight:700;font-size:13.5px;border-radius:4px 4px 0 0;">${text}</p>`;
+}
+
 function wrapEmail({ intro, bodyHtml, guideUrl }) {
   const guideLine = guideUrl
-    ? ` Refer to <a href="${guideUrl}">this guide</a> for instructions on reading the report.`
+    ? ` Refer to <a href="${guideUrl}" style="color:#1155CC;">this guide</a> for instructions on reading the report.`
     : '';
-  return `<div style="font-family:Arial,sans-serif;font-size:13px;color:#222;">
+  return `<div style="font-family:Arial,sans-serif;font-size:13.5px;color:#222;line-height:1.5;">
   <p>Hi all,</p>
-  ${intro}
+  ${intro}${guideLine ? `<p>${guideLine.trim()}</p>` : ''}
   ${bodyHtml}
   <p>Reach out if there are any queries.</p>
   <p>With regards,<br/>PackTrack Pro (automated)</p>
 </div>`;
 }
+
+const GUIDE_URL = 'https://docs.google.com/document/d/1riW_vy0YiOjHdLmnpQWBq3iKJzy33S1ST1vkGcUaM-c/edit?tab=t.fexbgas9b0ce#heading=h.74w1uubfg19f';
 
 // dateStr: 'YYYY-MM-DD' -> "Nov 20th" (ordinal suffix, month-first — for
 // filenames, e.g. "Nov 20th - Audit Loss Report.xlsx").
@@ -78,4 +123,4 @@ function fmtMonDOrdinal(dateStr) {
   return `${MONTHS[Number(m) - 1]} ${day}${suffix}`;
 }
 
-module.exports = { fmtDMonY, fmtDMon, fmtIstDateTime, fmtNum, fmtMoney, fmtMonDOrdinal, table, wrapEmail };
+module.exports = { fmtDMonY, fmtDMon, fmtIstDateTime, fmtNum, fmtMoney, fmtMonDOrdinal, table, sectionTitle, wrapEmail, COLOR, GUIDE_URL };
