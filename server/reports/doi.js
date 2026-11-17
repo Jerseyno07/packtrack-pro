@@ -1,12 +1,19 @@
 // Report 2: PM Store SKU-wise DOI (Days of Inventory).
 // Layout mirrors "31st Oct - DOI.xlsx" — sheets: Summary, PM Store SKU DOI, Unit Cost.
 
-const { PM_STORE_CODE } = require('../config/pmStoreFacilities');
+const { PM_STORE_CODE, BLR_FACILITY_CODES } = require('../config/pmStoreFacilities');
 const { unitsPerUom, costingUom, conversionBasis, unitCostPerUom, fmtDbDate } = require('./materialCost');
 const { fmtDMon, fmtNum, fmtMoney, table, wrapEmail } = require('./emailTemplate');
 
 const WINDOW_DAYS = 7;
 const STATUS_ORDER = ['Stock-out', 'Critical (≤3d)', 'Low (≤7d)', 'No movement', 'OK'];
+// Fixed go-live cutoff, per direct instruction — not relative to asOfDate.
+// Only SKUs that actually held nonzero stock at CS-001 at some point in
+// [ELIGIBILITY_START_DATE, this report's own audit date] are shown; a
+// material that's been dormant/zero the whole time (dead catalog entry) is
+// excluded, but one that's now a genuine Stock-out (had stock, now zero)
+// still qualifies, since it did have nonzero inventory in that window.
+const ELIGIBILITY_START_DATE = '2026-10-18';
 
 function statusFor(avgDailyIssue, inventoryQty, doi) {
   if (avgDailyIssue === 0) return 'No movement';
@@ -84,7 +91,10 @@ async function getData(pool, { asOfDate }) {
   // INNER JOIN, not LEFT — only materials actually counted in this specific
   // audit (confirmed against the sample: its own "SKUs listed vs SKUs with
   // audit stock or 7-day issues" check row ties the row count to the audit's
-  // own line count, not the full, larger materials master).
+  // own line count, not the full, larger materials master). Additionally
+  // restricted to materials with nonzero physical_qty in some CS-001 audit
+  // between ELIGIBILITY_START_DATE and this audit's own date — per direct
+  // instruction, excludes dead catalog entries that never actually held stock.
   const matRes = await pool.query(
     `SELECT m.code, m.name, m.category, m.unit, m.master_price,
             m.meters_per_unit, m.stickers_per_roll, m.pieces_per_kg,
@@ -92,16 +102,29 @@ async function getData(pool, { asOfDate }) {
        FROM audit_entry_lines ael
        JOIN materials m ON m.id = ael.material_id
       WHERE ael.audit_entry_id = $1 AND m.is_active
+        AND EXISTS (
+          SELECT 1 FROM audit_entry_lines ael2
+          JOIN audit_entries ae2 ON ae2.id = ael2.audit_entry_id
+          JOIN warehouses w2 ON w2.id = ae2.warehouse_id
+          WHERE ael2.material_id = m.id AND w2.code = $2
+            AND ae2.audit_date BETWEEN $3 AND $4 AND ael2.physical_qty > 0
+        )
       ORDER BY m.code`,
-    [audit.id]
+    [audit.id, PM_STORE_CODE, ELIGIBILITY_START_DATE, audit.audit_date]
   );
 
+  // Destination restricted to the Bangalore pilot facilities — a dispatch to
+  // a different city (rare adhoc issue) must not count toward this SKU's
+  // 7-day issue rate, per direct instruction.
   const issueRes = await pool.query(
     `SELECT si.material_id, si.issue_date::text AS issue_date, SUM(si.issued_qty) AS qty
-       FROM stock_issues si JOIN warehouses w ON w.id = si.from_warehouse_id
+       FROM stock_issues si
+       JOIN warehouses w ON w.id = si.from_warehouse_id
+       JOIN warehouses dest ON dest.id = si.to_warehouse_id
       WHERE w.code = $1 AND si.status != 'CANCELLED' AND si.issue_date BETWEEN $2 AND $3
+        AND dest.code = ANY($4)
       GROUP BY si.material_id, si.issue_date`,
-    [PM_STORE_CODE, windowStart, windowEnd]
+    [PM_STORE_CODE, windowStart, windowEnd, BLR_FACILITY_CODES]
   );
   // material_id isn't selected above with its code, so join by re-querying with code — simplest: fetch id->code map.
   const idRes = await pool.query(`SELECT id, code FROM materials`);
@@ -128,6 +151,11 @@ async function getData(pool, { asOfDate }) {
     return computeRow(m, Number(m.physical_qty), dailyIssuesBase);
   });
 
+  // Detail table sorted by status, in the same order the Summary table lists
+  // them (Stock-out, Critical, Low, No movement, OK) — per direct instruction.
+  const statusRank = new Map(STATUS_ORDER.map((s, i) => [s, i]));
+  rows.sort((a, b) => statusRank.get(a.status) - statusRank.get(b.status));
+
   const summaryMap = new Map();
   for (const r of rows) {
     const cur = summaryMap.get(r.status) || { status: r.status, count: 0, value: 0 };
@@ -145,11 +173,7 @@ async function getData(pool, { asOfDate }) {
 function buildWorkbook(ExcelJS, data) {
   const wb = new ExcelJS.Workbook();
 
-  const sum = wb.addWorksheet('Summary');
-  sum.addRow([`PM Store DOI – summary by status (audit of ${data.audit ? fmtDbDate(data.audit.audit_date) : 'n/a'})`]);
-  sum.addRow([]);
-  sum.addRow(['Status', 'Count of SKU Code', 'Sum of Inventory value (Rs.)']);
-  for (const s of data.summary) sum.addRow([s.status, s.count, Number(s.value.toFixed(2))]);
+  buildSummarySheet(wb, data);
 
   const ws = wb.addWorksheet('PM Store SKU DOI');
   ws.addRow([`PM Store – SKU-wise Inventory & Days of Inventory (DOI)`]);
@@ -185,6 +209,142 @@ function buildWorkbook(ExcelJS, data) {
 
 function round2(n) { return Math.round(n * 100) / 100; }
 function round3(n) { return Math.round(n * 1000) / 1000; }
+
+// Colored, formatted Summary sheet — same visual language as the Audit Loss
+// report's Summary sheet (title band, styled header, banded rows, status
+// color coding, an Analysis block below the table).
+function buildSummarySheet(wb, data) {
+  const ws = wb.addWorksheet('Summary');
+  const ncols = 3;
+
+  const COLOR = {
+    title: 'FF1F4E78', titleText: 'FFFFFFFF',
+    header: 'FF2E75B6', headerText: 'FFFFFFFF',
+    band: 'FFF2F2F2',
+    totalRow: 'FFD9E1F2',
+    bad: 'FFFFC7CE', badText: 'FF9C0006',
+    warn: 'FFFFEB9C', warnText: 'FF9C6500',
+    neutral: 'FFD9D9D9', neutralText: 'FF595959',
+    good: 'FFC6EFCE', goodText: 'FF006100',
+    border: 'FFBFBFBF',
+  };
+  const STATUS_COLOR = {
+    'Stock-out': [COLOR.bad, COLOR.badText],
+    'Critical (≤3d)': [COLOR.bad, COLOR.badText],
+    'Low (≤7d)': [COLOR.warn, COLOR.warnText],
+    'No movement': [COLOR.neutral, COLOR.neutralText],
+    'OK': [COLOR.good, COLOR.goodText],
+  };
+  const thinBorder = { style: 'thin', color: { argb: COLOR.border } };
+
+  ws.mergeCells(1, 1, 1, ncols);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = `PM Store DOI — Summary by Status (audit of ${data.audit ? fmtDbDate(data.audit.audit_date) : 'n/a'})`;
+  titleCell.font = { bold: true, size: 14, color: { argb: COLOR.titleText } };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.title } };
+  titleCell.alignment = { vertical: 'middle' };
+  ws.getRow(1).height = 26;
+
+  ws.mergeCells(2, 1, 2, ncols);
+  const noteCell = ws.getCell(2, 1);
+  noteCell.value = 'Status thresholds (on Days of Inventory, from a rolling 7-day average daily issue): Stock-out = zero inventory, Critical ≤ 3 days, Low ≤ 7 days, No movement = no issues in the window, OK = everything else. Only SKUs that held nonzero stock at CS-001 at some point since 18-Oct-2026 are included.';
+  noteCell.font = { italic: true, size: 9, color: { argb: 'FF595959' } };
+  noteCell.alignment = { wrapText: true, vertical: 'middle' };
+  ws.getRow(2).height = 28;
+
+  ws.addRow([]);
+
+  const headerRowNum = 4;
+  const headerRow = ws.getRow(headerRowNum);
+  ['Status', 'Count of SKU Code', 'Sum of Inventory value (Rs.)'].forEach((h, i) => { headerRow.getCell(i + 1).value = h; });
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: COLOR.headerText } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.header } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+  });
+  headerRow.height = 24;
+  ws.views = [{ state: 'frozen', ySplit: headerRowNum }];
+
+  for (const s of data.summary) {
+    const row = ws.addRow([s.status, s.count, Number(s.value.toFixed(2))]);
+    const [fill, text] = STATUS_COLOR[s.status] || [COLOR.band, 'FF000000'];
+    row.eachCell((cell, colNum) => {
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+      cell.font = { color: { argb: text }, bold: colNum !== 1 };
+      if (colNum === 3) cell.numFmt = '#,##0.00';
+    });
+  }
+
+  const totalCount = data.summary.reduce((a, s) => a + s.count, 0);
+  const totalValue = data.summary.reduce((a, s) => a + s.value, 0);
+  const totalRow = ws.addRow(['Total', totalCount, Number(totalValue.toFixed(2))]);
+  totalRow.eachCell((cell, colNum) => {
+    cell.font = { bold: true };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.totalRow } };
+    cell.border = { top: { style: 'double', color: { argb: 'FF1F4E78' } }, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    if (colNum === 3) cell.numFmt = '#,##0.00';
+  });
+
+  ws.getColumn(1).width = 20;
+  ws.getColumn(2).width = 18;
+  ws.getColumn(3).width = 24;
+
+  // ── Analysis block ───────────────────────────────────────────────────
+  const byStatus = (s) => data.summary.find((x) => x.status === s) || { count: 0, value: 0 };
+  const atRiskCount = byStatus('Stock-out').count + byStatus('Critical (≤3d)').count;
+  const atRiskValue = byStatus('Stock-out').value + byStatus('Critical (≤3d)').value;
+  const noMovementCount = byStatus('No movement').count;
+
+  let r = ws.rowCount + 2;
+  ws.mergeCells(r, 1, r, ncols);
+  const analysisTitle = ws.getCell(r, 1);
+  analysisTitle.value = 'Analysis';
+  analysisTitle.font = { bold: true, size: 13, color: { argb: COLOR.titleText } };
+  analysisTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.title } };
+  ws.getRow(r).height = 20;
+  r += 1;
+
+  const addInsight = (label, value, fillArgb, textArgb) => {
+    ws.getCell(r, 1).value = label;
+    ws.getCell(r, 1).font = { bold: true };
+    ws.mergeCells(r, 2, r, ncols);
+    const vCell = ws.getCell(r, 2);
+    vCell.value = value;
+    if (fillArgb) {
+      vCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillArgb } };
+      vCell.font = { bold: true, color: { argb: textArgb } };
+    }
+    r += 1;
+  };
+
+  addInsight('SKUs tracked', totalCount);
+  addInsight('Total inventory value (Rs.)', Number(totalValue.toFixed(2)));
+  addInsight(
+    'Stock-out + Critical SKUs',
+    `${atRiskCount} SKU(s), ₹${atRiskValue.toFixed(2)} at risk`,
+    atRiskCount ? COLOR.bad : COLOR.good,
+    atRiskCount ? COLOR.badText : COLOR.goodText
+  );
+  addInsight(
+    'Non-moving SKUs (no issues in window)',
+    noMovementCount,
+    noMovementCount ? COLOR.neutral : COLOR.good,
+    noMovementCount ? COLOR.neutralText : COLOR.goodText
+  );
+
+  r += 1;
+  ws.mergeCells(r, 1, r, ncols);
+  const takeaway = ws.getCell(r, 1);
+  takeaway.value = atRiskCount
+    ? `${atRiskCount} SKU(s) need attention this cycle (Stock-out or Critical ≤ 3 days) — see the highlighted rows in the Detail sheet, sorted to the top by status.`
+    : `No SKU is in Stock-out or Critical this cycle — the lowest-coverage items are in the Low (≤7d) bucket; see the Detail sheet for the full breakdown.`;
+  takeaway.font = { italic: true, bold: true, size: 11, color: { argb: atRiskCount ? COLOR.badText : COLOR.goodText } };
+  takeaway.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: atRiskCount ? COLOR.bad : COLOR.good } };
+  takeaway.alignment = { wrapText: true, vertical: 'middle' };
+  ws.getRow(r).height = 24;
+}
 
 // Matches "BLR QuickCom Central PM Store Holding Inventory Report" sample.
 function buildSummaryHtml(data) {
