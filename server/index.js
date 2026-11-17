@@ -2757,10 +2757,11 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       const ean = String(row['ean'] ?? '').trim() || null;
       const packing_type = String(row['packing_type'] ?? '').trim() || null;
       const primaryRaw = String(row['packing_material'] ?? row['primary_pm_code'] ?? '').trim();
-      const parseRate = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
-      const primary_consumption_rate = parseRate(row['primary_consumption_rate']);
-      const secondary_consumption_rate = parseRate(row['secondary_consumption_rate']);
-      const tertiary_consumption_rate = parseRate(row['tertiary_consumption_rate']);
+      const parseRate = (v) => (v === '' || v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v));
+      // "Consumption Qty" (Vishal's PM map file) is the primary material's
+      // per-unit rate — primary_consumption_rate/etc. kept as a fallback for
+      // files that already name the column that way directly.
+      const primary_consumption_rate = parseRate(row['consumption_qty'] ?? row['primary_consumption_rate']);
 
       if (!sku_code) { errors.push({ row: rowNum, error: 'FSN ID is required' }); continue; }
 
@@ -2778,24 +2779,31 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
         }
       }
 
-      // Collect sec. packing materials — any column with a non-empty, non-zero value
-      const secCodes = [];
+      // Collect sec. packing materials — any column with a non-empty, non-zero
+      // value. That value IS the per-unit consumption rate for that material
+      // (e.g. "Sec. packing (Cling wrap)" = 0.42), not just a yes/no flag —
+      // carried through to secondary/tertiary_consumption_rate in file order.
+      const secEntries = [];
       for (const col of secPackingCols) {
         const val = row[col];
         const isEmpty = val === '' || val === null || val === undefined || Number(val) === 0;
         if (isEmpty) continue;
         // Extract material name from the column header, e.g. "sec._packing_(foam_roll)" → "Foam Roll"
-        const nameMatch = col.match(/\(([^)]+)\)$/);
+        const nameMatch = col.match(/\(([^)]+)\)/);
         const matName = nameMatch ? nameMatch[1].replace(/_/g, ' ') : col;
         const code = resolveMaterial(matName);
-        if (code && code !== primary_pm_code && !secCodes.includes(code)) secCodes.push(code);
+        if (code && code !== primary_pm_code && !secEntries.some((e) => e.code === code)) {
+          secEntries.push({ code, rate: parseRate(val) });
+        }
       }
 
       validRows.push({
         sku_code, sku_name, source, ean, packing_type, primary_pm_code,
-        secondary_pm_code: secCodes[0] ?? null,
-        tertiary_pm_code: secCodes[1] ?? null,
-        primary_consumption_rate, secondary_consumption_rate, tertiary_consumption_rate,
+        secondary_pm_code: secEntries[0]?.code ?? null,
+        tertiary_pm_code: secEntries[1]?.code ?? null,
+        primary_consumption_rate,
+        secondary_consumption_rate: secEntries[0]?.rate ?? null,
+        tertiary_consumption_rate: secEntries[1]?.rate ?? null,
       });
     }
 
