@@ -281,15 +281,187 @@ function round2(n) { return Math.round(n * 100) / 100; }
 function round3(n) { return Math.round(n * 1000) / 1000; }
 const fmtDate = fmtDbDate;
 
+const SUMMARY_HEADERS = [
+  'Audit Date', 'Audit Ref', 'Posted (IST)', 'Opening Period From', 'Opening Qty', 'Inward - Normal', 'Inward - Adhoc', 'Total Inward',
+  'Issue - Normal', 'Issue - Adhoc', 'Total Issue', 'Closing Qty (Physical)', 'Loss Qty (Net)', 'Gross Loss Qty (shortages only)',
+  'Loss Value (Net, INR)', 'PM Lines with Loss', 'Loss Lines with No Cost',
+];
+
+// Colored, formatted Summary sheet — numeric cells stay numbers (not
+// pre-formatted strings) with numFmt applied, so Excel can still sort/filter/
+// sum them; loss cells are conditionally shaded (red=shortage, green=gain);
+// an Analysis block below the table gives an at-a-glance readout instead of
+// making the reader work it out from 17 raw columns.
+function buildSummarySheet(wb, data) {
+  const ws = wb.addWorksheet('Summary');
+  const rows = data.summaryByAudit || [];
+  const ncols = SUMMARY_HEADERS.length;
+  const total = (field) => rows.reduce((a, r) => a + r[field], 0);
+  const colLetter = (n) => String.fromCharCode(64 + n); // 1-indexed -> 'A','B',...
+
+  const COLOR = {
+    title: 'FF1F4E78', titleText: 'FFFFFFFF',
+    header: 'FF2E75B6', headerText: 'FFFFFFFF',
+    band: 'FFF2F2F2',
+    totalRow: 'FFD9E1F2',
+    shortage: 'FFFFC7CE', shortageText: 'FF9C0006',
+    gain: 'FFC6EFCE', gainText: 'FF006100',
+    clean: 'FFE2EFDA', cleanText: 'FF375623',
+    border: 'FFBFBFBF',
+  };
+  const thinBorder = { style: 'thin', color: { argb: COLOR.border } };
+
+  // Title
+  ws.mergeCells(1, 1, 1, ncols);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = `Central PM Store (Bangalore) — Audit-wise Loss Summary, ${fmtDMonY(data.weekStart)} to ${fmtDMonY(data.weekEnd)}`;
+  titleCell.font = { bold: true, size: 14, color: { argb: COLOR.titleText } };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.title } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(1).height = 26;
+
+  // Legend / method note
+  ws.mergeCells(2, 1, 2, ncols);
+  const noteCell = ws.getCell(2, 1);
+  noteCell.value = 'Loss Qty = (Opening + Inward) − (Closing + Issue), in each PM’s costing UoM. Positive = shortage (red), negative = gain (green), zero = reconciled (green). Rows assigned by ledger posting time (stock_ledger.created_at), not nominal GRN/issue date. See PM_Audit_Backup for the per-material breakdown.';
+  noteCell.font = { italic: true, size: 9, color: { argb: 'FF595959' } };
+  noteCell.alignment = { wrapText: true, vertical: 'middle' };
+  ws.getRow(2).height = 28;
+
+  ws.addRow([]);
+
+  // Header row
+  const headerRowNum = 4;
+  const headerRow = ws.getRow(headerRowNum);
+  SUMMARY_HEADERS.forEach((h, i) => { headerRow.getCell(i + 1).value = h; });
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: COLOR.headerText } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.header } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+  });
+  headerRow.height = 32;
+  ws.views = [{ state: 'frozen', ySplit: headerRowNum }];
+
+  // Data rows
+  rows.forEach((r, idx) => {
+    const row = ws.addRow([
+      fmtDMonY(r.auditDate), r.auditRef, fmtIstDateTime(r.postedAt), r.openingPeriodFrom,
+      r.openingQty, r.inwardNormal, r.inwardAdhoc, r.totalInward,
+      r.issueNormal, r.issueAdhoc, r.totalIssue, r.closingQty,
+      r.lossQtyNet, r.grossLossQty, r.lossValueNet, r.pmLinesWithLoss, r.lossLinesWithNoCost,
+    ]);
+    const band = idx % 2 === 1 ? COLOR.band : 'FFFFFFFF';
+    row.eachCell((cell, colNum) => {
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+      if (colNum >= 5) cell.numFmt = '#,##0.00';
+      if (colNum >= 5 && colNum !== 16 && colNum !== 17) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: band } };
+      } else if (colNum < 5) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: band } };
+      }
+    });
+    // Conditional shading on the two loss-qty columns (13, 14) and loss value (15).
+    for (const colNum of [13, 14, 15]) {
+      const cell = row.getCell(colNum);
+      const val = colNum === 15 ? r.lossValueNet : (colNum === 13 ? r.lossQtyNet : r.grossLossQty);
+      if (val > 0) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.shortage } };
+        cell.font = { color: { argb: COLOR.shortageText }, bold: true };
+      } else if (val < 0) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.gain } };
+        cell.font = { color: { argb: COLOR.gainText }, bold: true };
+      } else {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.clean } };
+        cell.font = { color: { argb: COLOR.cleanText } };
+        cell.value = 0;
+      }
+    }
+  });
+
+  // Total row
+  const totalRow = ws.addRow([
+    'Total (all audits)', '', '', '', '',
+    total('inwardNormal'), total('inwardAdhoc'), total('totalInward'),
+    total('issueNormal'), total('issueAdhoc'), total('totalIssue'), '',
+    total('lossQtyNet'), total('grossLossQty'), total('lossValueNet'),
+    total('pmLinesWithLoss'), total('lossLinesWithNoCost'),
+  ]);
+  totalRow.eachCell((cell, colNum) => {
+    cell.font = { bold: true };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.totalRow } };
+    cell.border = { top: { style: 'double', color: { argb: 'FF1F4E78' } }, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    if (colNum >= 6) cell.numFmt = '#,##0.00';
+  });
+
+  // Column widths
+  const widths = [13, 20, 18, 26, 12, 13, 13, 12, 12, 12, 11, 15, 12, 16, 14, 11, 12];
+  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+  // ── Analysis block ──────────────────────────────────────────────────────
+  const anyLoss = rows.some((r) => r.lossQtyNet !== 0);
+  const auditsWithLoss = rows.filter((r) => r.lossQtyNet !== 0);
+  const worst = auditsWithLoss.length
+    ? auditsWithLoss.reduce((a, b) => (Math.abs(b.lossValueNet) > Math.abs(a.lossValueNet) ? b : a))
+    : null;
+
+  let r = ws.rowCount + 2;
+  ws.mergeCells(r, 1, r, ncols);
+  const analysisTitle = ws.getCell(r, 1);
+  analysisTitle.value = 'Analysis';
+  analysisTitle.font = { bold: true, size: 13, color: { argb: COLOR.titleText } };
+  analysisTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.title } };
+  ws.getRow(r).height = 20;
+  r += 1;
+
+  const addInsight = (label, value, fillArgb, textArgb) => {
+    ws.getCell(r, 1).value = label;
+    ws.getCell(r, 1).font = { bold: true };
+    ws.mergeCells(r, 2, r, ncols);
+    const vCell = ws.getCell(r, 2);
+    vCell.value = value;
+    if (fillArgb) {
+      vCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillArgb } };
+      vCell.font = { bold: true, color: { argb: textArgb } };
+    }
+    r += 1;
+  };
+
+  addInsight('Audits reviewed', `${rows.length} (${fmtDMonY(data.weekStart)} – ${fmtDMonY(data.weekEnd)})`);
+  addInsight('Total Inward (UoM, all PMs)', Number(total('totalInward').toFixed(2)));
+  addInsight('Total Issue (UoM, all PMs)', Number(total('totalIssue').toFixed(2)));
+  addInsight(
+    'Net Loss Value (INR)',
+    Number(total('lossValueNet').toFixed(2)),
+    anyLoss ? COLOR.shortage : COLOR.clean,
+    anyLoss ? COLOR.shortageText : COLOR.cleanText
+  );
+  addInsight(
+    'Audits with a loss',
+    `${auditsWithLoss.length} of ${rows.length}`,
+    auditsWithLoss.length ? COLOR.shortage : COLOR.clean,
+    auditsWithLoss.length ? COLOR.shortageText : COLOR.cleanText
+  );
+  if (worst) {
+    addInsight('Largest single-audit loss', `${worst.auditRef} (${fmtDMonY(worst.auditDate)}) — ₹${worst.lossValueNet.toFixed(2)}`, COLOR.shortage, COLOR.shortageText);
+  }
+
+  r += 1;
+  ws.mergeCells(r, 1, r, ncols);
+  const takeaway = ws.getCell(r, 1);
+  takeaway.value = anyLoss
+    ? `${auditsWithLoss.length} of ${rows.length} audits this week showed a net stock discrepancy totaling ₹${total('lossValueNet').toFixed(2)} — see the highlighted rows above and PM_Audit_Backup for which materials drove it.`
+    : `Every audit this week reconciled perfectly — Opening + Inward matched Closing + Issue for all ${rows.length} audits, with zero net loss or gain.`;
+  takeaway.font = { italic: true, bold: true, size: 11, color: { argb: anyLoss ? COLOR.shortageText : COLOR.cleanText } };
+  takeaway.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: anyLoss ? COLOR.shortage : COLOR.clean } };
+  takeaway.alignment = { wrapText: true, vertical: 'middle' };
+  ws.getRow(r).height = 24;
+}
+
 function buildWorkbook(ExcelJS, data) {
   const wb = new ExcelJS.Workbook();
 
-  const sum = wb.addWorksheet('Summary');
-  sum.addRow([`Central PM Store (Bangalore) - Audit-wise Loss Summary, ${data.weekStart} to ${data.weekEnd}`]);
-  sum.addRow(['Loss Qty = (Opening + Inward) - (Closing + Issue). Positive = shortage, negative = gain. Quantities are in each PM\'s costing UoM; see PM_Audit_Backup for detail.']);
-  sum.addRow([]);
-  sum.addRow(['Audit Ref', 'Audit Date', 'Total Loss Value (Rs.)']);
-  for (const s of data.summary) sum.addRow([s.auditRef, fmtDate(s.auditDate), round2(s.lossValue)]);
+  buildSummarySheet(wb, data);
 
   const mat = wb.addWorksheet('Materials');
   mat.addRow(['PM Code', 'PM Name', 'Costing UoM', 'Cost per UoM (INR)', 'Base unit in PackTrack', 'Units per UoM', 'Conversion basis', 'Cost Status']);
@@ -343,9 +515,7 @@ function buildSummaryHtml(data) {
   const anyLoss = rows.some((r) => r.lossQtyNet !== 0);
 
   const mainTable = table(
-    ['Audit Date', 'Audit Ref', 'Posted (IST)', 'Opening Period From', 'Opening Qty', 'Inward - Normal', 'Inward - Adhoc', 'Total Inward',
-      'Issue - Normal', 'Issue - Adhoc', 'Total Issue', 'Closing Qty (Physical)', 'Loss Qty (Net)', 'Gross Loss Qty (shortages only)',
-      'Loss Value (Net, INR)', 'PM Lines with Loss', 'Loss Lines with No Cost'],
+    SUMMARY_HEADERS,
     [
       ...rows.map((r) => [
         fmtDMonY(r.auditDate), r.auditRef, fmtIstDateTime(r.postedAt), r.openingPeriodFrom,
