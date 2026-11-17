@@ -73,14 +73,21 @@ async function getData(pool, { asOfDate }) {
 
   for (const audit of audits) {
     const prevRes = await pool.query(
-      `SELECT id, audit_date::text AS audit_date FROM audit_entries
+      `SELECT id, audit_date::text AS audit_date, created_at FROM audit_entries
         WHERE warehouse_id = $1 AND audit_date < $2
         ORDER BY audit_date DESC, created_at DESC LIMIT 1`,
       [warehouseId, audit.audit_date]
     );
     const prevAudit = prevRes.rows[0] || null;
-    const periodStart = prevAudit ? prevAudit.audit_date : null; // exclusive
-    const periodEndExclusiveDate = audit.audit_date;
+    // Period boundary is each audit's own *posting* timestamp (created_at),
+    // not audit_date/grn_date/issue_date — a GRN/issue is assigned to the
+    // audit it was actually posted before, by wall-clock sequence, not by
+    // which calendar day it's nominally dated for (backdated/late-entered
+    // rows were landing in the wrong audit's loss figures under date-based
+    // assignment). periodStart is exclusive, periodEnd (this audit's own
+    // created_at) is inclusive.
+    const periodStart = prevAudit ? prevAudit.created_at : null;
+    const periodEnd = audit.created_at;
 
     // "Opening Period From" label, matching the sample's "Audit DD-Mon (no
     // audit on DD-Mon)" format when there's a gap of skipped calendar days.
@@ -106,26 +113,39 @@ async function getData(pool, { asOfDate }) {
       prevLineByMaterial = new Map(prevLineRes.rows.map((r) => [String(r.material_id), r]));
     }
 
+    // Joined to stock_ledger and filtered on *its* created_at (the actual
+    // posting timestamp, single source of truth per this codebase's own
+    // convention) rather than grn_date/issue_date — a backdated or
+    // late-entered GRN/issue now lands in the audit period it was really
+    // posted into, not the one its nominal date happens to fall in.
     const inwardParams = periodStart
-      ? [warehouseId, periodStart, periodEndExclusiveDate]
-      : [warehouseId, periodEndExclusiveDate];
+      ? [warehouseId, periodStart, periodEnd]
+      : [warehouseId, periodEnd];
     const inwardQuery = periodStart
-      ? `SELECT gr.*, po.po_no FROM goods_receipts gr LEFT JOIN purchase_orders po ON po.id = gr.po_id
-          WHERE gr.warehouse_id = $1 AND gr.status = 'POSTED' AND gr.grn_date > $2 AND gr.grn_date <= $3`
-      : `SELECT gr.*, po.po_no FROM goods_receipts gr LEFT JOIN purchase_orders po ON po.id = gr.po_id
-          WHERE gr.warehouse_id = $1 AND gr.status = 'POSTED' AND gr.grn_date <= $2`;
+      ? `SELECT gr.*, po.po_no FROM goods_receipts gr
+           JOIN stock_ledger sl ON sl.ref_table = 'goods_receipts' AND sl.ref_id = gr.id AND sl.movement_type = 'GRN_INWARD'
+           LEFT JOIN purchase_orders po ON po.id = gr.po_id
+          WHERE gr.warehouse_id = $1 AND gr.status = 'POSTED' AND sl.created_at > $2 AND sl.created_at <= $3`
+      : `SELECT gr.*, po.po_no FROM goods_receipts gr
+           JOIN stock_ledger sl ON sl.ref_table = 'goods_receipts' AND sl.ref_id = gr.id AND sl.movement_type = 'GRN_INWARD'
+           LEFT JOIN purchase_orders po ON po.id = gr.po_id
+          WHERE gr.warehouse_id = $1 AND gr.status = 'POSTED' AND sl.created_at <= $2`;
     const inwardRes = await pool.query(inwardQuery, inwardParams);
 
     const issueParams = periodStart
-      ? [warehouseId, periodStart, periodEndExclusiveDate]
-      : [warehouseId, periodEndExclusiveDate];
+      ? [warehouseId, periodStart, periodEnd]
+      : [warehouseId, periodEnd];
     const issueQuery = periodStart
       ? `SELECT si.*, w.code AS dest_code, w.name AS dest_name, w.warehouse_type AS dest_type
-           FROM stock_issues si JOIN warehouses w ON w.id = si.to_warehouse_id
-          WHERE si.from_warehouse_id = $1 AND si.status != 'CANCELLED' AND si.issue_date > $2 AND si.issue_date <= $3`
+           FROM stock_issues si
+           JOIN stock_ledger sl ON sl.ref_table = 'stock_issues' AND sl.ref_id = si.id AND sl.movement_type = 'ISSUE_OUT'
+           JOIN warehouses w ON w.id = si.to_warehouse_id
+          WHERE si.from_warehouse_id = $1 AND si.status != 'CANCELLED' AND sl.created_at > $2 AND sl.created_at <= $3`
       : `SELECT si.*, w.code AS dest_code, w.name AS dest_name, w.warehouse_type AS dest_type
-           FROM stock_issues si JOIN warehouses w ON w.id = si.to_warehouse_id
-          WHERE si.from_warehouse_id = $1 AND si.status != 'CANCELLED' AND si.issue_date <= $2`;
+           FROM stock_issues si
+           JOIN stock_ledger sl ON sl.ref_table = 'stock_issues' AND sl.ref_id = si.id AND sl.movement_type = 'ISSUE_OUT'
+           JOIN warehouses w ON w.id = si.to_warehouse_id
+          WHERE si.from_warehouse_id = $1 AND si.status != 'CANCELLED' AND sl.created_at <= $2`;
     const issueRes = await pool.query(issueQuery, issueParams);
 
     const inwardByMaterial = new Map(); // material_id -> { normal, adhoc }
