@@ -2730,13 +2730,24 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
     if (!rawRows.length) throw new ApiError(400, 'EMPTY_FILE', 'File contains no data rows');
 
     // Build lookup: lowercase(name) → code  AND  lowercase(code) → code
-    const matRows = (await pool.query('SELECT code, name FROM materials WHERE is_active')).rows;
+    const matRows = (await pool.query('SELECT code, name, meters_per_unit FROM materials WHERE is_active')).rows;
     const matByName = new Map(matRows.map((r) => [r.name.toLowerCase().trim(), r.code]));
     const matByCode = new Map(matRows.map((r) => [r.code.toLowerCase().trim(), r.code]));
+    const meterRollCodes = new Set(matRows.filter((r) => r.meters_per_unit).map((r) => r.code));
     function resolveMaterial(val) {
       if (!val) return null;
       const v = String(val).toLowerCase().trim();
       return matByName.get(v) ?? matByCode.get(v) ?? null;
+    }
+    // The PM map file's "Consumption Qty"/"Sec. packing (...)" values are in cm
+    // for roll materials (DB stores roll quantities in meters — see 016_meters_
+    // per_unit_fix.sql) but already in the material's own base unit (pieces) for
+    // everything else, e.g. Butter Paper's 0.25 = 0.25 pieces, no conversion.
+    // Confirmed directly by the user 2026-11-17. Convert once at upload time so
+    // the scraper can apply the stored rate directly with no further scaling.
+    function toBaseUnitRate(code, rawRate) {
+      if (rawRate === null) return null;
+      return meterRollCodes.has(code) ? rawRate / 100 : rawRate;
     }
 
     // Detect secondary packing column keys from first data row
@@ -2761,7 +2772,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
       // "Consumption Qty" (Vishal's PM map file) is the primary material's
       // per-unit rate — primary_consumption_rate/etc. kept as a fallback for
       // files that already name the column that way directly.
-      const primary_consumption_rate = parseRate(row['consumption_qty'] ?? row['primary_consumption_rate']);
+      const primaryRawRate = parseRate(row['consumption_qty'] ?? row['primary_consumption_rate']);
 
       if (!sku_code) { errors.push({ row: rowNum, error: 'FSN ID is required' }); continue; }
 
@@ -2778,6 +2789,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
           continue;
         }
       }
+      const primary_consumption_rate = primary_pm_code ? toBaseUnitRate(primary_pm_code, primaryRawRate) : null;
 
       // Collect sec. packing materials — any column with a non-empty, non-zero
       // value. That value IS the per-unit consumption rate for that material
@@ -2793,7 +2805,7 @@ app.post('/api/v1/sku-packaging-master/upload', authenticate, requireRole('ADMIN
         const matName = nameMatch ? nameMatch[1].replace(/_/g, ' ') : col;
         const code = resolveMaterial(matName);
         if (code && code !== primary_pm_code && !secEntries.some((e) => e.code === code)) {
-          secEntries.push({ code, rate: parseRate(val) });
+          secEntries.push({ code, rate: toBaseUnitRate(code, parseRate(val)) });
         }
       }
 
