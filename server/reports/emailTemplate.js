@@ -66,4 +66,16 @@ function wrapEmail({ intro, bodyHtml, guideUrl }) {
 </div>`;
 }
 
-module.exports = { fmtDMonY, fmtDMon, fmtIstDateTime, fmtNum, fmtMoney, table, wrapEmail };
+// dateStr: 'YYYY-MM-DD' -> "Nov 20th" (ordinal suffix, month-first — for
+// filenames, e.g. "Nov 20th - Audit Loss Report.xlsx").
+function fmtMonDOrdinal(dateStr) {
+  const [, m, dStr] = dateStr.split('-');
+  const day = Number(dStr);
+  const suffix = (day % 10 === 1 && day !== 11) ? 'st'
+    : (day % 10 === 2 && day !== 12) ? 'nd'
+    : (day % 10 === 3 && day !== 13) ? 'rd'
+    : 'th';
+  return `${MONTHS[Number(m) - 1]} ${day}${suffix}`;
+}
+
+module.exports = { fmtDMonY, fmtDMon, fmtIstDateTime, fmtNum, fmtMoney, fmtMonDOrdinal, table, wrapEmail };

@@ -1,9 +1,10 @@
 const ExcelJS = require('exceljs');
 const { previousOpsDay } = require('../config/pmStoreFacilities');
+const { fmtMonDOrdinal } = require('./emailTemplate');
 
 const REPORTS = {
-  doi: { module: require('./doi'), subject: (d) => `PM Store SKU DOI — ${d}`, filenamePrefix: 'PM_DOI' },
-  auditLoss: { module: require('./auditLoss'), subject: (d) => `Central PM Store Audit-wise Loss — ${d}`, filenamePrefix: 'PM_Audit_Loss' },
+  doi: { module: require('./doi'), subject: (d) => `PM Store SKU DOI — ${d}`, reportLabel: 'DOI Report' },
+  auditLoss: { module: require('./auditLoss'), subject: (d) => `Central PM Store Audit-wise Loss — ${d}`, reportLabel: 'Audit Loss Report' },
 };
 
 async function generate(pool, reportKey, { asOfDate } = {}) {
@@ -16,10 +17,14 @@ async function generate(pool, reportKey, { asOfDate } = {}) {
   const buffer = await wb.xlsx.writeBuffer();
   const html = entry.module.buildSummaryHtml(data);
 
+  // Filename = <date generated, ordinal> - <report type>, e.g.
+  // "Nov 20th - Audit Loss Report.xlsx" — per direct instruction.
+  const filename = `${fmtMonDOrdinal(date)} - ${entry.reportLabel}.xlsx`;
+
   return {
     subject: entry.subject(date),
     html,
-    attachments: [{ filename: `${entry.filenamePrefix}_${date}.xlsx`, buffer: Buffer.from(buffer) }],
+    attachments: [{ filename, buffer: Buffer.from(buffer) }],
   };
 }
 

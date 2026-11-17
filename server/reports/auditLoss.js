@@ -232,6 +232,12 @@ async function getData(pool, { asOfDate }) {
       });
     }
 
+    // Summary qty columns are in each PM's costing UoM (rolls/kg/pieces),
+    // not base units (meters/stickers/pieces) — per direct instruction, since
+    // base-unit totals were inflating the numbers without adding information
+    // (still adds different UoMs together across materials; same caveat the
+    // original sample itself notes — use Loss Value / PM_Audit_Backup for
+    // real per-material decisions, this total is a rough at-a-glance figure).
     const auditRows = backupRows.filter((r) => r.auditRef === audit.audit_ref);
     const sum = (field) => auditRows.reduce((a, r) => a + r[field], 0);
     summaryByAudit.push({
@@ -239,19 +245,19 @@ async function getData(pool, { asOfDate }) {
       auditDate: audit.audit_date,
       postedAt: audit.created_at,
       openingPeriodFrom,
-      openingQty: sum('openingBase'),
-      inwardNormal: sum('inwardNormalBase'),
-      inwardAdhoc: sum('inwardAdhocBase'),
-      totalInward: sum('inwardNormalBase') + sum('inwardAdhocBase'),
-      issueNormal: sum('issueNormalBase'),
-      issueAdhoc: sum('issueAdhocBase'),
-      totalIssue: sum('issueNormalBase') + sum('issueAdhocBase'),
-      closingQty: sum('closingBase'),
-      lossQtyNet: sum('lossBase'),
-      grossLossQty: auditRows.filter((r) => r.lossBase > 0).reduce((a, r) => a + r.lossBase, 0),
+      openingQty: sum('openingUom'),
+      inwardNormal: sum('inwardNormalUom'),
+      inwardAdhoc: sum('inwardAdhocUom'),
+      totalInward: sum('inwardNormalUom') + sum('inwardAdhocUom'),
+      issueNormal: sum('issueNormalUom'),
+      issueAdhoc: sum('issueAdhocUom'),
+      totalIssue: sum('issueNormalUom') + sum('issueAdhocUom'),
+      closingQty: sum('closingUom'),
+      lossQtyNet: sum('lossQtyUom'),
+      grossLossQty: auditRows.filter((r) => r.lossQtyUom > 0).reduce((a, r) => a + r.lossQtyUom, 0),
       lossValueNet: sum('lossValue'),
-      pmLinesWithLoss: auditRows.filter((r) => r.lossBase !== 0).length,
-      lossLinesWithNoCost: auditRows.filter((r) => r.lossBase !== 0 && r.costFlag === 'NO COST').length,
+      pmLinesWithLoss: auditRows.filter((r) => r.lossQtyUom !== 0).length,
+      lossLinesWithNoCost: auditRows.filter((r) => r.lossQtyUom !== 0 && r.costFlag === 'NO COST').length,
     });
   }
 
@@ -348,15 +354,15 @@ function buildSummaryHtml(data) {
     [
       ...rows.map((r) => [
         fmtDMonY(r.auditDate), r.auditRef, fmtIstDateTime(r.postedAt), r.openingPeriodFrom,
-        fmtNum(r.openingQty), fmtNum(r.inwardNormal), fmtNum(r.inwardAdhoc), fmtNum(r.totalInward),
-        fmtNum(r.issueNormal), fmtNum(r.issueAdhoc), fmtNum(r.totalIssue), fmtNum(r.closingQty),
-        r.lossQtyNet === 0 ? '-' : fmtNum(r.lossQtyNet), r.grossLossQty === 0 ? '-' : fmtNum(r.grossLossQty),
+        fmtNum(r.openingQty, 2), fmtNum(r.inwardNormal, 2), fmtNum(r.inwardAdhoc, 2), fmtNum(r.totalInward, 2),
+        fmtNum(r.issueNormal, 2), fmtNum(r.issueAdhoc, 2), fmtNum(r.totalIssue, 2), fmtNum(r.closingQty, 2),
+        r.lossQtyNet === 0 ? '-' : fmtNum(r.lossQtyNet, 2), r.grossLossQty === 0 ? '-' : fmtNum(r.grossLossQty, 2),
         r.lossValueNet === 0 ? '-' : fmtMoney(r.lossValueNet),
         r.pmLinesWithLoss === 0 ? '-' : fmtNum(r.pmLinesWithLoss), r.lossLinesWithNoCost === 0 ? '-' : fmtNum(r.lossLinesWithNoCost),
       ]),
-      ['<b>Total (all audits)</b>', '', '', '', '', fmtNum(total('inwardNormal')), fmtNum(total('inwardAdhoc')), fmtNum(total('totalInward')),
-        fmtNum(total('issueNormal')), fmtNum(total('issueAdhoc')), fmtNum(total('totalIssue')), '',
-        total('lossQtyNet') === 0 ? '-' : fmtNum(total('lossQtyNet')), total('grossLossQty') === 0 ? '-' : fmtNum(total('grossLossQty')),
+      ['<b>Total (all audits)</b>', '', '', '', '', fmtNum(total('inwardNormal'), 2), fmtNum(total('inwardAdhoc'), 2), fmtNum(total('totalInward'), 2),
+        fmtNum(total('issueNormal'), 2), fmtNum(total('issueAdhoc'), 2), fmtNum(total('totalIssue'), 2), '',
+        total('lossQtyNet') === 0 ? '-' : fmtNum(total('lossQtyNet'), 2), total('grossLossQty') === 0 ? '-' : fmtNum(total('grossLossQty'), 2),
         total('lossValueNet') === 0 ? '-' : fmtMoney(total('lossValueNet')),
         total('pmLinesWithLoss') === 0 ? '-' : fmtNum(total('pmLinesWithLoss')), total('lossLinesWithNoCost') === 0 ? '-' : fmtNum(total('lossLinesWithNoCost'))],
     ]
