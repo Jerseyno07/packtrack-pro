@@ -14,17 +14,18 @@ function registerReportCrons(pool, mailer) {
   }
 
   cron.schedule('0 12 * * *', () => {
-    runReport(pool, mailer, 'doi', { recipients: recipients.doi }).catch((e) => console.error('[reports/scheduler] doi run failed:', e.message));
+    runReport(pool, mailer, 'variance', { recipients: recipients.variance }).catch((e) => console.error('[reports/scheduler] variance run failed:', e.message));
   }, { timezone: 'Asia/Kolkata' });
 
-  // TODO: register the Variance report's daily 12:00 IST cron once that
-  // report module ships (reports 2 & 3 were built first, per instruction).
+  cron.schedule('0 12 * * *', () => {
+    runReport(pool, mailer, 'doi', { recipients: recipients.doi }).catch((e) => console.error('[reports/scheduler] doi run failed:', e.message));
+  }, { timezone: 'Asia/Kolkata' });
 
   cron.schedule('0 12 * * 5', () => {
     runReport(pool, mailer, 'auditLoss', { recipients: recipients.auditLoss }).catch((e) => console.error('[reports/scheduler] auditLoss run failed:', e.message));
   }, { timezone: 'Asia/Kolkata' });
 
-  console.log('[reports/scheduler] Report crons registered (12:00 IST daily: doi; Fri 12:00 IST: auditLoss).');
+  console.log('[reports/scheduler] Report crons registered (12:00 IST daily: variance, doi; Fri 12:00 IST: auditLoss).');
 }
 
 module.exports = { registerReportCrons };

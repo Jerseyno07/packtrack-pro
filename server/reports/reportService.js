@@ -3,6 +3,7 @@ const { previousOpsDay } = require('../config/pmStoreFacilities');
 const { fmtMonDOrdinal } = require('./emailTemplate');
 
 const REPORTS = {
+  variance: { module: require('./variance'), subject: (d) => `PM Issued vs Consumption — Variance — ${d}`, reportLabel: 'Variance Report' },
   doi: { module: require('./doi'), subject: (d) => `PM Store SKU DOI — ${d}`, reportLabel: 'DOI Report' },
   auditLoss: { module: require('./auditLoss'), subject: (d) => `Central PM Store Audit-wise Loss — ${d}`, reportLabel: 'Audit Loss Report' },
 };
