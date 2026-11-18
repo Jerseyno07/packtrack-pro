@@ -1,6 +1,13 @@
-// Consumption scraper — deducts stock based on packaging usage from Redash API.
+// Consumption scraper — deducts stock based on packaging usage.
 // Schedule: 0 5 * * * (5am daily)
+//
+// Primary path (since 2026-11-18): direct query against the asgard MySQL DB,
+// running the exact SQL the Redash queries below run (cron/sql/fcConsumption.sql,
+// cron/sql/ccConsumption.sql) minus Redash's job-queue/poll overhead — FC in
+// particular was intermittently blowing even a 10-minute poll cap. Falls back
+// to Redash automatically if the DB is unreachable or the query errors.
 // Environment vars required:
+//   ASGARD_MYSQL_HOST/PORT/USER/PASSWORD/DATABASE — direct asgard MySQL access
 //   CONSUMPTION_DASHBOARD_URL      — e.g. https://analytics-new-k8s.ninjacart.in
 //   CONSUMPTION_DASHBOARD_API_KEY  — Redash API key, scoped to the FC query (57634, "FC - Consumption - Packtrack - New")
 //   CONSUMPTION_CC_DASHBOARD_API_KEY — Redash API key, scoped to the CC query (57635)
@@ -21,6 +28,45 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const fs = require('fs');
+const path = require('path');
+const mysql = require('mysql2/promise');
+
+// Direct asgard MySQL access — primary path since 2026-11-18. Runs the exact
+// SQL Redash queries 57634 (FC) / 57635 (CC) ran, minus Redash's job-queue/poll
+// overhead, which is what made FC intermittently blow the (even 10-minute) poll
+// cap. FC's query additionally got a DeliveryDate pre-filter (indexed, see
+// cron/sql/fcConsumption.sql) that the original Redash SQL didn't have — without
+// it MySQL index-merges FacilityId+ActivityId into ~1.5M rows before filtering
+// by date, which took 149s just to COUNT; with it, down to ~1-2s via WT_DD_Idx.
+// Falls back to Redash if the DB is unreachable or a query errors.
+const asgardPool = process.env.ASGARD_MYSQL_HOST ? mysql.createPool({
+  host: process.env.ASGARD_MYSQL_HOST,
+  port: Number(process.env.ASGARD_MYSQL_PORT),
+  user: process.env.ASGARD_MYSQL_USER,
+  password: process.env.ASGARD_MYSQL_PASSWORD,
+  database: process.env.ASGARD_MYSQL_DATABASE,
+  connectTimeout: 15000,
+  connectionLimit: 2,
+}) : null;
+
+const FC_SQL = fs.readFileSync(path.join(__dirname, 'sql/fcConsumption.sql'), 'utf8');
+const CC_SQL = fs.readFileSync(path.join(__dirname, 'sql/ccConsumption.sql'), 'utf8');
+
+function fillDateParams(sqlTemplate, fromDate, toDate) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+    throw new Error(`Invalid date for asgard query params: ${fromDate}..${toDate}`);
+  }
+  return sqlTemplate.split('{{from date}}').join(fromDate).split('{{to date}}').join(toDate);
+}
+
+async function executeAsgardQuery(sqlTemplate, fromDate, toDate) {
+  if (!asgardPool) throw new Error('ASGARD_MYSQL_HOST not configured');
+  const sql = fillDateParams(sqlTemplate, fromDate, toDate);
+  const [rows] = await asgardPool.query(sql);
+  return rows;
+}
 
 // Redash per-query API keys (one per query, not a shared user key — see the
 // env var comment below) can't reach /api/jobs/:id or /api/query_results/:id.csv;
@@ -77,13 +123,26 @@ async function executeRedashQuery(qid, params, apiKey) {
   throw new Error(`Redash query ${qid} timed out after 10 minutes`);
 }
 
+async function scrapeLeg(label, asgardSql, redashQid, redashApiKey, fromDate, toDate) {
+  try {
+    const rows = await executeAsgardQuery(asgardSql, fromDate, toDate);
+    console.log(`[consumption] ${label}: ${rows.length} rows via direct MySQL`);
+    return rows;
+  } catch (e) {
+    console.log(`[consumption] ${label}: direct MySQL failed (${e.message}), falling back to Redash`);
+    const rows = await executeRedashQuery(redashQid, { 'from date': fromDate, 'to date': toDate }, redashApiKey);
+    console.log(`[consumption] ${label}: ${rows.length} rows via Redash fallback`);
+    return rows;
+  }
+}
+
 async function scrapePackagedQty(fromDate, toDate) {
   const fcQid = process.env.CONSUMPTION_QUERY_ID;
   const ccQid = process.env.CONSUMPTION_CC_QUERY_ID;
 
   const [fcRows, ccRows] = await Promise.all([
-    executeRedashQuery(fcQid, { 'from date': fromDate, 'to date': toDate }, process.env.CONSUMPTION_DASHBOARD_API_KEY),
-    executeRedashQuery(ccQid, { 'from date': fromDate, 'to date': toDate }, process.env.CONSUMPTION_CC_DASHBOARD_API_KEY),
+    scrapeLeg('FC', FC_SQL, fcQid, process.env.CONSUMPTION_DASHBOARD_API_KEY, fromDate, toDate),
+    scrapeLeg('CC', CC_SQL, ccQid, process.env.CONSUMPTION_CC_DASHBOARD_API_KEY, fromDate, toDate),
   ]);
   console.log(`[consumption] FC rows: ${fcRows.length}, CC rows: ${ccRows.length}`);
 
