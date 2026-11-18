@@ -681,6 +681,15 @@ function AdminPanel({ token, tabOverride }) {
   const [runNowError, setRunNowError] = useState('');
   const [facilityWarehouses, setFacilityWarehouses] = useState([]);
   const [selectedFacilityIds, setSelectedFacilityIds] = useState(new Set());
+
+  const [facilitiesList, setFacilitiesList] = useState([]);
+  const [facilitiesLoading, setFacilitiesLoading] = useState(false);
+  const [newBuForm, setNewBuForm] = useState({ code: '', name: '' });
+  const [newBuSubmitting, setNewBuSubmitting] = useState(false);
+  const [newBuError, setNewBuError] = useState('');
+  const [facilityModal, setFacilityModal] = useState(null); // null = closed, {} = create, {id,...} = edit
+  const [facilitySubmitting, setFacilitySubmitting] = useState(false);
+  const [facilityError, setFacilityError] = useState('');
   const [facilityDropdownOpen, setFacilityDropdownOpen] = useState(false);
   const [progressOpen, setProgressOpen] = useState(false);
   const [runSummary, setRunSummary] = useState(null);
@@ -781,11 +790,12 @@ function AdminPanel({ token, tabOverride }) {
   const [resetError, setResetError] = useState('');
 
   const [pmStoreWarehouses, setPmStoreWarehouses] = useState([]);
-  const [inviteForm, setInviteForm] = useState({ email: '', role: 'PM_STORE_EXEC', warehouse_ids: [] });
+  const [businessUnits, setBusinessUnits] = useState([]);
+  const [inviteForm, setInviteForm] = useState({ email: '', role: 'PM_STORE_EXEC', warehouse_ids: [], business_unit_ids: [] });
   const [inviteSubmitting, setInviteSubmitting] = useState(false);
   const [inviteError, setInviteError] = useState('');
   const [inviteSuccess, setInviteSuccess] = useState('');
-  const [editUserModal, setEditUserModal] = useState(null); // { id, role, warehouse_ids, is_active }
+  const [editUserModal, setEditUserModal] = useState(null); // { id, role, warehouse_ids, business_unit_ids, is_active }
   const [editUserSubmitting, setEditUserSubmitting] = useState(false);
   const [editUserError, setEditUserError] = useState('');
 
@@ -911,6 +921,73 @@ function AdminPanel({ token, tabOverride }) {
       const res = await fetch(`${BASE_URL}/api/v1/warehouses`, { headers: hdrs });
       const data = await res.json();
       setFacilityWarehouses((data.data ?? []).filter((w) => w.warehouse_type !== 'PM_STORE'));
+    } catch { /* silent */ }
+  }
+
+  const fetchBusinessUnits = useCallback(async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/business-units`, { headers: hdrs });
+      const data = await res.json();
+      if (res.ok) setBusinessUnits((data.data ?? []).map((b) => ({ ...b, id: Number(b.id) })));
+    } catch { /* silent */ }
+  }, [token]);
+
+  const fetchFacilitiesList = useCallback(async () => {
+    setFacilitiesLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/facilities`, { headers: hdrs });
+      const data = await res.json();
+      if (res.ok) setFacilitiesList(data.data ?? []);
+    } catch { /* silent */ }
+    finally { setFacilitiesLoading(false); }
+  }, [token]);
+
+  async function submitNewBu() {
+    setNewBuError('');
+    if (!newBuForm.code.trim() || !newBuForm.name.trim()) { setNewBuError('Code and name are required.'); return; }
+    setNewBuSubmitting(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/business-units`, {
+        method: 'POST', headers: hdrs, body: JSON.stringify(newBuForm),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed to create business unit');
+      setNewBuForm({ code: '', name: '' });
+      fetchBusinessUnits();
+    } catch (e) { setNewBuError(e.message); }
+    finally { setNewBuSubmitting(false); }
+  }
+
+  async function submitFacility() {
+    if (!facilityModal) return;
+    setFacilityError('');
+    const { id, code, name, city, warehouse_type, business_unit_id } = facilityModal;
+    if (!code?.trim() || !name?.trim() || !city?.trim() || !business_unit_id) {
+      setFacilityError('Code, name, city, and business unit are required.'); return;
+    }
+    setFacilitySubmitting(true);
+    try {
+      const url = id ? `${BASE_URL}/api/v1/admin/facilities/${id}` : `${BASE_URL}/api/v1/admin/facilities`;
+      const body = id
+        ? { name, city, warehouse_type, business_unit_id }
+        : { code, name, city, warehouse_type, business_unit_id };
+      const res = await fetch(url, { method: id ? 'PATCH' : 'POST', headers: hdrs, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Failed to save facility');
+      setFacilityModal(null);
+      fetchFacilitiesList();
+      fetchFacilityWarehouses();
+      fetchPmStoreWarehouses();
+    } catch (e) { setFacilityError(e.message); }
+    finally { setFacilitySubmitting(false); }
+  }
+
+  async function toggleFacilityActive(f) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/admin/facilities/${f.id}`, {
+        method: 'PATCH', headers: hdrs, body: JSON.stringify({ is_active: !f.is_active }),
+      });
+      if (res.ok) fetchFacilitiesList();
     } catch { /* silent */ }
   }
 
@@ -1046,6 +1123,9 @@ function AdminPanel({ token, tabOverride }) {
     if (['CC_EXEC', 'FC_EXEC'].includes(inviteForm.role) && inviteForm.warehouse_ids.length === 0) {
       setInviteError('Select at least one facility.'); return;
     }
+    if (inviteForm.role !== 'ADMIN' && inviteForm.business_unit_ids.length === 0) {
+      setInviteError('Select at least one Business Unit.'); return;
+    }
     setInviteSubmitting(true);
     try {
       const res = await fetch(`${BASE_URL}/api/v1/users`, {
@@ -1054,13 +1134,14 @@ function AdminPanel({ token, tabOverride }) {
           email: inviteForm.email.trim(),
           role: inviteForm.role,
           warehouse_ids: ['PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC'].includes(inviteForm.role) ? inviteForm.warehouse_ids : [],
+          business_unit_ids: inviteForm.business_unit_ids,
           auth_provider: 'GOOGLE',
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || 'Invite failed');
       setInviteSuccess(`Invited ${data.user.email} — they'll get an email with sign-in instructions, and can sign in with Google at this URL any time.`);
-      setInviteForm({ email: '', role: 'PM_STORE_EXEC', warehouse_ids: [] });
+      setInviteForm({ email: '', role: 'PM_STORE_EXEC', warehouse_ids: [], business_unit_ids: [] });
       fetchUsers();
     } catch (e) {
       setInviteError(e.message);
@@ -1078,11 +1159,14 @@ function AdminPanel({ token, tabOverride }) {
     if (['CC_EXEC', 'FC_EXEC'].includes(editUserModal.role) && editUserModal.warehouse_ids.length === 0) {
       setEditUserError('Select at least one facility.'); return;
     }
+    if (editUserModal.role !== 'ADMIN' && editUserModal.business_unit_ids.length === 0) {
+      setEditUserError('Select at least one Business Unit.'); return;
+    }
     setEditUserSubmitting(true);
     try {
       const res = await fetch(`${BASE_URL}/api/v1/admin/users/${editUserModal.id}`, {
         method: 'PATCH', headers: hdrs,
-        body: JSON.stringify({ role: editUserModal.role, warehouse_ids: editUserModal.warehouse_ids, is_active: editUserModal.is_active }),
+        body: JSON.stringify({ role: editUserModal.role, warehouse_ids: editUserModal.warehouse_ids, business_unit_ids: editUserModal.business_unit_ids, is_active: editUserModal.is_active }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || 'Update failed');
@@ -1190,7 +1274,8 @@ function AdminPanel({ token, tabOverride }) {
         .catch(() => {});
     }
   }, [tab]);
-  useEffect(() => { if (tab === 'users') { fetchUsers(); fetchPmStoreWarehouses(); fetchFacilityWarehouses(); } }, [tab, fetchUsers, fetchPmStoreWarehouses]);
+  useEffect(() => { if (tab === 'users') { fetchUsers(); fetchPmStoreWarehouses(); fetchFacilityWarehouses(); fetchBusinessUnits(); } }, [tab, fetchUsers, fetchPmStoreWarehouses]);
+  useEffect(() => { if (tab === 'facilities') { fetchFacilitiesList(); fetchBusinessUnits(); } }, [tab, fetchFacilitiesList, fetchBusinessUnits]);
 
   async function submitReverse() {
     if (!reverseReason.trim()) { setReverseError('Reason is required.'); return; }
@@ -1235,6 +1320,7 @@ function AdminPanel({ token, tabOverride }) {
     { id: 'cons-history', label: 'Consumption History' },
     { id: 'msl', label: 'Min Stock Levels' },
     { id: 'users', label: 'Users' },
+    { id: 'facilities', label: 'Facilities' },
   ];
 
   if (loading) return (
@@ -2431,6 +2517,28 @@ function AdminPanel({ token, tabOverride }) {
                   </div>
                 </div>
               )}
+              {inviteForm.role !== 'ADMIN' && (
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">Business Unit <span className="text-red-500">*</span></label>
+                  <div className="flex flex-wrap gap-2">
+                    {businessUnits.map((bu) => {
+                      const checked = inviteForm.business_unit_ids.includes(bu.id);
+                      return (
+                        <button key={bu.id} type="button"
+                          onClick={() => setInviteForm((p) => ({
+                            ...p,
+                            business_unit_ids: checked ? p.business_unit_ids.filter((id) => id !== bu.id) : [...p.business_unit_ids, bu.id],
+                          }))}
+                          className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium ${checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-600'}`}
+                        >
+                          {bu.name}
+                        </button>
+                      );
+                    })}
+                    {businessUnits.length === 0 && <span className="text-xs text-slate-400">No Business Units found — add one in the Facilities tab.</span>}
+                  </div>
+                </div>
+              )}
               {inviteError && (
                 <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
                   <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{inviteError}
@@ -2475,7 +2583,7 @@ function AdminPanel({ token, tabOverride }) {
                         </td>
                         <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                           <button
-                            onClick={() => setEditUserModal({ id: u.id, role: u.role, warehouse_ids: (u.warehouse_ids ?? []).map(Number), is_active: u.is_active })}
+                            onClick={() => setEditUserModal({ id: u.id, role: u.role, warehouse_ids: (u.warehouse_ids ?? []).map(Number), business_unit_ids: (u.business_unit_ids ?? []).map(Number), is_active: u.is_active })}
                             className="text-xs px-2 py-1 rounded-md bg-slate-50 text-slate-600 hover:bg-slate-100 font-medium"
                           >Edit</button>
                           <button
@@ -2602,6 +2710,27 @@ function AdminPanel({ token, tabOverride }) {
                 </div>
               </div>
             )}
+            {editUserModal.role !== 'ADMIN' && (
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Business Unit</label>
+                <div className="flex flex-wrap gap-2">
+                  {businessUnits.map((bu) => {
+                    const checked = editUserModal.business_unit_ids.includes(bu.id);
+                    return (
+                      <button key={bu.id} type="button"
+                        onClick={() => setEditUserModal((p) => ({
+                          ...p,
+                          business_unit_ids: checked ? p.business_unit_ids.filter((id) => id !== bu.id) : [...p.business_unit_ids, bu.id],
+                        }))}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium ${checked ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-600'}`}
+                      >
+                        {bu.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {editUserError && (
               <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
                 <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{editUserError}
@@ -2612,6 +2741,156 @@ function AdminPanel({ token, tabOverride }) {
               <button onClick={submitEditUser} disabled={editUserSubmitting}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
                 {editUserSubmitting ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'facilities' && (
+        <div data-tour="facilities-section" className="space-y-6">
+          <div>
+            <h4 className="font-semibold text-slate-800 text-sm">Business Units</h4>
+            <p className="text-xs text-slate-500 mt-0.5">Every facility belongs to exactly one Business Unit. Users are granted one or more BUs — a user can only operate on a facility if it's in a BU they're assigned to (the Central PM Store is exempt).</p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3 max-w-lg">
+            <div className="flex flex-wrap gap-2">
+              {businessUnits.map((bu) => (
+                <Badge key={bu.id} tone={bu.is_active ? 'gray' : 'red'}>{bu.name} ({bu.code})</Badge>
+              ))}
+              {businessUnits.length === 0 && <span className="text-xs text-slate-400">No Business Units yet.</span>}
+            </div>
+            <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Code</label>
+                <input value={newBuForm.code} onChange={(e) => setNewBuForm((p) => ({ ...p, code: e.target.value }))}
+                  placeholder="e.g. MYNTRA" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Name</label>
+                <input value={newBuForm.name} onChange={(e) => setNewBuForm((p) => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Myntra" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <button onClick={submitNewBu} disabled={newBuSubmitting}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {newBuSubmitting ? 'Adding…' : 'Add BU'}
+              </button>
+            </div>
+            {newBuError && (
+              <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{newBuError}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between">
+            <h4 className="font-semibold text-slate-800 text-sm">Facilities</h4>
+            <button onClick={() => setFacilityModal({ code: '', name: '', city: '', warehouse_type: 'CC', business_unit_id: businessUnits[0]?.id ?? null })}
+              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700">
+              + New Facility
+            </button>
+          </div>
+          {facilitiesLoading ? (
+            <div className="py-8 text-center text-slate-400"><RefreshCw size={16} className="animate-spin inline mr-2" />Loading…</div>
+          ) : (
+            <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+              <table className="w-full text-sm min-w-[600px]">
+                <thead className="bg-slate-50 text-slate-500 text-xs">
+                  <tr>
+                    <th className="text-left px-4 py-2.5">Code</th>
+                    <th className="text-left px-4 py-2.5">Name</th>
+                    <th className="text-left px-4 py-2.5">City</th>
+                    <th className="text-left px-4 py-2.5">Type</th>
+                    <th className="text-left px-4 py-2.5">Business Unit</th>
+                    <th className="text-left px-4 py-2.5">Status</th>
+                    <th className="px-4 py-2.5"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {facilitiesList.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No facilities</td></tr>}
+                  {facilitiesList.map((f) => (
+                    <tr key={f.id} className="border-t border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-3 text-slate-800 font-medium">{f.code}</td>
+                      <td className="px-4 py-3 text-slate-600">{f.name}</td>
+                      <td className="px-4 py-3 text-slate-600">{f.city}</td>
+                      <td className="px-4 py-3"><Badge tone="gray">{f.warehouse_type}</Badge></td>
+                      <td className="px-4 py-3 text-slate-600">{f.business_unit_name}</td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => toggleFacilityActive(f)}>
+                          <Badge tone={f.is_active ? 'green' : 'red'}>{f.is_active ? 'Active' : 'Inactive'}</Badge>
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => setFacilityModal({ id: f.id, code: f.code, name: f.name, city: f.city, warehouse_type: f.warehouse_type, business_unit_id: Number(f.business_unit_id) })}
+                          className="text-xs px-2 py-1 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium"
+                        >
+                          Edit
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {facilityModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="font-bold text-slate-900">{facilityModal.id ? 'Edit Facility' : 'New Facility'}</div>
+              <button onClick={() => setFacilityModal(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Code {!facilityModal.id && <span className="text-red-500">*</span>}</label>
+                <input value={facilityModal.code} disabled={!!facilityModal.id}
+                  onChange={(e) => setFacilityModal((p) => ({ ...p, code: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm disabled:bg-slate-50 disabled:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Type <span className="text-red-500">*</span></label>
+                <select value={facilityModal.warehouse_type} onChange={(e) => setFacilityModal((p) => ({ ...p, warehouse_type: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="PM_STORE">PM Store</option>
+                  <option value="CC">CC</option>
+                  <option value="FC">FC</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Name <span className="text-red-500">*</span></label>
+              <input value={facilityModal.name} onChange={(e) => setFacilityModal((p) => ({ ...p, name: e.target.value }))}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">City <span className="text-red-500">*</span></label>
+                <input value={facilityModal.city} onChange={(e) => setFacilityModal((p) => ({ ...p, city: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Business Unit <span className="text-red-500">*</span></label>
+                <select value={facilityModal.business_unit_id ?? ''} onChange={(e) => setFacilityModal((p) => ({ ...p, business_unit_id: Number(e.target.value) }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="" disabled>Select…</option>
+                  {businessUnits.map((bu) => <option key={bu.id} value={bu.id}>{bu.name}</option>)}
+                </select>
+              </div>
+            </div>
+            {facilityError && (
+              <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />{facilityError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setFacilityModal(null)} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Cancel</button>
+              <button onClick={submitFacility} disabled={facilitySubmitting}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {facilitySubmitting ? 'Saving…' : 'Save'}
               </button>
             </div>
           </div>
@@ -3059,7 +3338,7 @@ export default function App() {
             { target: 'po-upload-btn', title: 'Upload Purchase Orders', body: 'After filling the CSV, upload it here. A single po_no can span multiple rows — one row per material under the same PO number.' },
             { target: 'ledger-filter', title: 'Stock Ledger', body: 'View all stock movements for any facility — GRNs, dispatches, consumption, and adjustments. Select a facility and date range, then hit View. Use Export to download the results as CSV.', onEnter: () => setSection('ledger') },
             { target: 'downloads-section', title: 'Downloads', body: 'Every indent and PO file uploaded to the system is stored here. Click Download on any row to get a fresh pre-signed link — links expire after 1 hour.', onEnter: () => setSection('downloads') },
-            { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 12 tabs: Purchase Orders, DICE Pending, Stock Issues, Transit Difference, Current Stock, Audit Log, Materials, SKU Master, Consumption Runs, Consumption History, Min Stock Levels, and Users.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
+            { target: 'admin-tabs', title: 'Admin Panel Tabs', body: 'The admin panel has 13 tabs: Purchase Orders, DICE Pending, Stock Issues, Transit Difference, Current Stock, Audit Log, Materials, SKU Master, Consumption Runs, Consumption History, Min Stock Levels, Users, and Facilities.', onEnter: () => { setSection('admin'); setAdminTabForTour('pos'); } },
             { target: 'admin-refresh', title: 'Refresh', body: 'Re-fetches all data from the server without a full page reload. Use this after making changes in another session.' },
             { target: 'po-filter', title: 'Active / All Toggle', body: 'Active shows only open and partially received POs. Switch to All to include closed, cancelled, and force-completed POs too.', onEnter: () => setAdminTabForTour('pos') },
             { target: 'po-table', title: 'Purchase Orders Table', body: 'Each row is a PO line. The Cancel button withdraws an active PO; Reverse Force Complete (visible on force-completed POs) undoes an accidental close — both require a written reason.' },
@@ -3074,7 +3353,8 @@ export default function App() {
             { target: 'run-now', title: 'Run Consumption Scraper', body: 'Triggers the daily scraper immediately without waiting for the 5am schedule. Use after uploading a new SKU master or if yesterday\'s run failed.', onEnter: () => setAdminTabForTour('consumption') },
             { target: 'msl-filter', title: 'Min Stock Levels — Filter', body: 'Narrows the threshold grid to PM Store, FC, or CC facilities so you can focus edits on one type at a time.', onEnter: () => setAdminTabForTour('msl') },
             { target: null, title: 'Min Stock Levels — Save', body: 'Edit any threshold cell inline — it highlights amber. A Save button appears top-right once edits exist. Hit it to commit all changes at once.' },
-            { target: 'users-table', title: 'User Accounts', body: 'Two sections: Invite User adds an email + role (Admin/PM Store Exec/CC Exec/FC Exec/Facility Indent Only/Procurement/PM Config) — that person signs in with their Ninjacart Google account, no password involved; CC/FC/Facility Indent Only roles need a facility picked too. Password Accounts (further down) covers legacy CC/FC facility logins and the local test admin account — Reset Password there still works exactly as before. Every invite, role change, and password reset is logged in the audit trail.', onEnter: () => setAdminTabForTour('users') },
+            { target: 'users-table', title: 'User Accounts', body: 'Two sections: Invite User adds an email + role (Admin/PM Store Exec/CC Exec/FC Exec/Facility Indent Only/Procurement/PM Config) — that person signs in with their Ninjacart Google account, no password involved; CC/FC/Facility Indent Only roles need a facility picked too, and every non-Admin role needs at least one Business Unit picked — a user can only act on a facility that\'s both directly assigned to them AND in one of their Business Units (the Central PM Store is exempt from this BU check). Password Accounts (further down) covers legacy CC/FC facility logins and the local test admin account — Reset Password there still works exactly as before. Every invite, role change, and password reset is logged in the audit trail.', onEnter: () => setAdminTabForTour('users') },
+            { target: 'facilities-section', title: 'Facilities & Business Units', body: 'Create Business Units here, then create or edit facilities (code, name, city, type) and assign each one to exactly one Business Unit. New facilities no longer need a direct DB insert — this tab is the way to add them going forward.', onEnter: () => setAdminTabForTour('facilities') },
             { target: 'tour-btn-portal', title: "You're all set!", body: 'Hit this ? button at the bottom-right any time to replay the tour.' },
           ]}
         />

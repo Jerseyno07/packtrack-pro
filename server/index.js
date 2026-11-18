@@ -309,6 +309,22 @@ async function getOnHandQty(client, warehouseId, materialId) {
 
 const SESSION_TTL_HOURS = 12;
 
+// Business Unit scoping: a user's usable warehouse set is their directly
+// assigned warehouses (user_warehouses), further restricted to only those whose
+// BU is one the user belongs to (user_business_units) — an additional filter on
+// top of the existing assignment, not a replacement for it. PM_STORE_EXEC is
+// exempt: a Central PM Store must reach every BU in its city.
+async function filterWarehousesByBu(userId, role, warehouseIds) {
+  if (role === 'PM_STORE_EXEC' || !warehouseIds.length) return warehouseIds;
+  const [whRes, buRes] = await Promise.all([
+    pool.query('SELECT id, business_unit_id FROM warehouses WHERE id = ANY($1)', [warehouseIds]),
+    pool.query('SELECT business_unit_id FROM user_business_units WHERE user_id = $1', [userId]),
+  ]);
+  const buByWarehouse = new Map(whRes.rows.map((r) => [Number(r.id), Number(r.business_unit_id)]));
+  const userBuIds = new Set(buRes.rows.map((r) => Number(r.business_unit_id)));
+  return warehouseIds.filter((id) => userBuIds.has(buByWarehouse.get(id)));
+}
+
 // Shared by /auth/login and /auth/google — mints our own session for an already-
 // authenticated `users` row, regardless of how that authentication happened.
 async function issueSession(user) {
@@ -327,7 +343,7 @@ async function issueSession(user) {
       "SELECT id AS warehouse_id FROM warehouses WHERE is_active AND warehouse_type = 'PM_STORE' ORDER BY id"
     );
   }
-  const warehouse_ids = whRes.rows.map((r) => Number(r.warehouse_id));
+  const warehouse_ids = await filterWarehousesByBu(user.id, user.role, whRes.rows.map((r) => Number(r.warehouse_id)));
 
   return {
     token,
@@ -418,7 +434,9 @@ const authenticate = asyncHandler(async (req, res, next) => {
     [token]
   );
   if (!sessRes.rows.length) throw new ApiError(401, 'UNAUTHENTICATED', 'Session expired or invalid');
-  req.user = { id: sessRes.rows[0].user_id, ...sessRes.rows[0] };
+  const row = sessRes.rows[0];
+  const warehouse_ids = await filterWarehousesByBu(row.user_id, row.role, row.warehouse_ids.map(Number));
+  req.user = { id: row.user_id, ...row, warehouse_ids };
   next();
 });
 
@@ -468,6 +486,7 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
     password: z.string().min(8).optional(),
     role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG', 'FAC_INDENT']),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional().default([]),
+    business_unit_ids: z.array(z.coerce.number().int().positive()).optional().default([]),
     auth_provider: z.enum(['LOCAL', 'GOOGLE']).optional().default('LOCAL'),
   });
   const parsed = schema.safeParse(req.body);
@@ -496,6 +515,16 @@ app.post('/api/v1/users', authenticate, requireRole('ADMIN'), asyncHandler(async
     for (const whId of d.warehouse_ids) {
       await client.query('INSERT INTO user_warehouses (user_id, warehouse_id) VALUES ($1,$2)', [userId, whId]);
     }
+    // ADMINs default to every active BU if none given, so a new admin's effective
+    // access isn't accidentally narrowed by the BU filter.
+    let buIds = d.business_unit_ids;
+    if (!buIds.length && d.role === 'ADMIN') {
+      const allBu = await client.query('SELECT id FROM business_units WHERE is_active');
+      buIds = allBu.rows.map((r) => Number(r.id));
+    }
+    for (const buId of buIds) {
+      await client.query('INSERT INTO user_business_units (user_id, business_unit_id) VALUES ($1,$2)', [userId, buId]);
+    }
     await writeAudit(client, { userId: req.user.id, action: isGoogle ? 'USER_INVITED' : 'USER_CREATED', entityTable: 'users', entityId: userId, detail: { email: d.email, role: d.role, auth_provider: d.auth_provider } });
     await client.query('COMMIT');
     res.status(201).json({ user: userIns.rows[0] });
@@ -509,12 +538,13 @@ app.patch('/api/v1/admin/users/:id', authenticate, requireRole('ADMIN'), asyncHa
   const schema = z.object({
     role: z.enum(['ADMIN', 'PM_STORE_EXEC', 'CC_EXEC', 'FC_EXEC', 'CC_DP', 'FC_DP', 'PROCUREMENT', 'PM_CONFIG', 'FAC_INDENT']).optional(),
     warehouse_ids: z.array(z.coerce.number().int().positive()).optional(),
+    business_unit_ids: z.array(z.coerce.number().int().positive()).optional(),
     is_active: z.boolean().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid payload', parsed.error.issues);
   const d = parsed.data;
-  if (d.role === undefined && d.warehouse_ids === undefined && d.is_active === undefined) {
+  if (d.role === undefined && d.warehouse_ids === undefined && d.business_unit_ids === undefined && d.is_active === undefined) {
     throw new ApiError(400, 'NO_FIELDS', 'No editable fields provided');
   }
   const client = await pool.connect();
@@ -537,6 +567,12 @@ app.patch('/api/v1/admin/users/:id', authenticate, requireRole('ADMIN'), asyncHa
       await client.query('DELETE FROM user_warehouses WHERE user_id=$1', [req.params.id]);
       for (const whId of d.warehouse_ids) {
         await client.query('INSERT INTO user_warehouses (user_id, warehouse_id) VALUES ($1,$2)', [req.params.id, whId]);
+      }
+    }
+    if (d.business_unit_ids !== undefined) {
+      await client.query('DELETE FROM user_business_units WHERE user_id=$1', [req.params.id]);
+      for (const buId of d.business_unit_ids) {
+        await client.query('INSERT INTO user_business_units (user_id, business_unit_id) VALUES ($1,$2)', [req.params.id, buId]);
       }
     }
     const action = d.is_active === false ? 'USER_DEACTIVATED' : (d.role !== undefined ? 'USER_ROLE_CHANGED' : 'USER_UPDATED');
@@ -2586,13 +2622,109 @@ app.get('/api/v1/stock/current', authenticate, asyncHandler(async (req, res) => 
 // Reference data endpoints (for populating dropdowns in the upload UI)
 // ─────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────
+// Business Units + Facility (warehouse) management — admin-only
+// ─────────────────────────────────────────────────────────────────────────
+
+app.get('/api/v1/admin/business-units', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const r = await pool.query('SELECT id, code, name, is_active FROM business_units ORDER BY name');
+  res.json({ data: r.rows });
+}));
+
+app.post('/api/v1/admin/business-units', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const schema = z.object({ code: z.string().min(1).max(40), name: z.string().min(1).max(120) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'code and name are required', parsed.error.issues);
+  const r = await pool.query(
+    'INSERT INTO business_units (code, name) VALUES ($1,$2) RETURNING id, code, name, is_active',
+    [parsed.data.code.toUpperCase(), parsed.data.name]
+  );
+  await writeAudit(pool, { userId: req.user.id, action: 'BUSINESS_UNIT_CREATED', entityTable: 'business_units', entityId: r.rows[0].id, detail: parsed.data });
+  res.status(201).json({ data: r.rows[0] });
+}));
+
+app.patch('/api/v1/admin/business-units/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const schema = z.object({ name: z.string().min(1).max(120).optional(), is_active: z.boolean().optional() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid payload', parsed.error.issues);
+  const d = parsed.data;
+  if (d.name === undefined && d.is_active === undefined) throw new ApiError(400, 'NO_FIELDS', 'No editable fields provided');
+  const sets = []; const vals = [];
+  if (d.name !== undefined) { vals.push(d.name); sets.push(`name=$${vals.length}`); }
+  if (d.is_active !== undefined) { vals.push(d.is_active); sets.push(`is_active=$${vals.length}`); }
+  vals.push(req.params.id);
+  const r = await pool.query(`UPDATE business_units SET ${sets.join(',')} WHERE id=$${vals.length} RETURNING id, code, name, is_active`, vals);
+  if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', 'Business unit not found');
+  await writeAudit(pool, { userId: req.user.id, action: 'BUSINESS_UNIT_UPDATED', entityTable: 'business_units', entityId: Number(req.params.id), detail: d });
+  res.json({ data: r.rows[0] });
+}));
+
+app.get('/api/v1/admin/facilities', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const r = await pool.query(
+    `SELECT w.id, w.code, w.name, w.city, w.warehouse_type, w.is_active, w.business_unit_id, bu.name AS business_unit_name
+     FROM warehouses w JOIN business_units bu ON bu.id = w.business_unit_id ORDER BY w.name`
+  );
+  res.json({ data: r.rows });
+}));
+
+app.post('/api/v1/admin/facilities', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const schema = z.object({
+    code: z.string().min(1).max(20),
+    name: z.string().min(1).max(120),
+    city: z.string().min(1).max(60),
+    warehouse_type: z.enum(['PM_STORE', 'CC', 'FC']),
+    business_unit_id: z.coerce.number().int().positive(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid facility payload', parsed.error.issues);
+  const d = parsed.data;
+  const buCheck = await pool.query('SELECT id FROM business_units WHERE id=$1 AND is_active', [d.business_unit_id]);
+  if (!buCheck.rows.length) throw new ApiError(422, 'INVALID_BU', 'business_unit_id does not refer to an active business unit');
+  const r = await pool.query(
+    `INSERT INTO warehouses (code, name, city, warehouse_type, business_unit_id) VALUES ($1,$2,$3,$4,$5)
+     RETURNING id, code, name, city, warehouse_type, is_active, business_unit_id`,
+    [d.code, d.name, d.city, d.warehouse_type, d.business_unit_id]
+  );
+  await writeAudit(pool, { userId: req.user.id, action: 'FACILITY_CREATED', entityTable: 'warehouses', entityId: r.rows[0].id, detail: d });
+  res.status(201).json({ data: r.rows[0] });
+}));
+
+app.patch('/api/v1/admin/facilities/:id', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(1).max(120).optional(),
+    city: z.string().min(1).max(60).optional(),
+    warehouse_type: z.enum(['PM_STORE', 'CC', 'FC']).optional(),
+    business_unit_id: z.coerce.number().int().positive().optional(),
+    is_active: z.boolean().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid payload', parsed.error.issues);
+  const d = parsed.data;
+  if (Object.keys(d).length === 0) throw new ApiError(400, 'NO_FIELDS', 'No editable fields provided');
+  if (d.business_unit_id !== undefined) {
+    const buCheck = await pool.query('SELECT id FROM business_units WHERE id=$1 AND is_active', [d.business_unit_id]);
+    if (!buCheck.rows.length) throw new ApiError(422, 'INVALID_BU', 'business_unit_id does not refer to an active business unit');
+  }
+  const sets = []; const vals = [];
+  for (const [col, val] of Object.entries(d)) { vals.push(val); sets.push(`${col}=$${vals.length}`); }
+  vals.push(req.params.id);
+  const r = await pool.query(
+    `UPDATE warehouses SET ${sets.join(',')} WHERE id=$${vals.length} RETURNING id, code, name, city, warehouse_type, is_active, business_unit_id`, vals
+  );
+  if (!r.rows.length) throw new ApiError(404, 'NOT_FOUND', 'Facility not found');
+  await writeAudit(pool, { userId: req.user.id, action: 'FACILITY_UPDATED', entityTable: 'warehouses', entityId: Number(req.params.id), detail: d });
+  res.json({ data: r.rows[0] });
+}));
+
 app.get('/api/v1/warehouses', authenticate, asyncHandler(async (req, res) => {
   const { type } = req.query;
   const params = [];
   // Build WHERE clause cleanly to avoid SQL fragmentation bugs
-  const where = type ? (params.push(type), 'WHERE is_active AND warehouse_type = $1') : 'WHERE is_active';
+  const where = type ? (params.push(type), 'WHERE w.is_active AND w.warehouse_type = $1') : 'WHERE w.is_active';
   const r = await pool.query(
-    `SELECT id, code, name, city, warehouse_type FROM warehouses ${where} ORDER BY name`, params
+    `SELECT w.id, w.code, w.name, w.city, w.warehouse_type, w.business_unit_id, bu.name AS business_unit_name
+     FROM warehouses w JOIN business_units bu ON bu.id = w.business_unit_id
+     ${where} ORDER BY w.name`, params
   );
   res.json({ data: r.rows });
 }));
@@ -3688,8 +3820,11 @@ app.put('/api/v1/admin/min-stock-levels', authenticate, requireRole('ADMIN'), as
 app.get('/api/v1/admin/users', authenticate, requireRole('ADMIN'), asyncHandler(async (req, res) => {
   const r = await pool.query(
     `SELECT u.id, u.name, u.email, u.role, u.is_active, u.auth_provider, (u.google_sub IS NOT NULL) AS has_signed_in, u.created_at,
-            COALESCE(array_agg(uw.warehouse_id) FILTER (WHERE uw.warehouse_id IS NOT NULL), '{}') AS warehouse_ids
-     FROM users u LEFT JOIN user_warehouses uw ON uw.user_id = u.id
+            COALESCE(array_agg(DISTINCT uw.warehouse_id) FILTER (WHERE uw.warehouse_id IS NOT NULL), '{}') AS warehouse_ids,
+            COALESCE(array_agg(DISTINCT ubu.business_unit_id) FILTER (WHERE ubu.business_unit_id IS NOT NULL), '{}') AS business_unit_ids
+     FROM users u
+     LEFT JOIN user_warehouses uw ON uw.user_id = u.id
+     LEFT JOIN user_business_units ubu ON ubu.user_id = u.id
      GROUP BY u.id ORDER BY u.role, u.email`
   );
   res.json({ users: r.rows });
