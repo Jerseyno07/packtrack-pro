@@ -65,7 +65,7 @@ async function executeRedashQuery(qid, params, apiKey) {
   if (data.query_result) return rowsFromQueryResult(data.query_result);
   if (!data.job?.id) throw new Error(`Redash returned neither job nor query_result for query ${qid}`);
 
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 200; i++) {
     await new Promise((r) => setTimeout(r, 3000));
     // Re-trigger (not a separate jobs/:id poll — see comment above) with a
     // max_age generous enough to pick up the job we just started once it
@@ -74,7 +74,7 @@ async function executeRedashQuery(qid, params, apiKey) {
     if (data.query_result) return rowsFromQueryResult(data.query_result);
     if (data.job?.status === 4) throw new Error(`Redash job failed for query ${qid}: ${data.job.error}`);
   }
-  throw new Error(`Redash query ${qid} timed out after 5 minutes`);
+  throw new Error(`Redash query ${qid} timed out after 10 minutes`);
 }
 
 async function scrapePackagedQty(fromDate, toDate) {
