@@ -392,9 +392,10 @@ function buildSummaryHtml(data) {
     }
   );
 
-  const intro = `
-  <p>PFB the daily Holding Inventory report for the Central PM Store in QuickCom BLR.</p>
-  <p>This report tracks the current PM Store Inventory value and estimated Days of Inventory (DOI) based on a rolling 7-day average daily consumption, to identify stock-outs, critical shortages, and non-moving packing materials.</p>`;
+  const introLines = [
+    'PFB the daily Holding Inventory report for the Central PM Store in QuickCom BLR.',
+    'This report tracks the current PM Store Inventory value and estimated Days of Inventory (DOI) based on a rolling 7-day average daily consumption, to identify stock-outs, critical shortages, and non-moving packing materials.',
+  ];
 
   const bodyHtml = `
   ${sectionTitle('Summary')}
@@ -402,7 +403,7 @@ function buildSummaryHtml(data) {
   ${sectionTitle('Detail')}
   ${detailTable}`;
 
-  return wrapEmail({ intro, bodyHtml, guideUrl: GUIDE_URL });
+  return wrapEmail({ introLines, bodyHtml, guideUrl: GUIDE_URL });
 }
 
 module.exports = { getData, buildWorkbook, buildSummaryHtml, computeRow, statusFor };

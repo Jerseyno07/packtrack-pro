@@ -86,26 +86,38 @@ function table(headers, rows, opts = {}) {
       return `<tr>${tds}</tr>`;
     })
     .join('');
-  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px;margin:8px 0 16px 0;">
+  return `<div style="overflow-x:auto;margin:8px 0 16px 0;-webkit-overflow-scrolling:touch;">
+  <table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px;white-space:nowrap;">
     <tr>${th}</tr>
     ${trs}
-  </table>`;
+  </table>
+  </div>`;
 }
 
 function sectionTitle(text) {
   return `<p style="background:${COLOR.titleBg};color:${COLOR.titleText};padding:8px 12px;margin:20px 0 0 0;font-weight:700;font-size:13.5px;border-radius:4px 4px 0 0;">${text}</p>`;
 }
 
-function wrapEmail({ intro, bodyHtml, guideUrl }) {
+// Renders one line of text per table row. Table cells were the only element
+// in this email observed to wrap/space text correctly on mobile Gmail — plain
+// <p>/<br> text reliably overlapped the very next line, whether that line
+// break was an explicit <br> or a natural mid-sentence word-wrap.
+function textLines(lines, { marginBottom = 0, marginTop = 0 } = {}) {
+  const rows = lines.map((l) => `<tr><td style="padding:3px 0;">${l}</td></tr>`).join('');
+  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13.5px;color:#222;line-height:1.5;margin:${marginTop}px 0 ${marginBottom}px 0;">${rows}</table>`;
+}
+
+// introLines: array of plain sentence strings (no <p> wrapper).
+function wrapEmail({ introLines, bodyHtml, guideUrl }) {
   const guideLine = guideUrl
-    ? ` Refer to <a href="${guideUrl}" style="color:#1155CC;">this guide</a> for instructions on reading the report.`
+    ? `Refer to <a href="${guideUrl}" style="color:#1155CC;">this guide</a> for instructions on reading the report.`
     : '';
-  return `<div style="font-family:Arial,sans-serif;font-size:13.5px;color:#222;line-height:1.5;">
-  <p>Hi all,</p>
-  ${intro}${guideLine ? `<p>${guideLine.trim()}</p>` : ''}
+  const topLines = ['Hi all,', ...introLines, ...(guideLine ? [guideLine] : [])];
+  const bottomLines = ['Reach out if there are any queries.', 'With regards,', 'PackTrack Pro (automated)'];
+  return `<div style="font-family:Arial,sans-serif;font-size:13.5px;color:#222;">
+  ${textLines(topLines, { marginBottom: 16 })}
   ${bodyHtml}
-  <p>Reach out if there are any queries.</p>
-  <p>With regards,<br/>PackTrack Pro (automated)</p>
+  ${textLines(bottomLines, { marginTop: 16 })}
 </div>`;
 }
 

@@ -540,16 +540,17 @@ function buildSummaryHtml(data) {
     cellText: (i, c) => (LOSS_COLS.has(c) ? (lossOf(i) > 0 ? COLOR.badText : COLOR.goodText) : null),
   });
 
-  const intro = `
-  <p>PFB the weekly Central PM Store Audit Loss Report for QuickCom BLR.</p>
-  <p>This report tracks daily audit losses for the Central PM store between consecutive audits and reports them on a weekly basis.</p>`;
+  const introLines = [
+    'PFB the weekly Central PM Store Audit Loss Report for QuickCom BLR.',
+    'This report tracks daily audit losses for the Central PM store between consecutive audits and reports them on a weekly basis.',
+  ];
 
   const bodyHtml = `
   ${sectionTitle('Audit-wise Summary')}
   ${mainTable}
   ${anyLoss ? '' : `<p style="background:${COLOR.good};color:${COLOR.goodText};padding:8px 12px;border-radius:4px;font-weight:600;">No audit loss or gain occurred during this time period.</p>`}`;
 
-  return wrapEmail({ intro, bodyHtml, guideUrl: GUIDE_URL });
+  return wrapEmail({ introLines, bodyHtml, guideUrl: GUIDE_URL });
 }
 
 module.exports = { getData, buildWorkbook, buildSummaryHtml };

@@ -321,9 +321,10 @@ function buildSummaryHtml(data) {
     }
   );
 
-  const intro = `
-  <p>PFB the daily PM Issue vs Consumption report for QuickCom BLR, ops date ${fmtDMon(data.asOfDate)}.</p>
-  <p>This report tracks PackTrack PM Store issuances vs consumption based on the FSN-PM mapping.</p>`;
+  const introLines = [
+    `PFB the daily PM Issue vs Consumption report for QuickCom BLR, ops date ${fmtDMon(data.asOfDate)}.`,
+    'This report tracks PackTrack PM Store issuances vs consumption based on the FSN-PM mapping.',
+  ];
 
   const bodyHtml = `
   ${sectionTitle('Variance value summary')}
@@ -333,7 +334,7 @@ function buildSummaryHtml(data) {
   ${sectionTitle('Detail')}
   ${detailTable}`;
 
-  return wrapEmail({ intro, bodyHtml, guideUrl: GUIDE_URL });
+  return wrapEmail({ introLines, bodyHtml, guideUrl: GUIDE_URL });
 }
 
 module.exports = { getData, buildWorkbook, buildSummaryHtml, computeRow, varianceStatus, dayBucket };
