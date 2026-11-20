@@ -1,5 +1,34 @@
 {
-  "variance": { "to": [], "cc": [] },
+  "variance": {
+    "to": [
+      "sushil@ninjacart.com",
+      "aswin.r@ninjacart.com",
+      "utkarsh@ninjacart.com",
+      "yogeshyashwant@ninjacart.com",
+      "vinaya.gk@ninjacart.com",
+      "avinashtr@ninjacart.com",
+      "nageshd@ninjacart.com",
+      "sreenu.k@ninjacart.com",
+      "mohanp543@ninjacart.com",
+      "kirthi.vasan@ninjacart.com",
+      "mallappayankanchi@ninjacart.com",
+      "sujitmaskar@ninjacart.com"
+    ],
+    "cc": [
+      "sayanbhowmik@ninjacart.com",
+      "rishabhlodha@ninjacart.com",
+      "ashishbadyal@ninjacart.com",
+      "umeshjampani@ninjacart.com",
+      "naveena.raja@ninjacart.com",
+      "aranyanandi@ninjacart.com",
+      "madhan@ninjacart.com",
+      "settu@ninjacart.com",
+      "essakumar@ninjacart.com",
+      "harish@ninjacart.com",
+      "vishalb@ninjacart.com",
+      "venkateshan.d@ninjacart.com"
+    ]
+  },
   "doi": { "to": [], "cc": [] },
   "auditLoss": { "to": [], "cc": [] }
 }
