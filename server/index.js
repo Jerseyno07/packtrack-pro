@@ -3877,7 +3877,9 @@ app.use((err, req, res, next) => {
 
 require('./cron/consumptionScraper');
 require('./cron/slackReports');
-require('./reports/scheduler').registerReportCrons(pool, new (require('./reports/mailer').LogMailer)());
+const { LogMailer, WorkflowMailer } = require('./reports/mailer');
+const reportMailer = process.env.REPORT_MAILER === 'workflow' ? new WorkflowMailer() : new LogMailer();
+require('./reports/scheduler').registerReportCrons(pool, reportMailer);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`PackTrack API listening on :${PORT}`));
