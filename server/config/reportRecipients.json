@@ -31,62 +31,80 @@
   },
   "doi": {
     "to": [
-      "sushil@ninjacart.com",
-      "aswin.r@ninjacart.com",
-      "utkarsh@ninjacart.com",
-      "yogeshyashwant@ninjacart.com",
-      "vinaya.gk@ninjacart.com",
-      "avinashtr@ninjacart.com",
-      "nageshd@ninjacart.com",
-      "sreenu.k@ninjacart.com",
-      "mohanp543@ninjacart.com",
-      "kirthi.vasan@ninjacart.com",
-      "mallappayankanchi@ninjacart.com",
-      "sujitmaskar@ninjacart.com"
-    ],
-    "cc": [
-      "sayanbhowmik@ninjacart.com",
-      "rishabhlodha@ninjacart.com",
-      "ashishbadyal@ninjacart.com",
-      "umeshjampani@ninjacart.com",
-      "naveena.raja@ninjacart.com",
       "aranyanandi@ninjacart.com",
-      "madhan@ninjacart.com",
-      "settu@ninjacart.com",
-      "essakumar@ninjacart.com",
-      "harish@ninjacart.com",
       "vishalb@ninjacart.com",
-      "venkateshan.d@ninjacart.com"
-    ]
+      "umeshjampani@ninjacart.com"
+    ],
+    "cc": [],
+    "_fullListDisabled": {
+      "note": "Full distribution list, disabled 2026-11-20 per direct instruction — restore by copying these back into to/cc above.",
+      "to": [
+        "sushil@ninjacart.com",
+        "aswin.r@ninjacart.com",
+        "utkarsh@ninjacart.com",
+        "yogeshyashwant@ninjacart.com",
+        "vinaya.gk@ninjacart.com",
+        "avinashtr@ninjacart.com",
+        "nageshd@ninjacart.com",
+        "sreenu.k@ninjacart.com",
+        "mohanp543@ninjacart.com",
+        "kirthi.vasan@ninjacart.com",
+        "mallappayankanchi@ninjacart.com",
+        "sujitmaskar@ninjacart.com"
+      ],
+      "cc": [
+        "sayanbhowmik@ninjacart.com",
+        "rishabhlodha@ninjacart.com",
+        "ashishbadyal@ninjacart.com",
+        "umeshjampani@ninjacart.com",
+        "naveena.raja@ninjacart.com",
+        "aranyanandi@ninjacart.com",
+        "madhan@ninjacart.com",
+        "settu@ninjacart.com",
+        "essakumar@ninjacart.com",
+        "harish@ninjacart.com",
+        "vishalb@ninjacart.com",
+        "venkateshan.d@ninjacart.com"
+      ]
+    }
   },
   "auditLoss": {
     "to": [
-      "sushil@ninjacart.com",
-      "aswin.r@ninjacart.com",
-      "utkarsh@ninjacart.com",
-      "yogeshyashwant@ninjacart.com",
-      "vinaya.gk@ninjacart.com",
-      "avinashtr@ninjacart.com",
-      "nageshd@ninjacart.com",
-      "sreenu.k@ninjacart.com",
-      "mohanp543@ninjacart.com",
-      "kirthi.vasan@ninjacart.com",
-      "mallappayankanchi@ninjacart.com",
-      "sujitmaskar@ninjacart.com"
-    ],
-    "cc": [
-      "sayanbhowmik@ninjacart.com",
-      "rishabhlodha@ninjacart.com",
-      "ashishbadyal@ninjacart.com",
-      "umeshjampani@ninjacart.com",
-      "naveena.raja@ninjacart.com",
       "aranyanandi@ninjacart.com",
-      "madhan@ninjacart.com",
-      "settu@ninjacart.com",
-      "essakumar@ninjacart.com",
-      "harish@ninjacart.com",
       "vishalb@ninjacart.com",
-      "venkateshan.d@ninjacart.com"
-    ]
+      "umeshjampani@ninjacart.com"
+    ],
+    "cc": [],
+    "_fullListDisabled": {
+      "note": "Full distribution list, disabled 2026-11-20 per direct instruction — restore by copying these back into to/cc above.",
+      "to": [
+        "sushil@ninjacart.com",
+        "aswin.r@ninjacart.com",
+        "utkarsh@ninjacart.com",
+        "yogeshyashwant@ninjacart.com",
+        "vinaya.gk@ninjacart.com",
+        "avinashtr@ninjacart.com",
+        "nageshd@ninjacart.com",
+        "sreenu.k@ninjacart.com",
+        "mohanp543@ninjacart.com",
+        "kirthi.vasan@ninjacart.com",
+        "mallappayankanchi@ninjacart.com",
+        "sujitmaskar@ninjacart.com"
+      ],
+      "cc": [
+        "sayanbhowmik@ninjacart.com",
+        "rishabhlodha@ninjacart.com",
+        "ashishbadyal@ninjacart.com",
+        "umeshjampani@ninjacart.com",
+        "naveena.raja@ninjacart.com",
+        "aranyanandi@ninjacart.com",
+        "madhan@ninjacart.com",
+        "settu@ninjacart.com",
+        "essakumar@ninjacart.com",
+        "harish@ninjacart.com",
+        "vishalb@ninjacart.com",
+        "venkateshan.d@ninjacart.com"
+      ]
+    }
   }
 }
