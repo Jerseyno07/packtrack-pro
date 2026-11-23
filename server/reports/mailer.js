@@ -48,6 +48,15 @@ class WorkflowMailer {
       attachmentUrls.push({ url: `${process.env.R2_PMCONFIG_PUBLIC_URL}/${key}` });
     }
 
+    // The gmail-notification-sender workflow takes `to` as a single email
+    // string (proven by lib/mailer.js's invite emails) — passing an array,
+    // as this used to, is accepted without error but silently sends nothing.
+    // So: first `to` address goes in `to`, every other recipient (rest of
+    // `to` + all of `cc`) is folded into `cc`.
+    const [primaryTo, ...restTo] = to || [];
+    if (!primaryTo) throw new Error('WorkflowMailer: no recipients given');
+    const ccAll = [...restTo, ...(cc || [])];
+
     const userId = process.env.NC_WORKFLOW_USER_ID;
     const res = await fetch(`https://api.ninjacart.in/workflow-engine/realm/${WORKFLOW_REALM}/user/${userId}/v1/execution/request`, {
       method: 'POST',
@@ -62,7 +71,7 @@ class WorkflowMailer {
         userId: Number(userId),
         requestId: crypto.randomUUID(),
         workflowName: 'gmail-notification-sender',
-        dataMap: { input: { to: to || [], cc: cc || [], bcc: [], subject, body: html, attachments: attachmentUrls } },
+        dataMap: { input: { to: primaryTo, cc: ccAll, bcc: [], subject, body: html, attachments: attachmentUrls } },
       }),
     });
     const data = await res.json().catch(() => ({}));
