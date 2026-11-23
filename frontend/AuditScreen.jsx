@@ -344,7 +344,7 @@ export default function AuditScreen({ token, warehouseId }) {
                             min={0}
                             step={m.stickers_per_roll || m.meters_per_unit ? 1 : m.pieces_per_kg ? 0.001 : 'any'}
                             value={counts[m.material_id] ?? ''}
-                            onChange={(e) => setCounts((prev) => ({ ...prev, [m.material_id]: e.target.value }))}
+                            onChange={(e) => setCounts((prev) => ({ ...prev, [m.material_id]: e.target.value.replace(/^-/, '') }))}
                             className={`w-20 px-2 py-1.5 border rounded-lg text-right text-sm font-mono focus:outline-none focus:ring-2 ${hasDiff ? 'border-amber-400 bg-amber-50 focus:ring-amber-400' : 'border-slate-300 focus:ring-blue-500'}`}
                           />
                           <span className="text-xs text-slate-400">{unit}</span>

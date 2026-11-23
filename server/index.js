@@ -3856,6 +3856,7 @@ app.use(Sentry.expressErrorHandler());
 
 app.use((err, req, res, next) => {
   if (err instanceof ApiError) return res.status(err.status).json({ error: { code: err.code, message: err.message, details: err.details } });
+  if (err instanceof z.ZodError) return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: formatZodErrors(err.issues) } });
   if (err instanceof multer.MulterError) {
     const message = err.code === 'LIMIT_FILE_SIZE'
       ? 'File is too large — max 10MB. Try removing unnecessary formatting/images from the Excel file, or split it into smaller files.'
