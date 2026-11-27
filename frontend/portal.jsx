@@ -2517,6 +2517,26 @@ function AdminPanel({ token, tabOverride }) {
                   </div>
                 </div>
               )}
+              {inviteForm.role === 'FAC_INDENT' && (
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">City <span className="text-red-500">*</span></label>
+                  <p className="text-xs text-slate-400 mb-1.5">Grants access to every CC/FC facility in the selected city — indent uploads name the facility per row, so this role isn't scoped to just one.</p>
+                  <select
+                    value={(() => {
+                      const ids = new Set(inviteForm.warehouse_ids.map(Number));
+                      const city = facilityWarehouses.find((w) => ids.has(Number(w.id)))?.city;
+                      return city || '';
+                    })()}
+                    onChange={(e) => {
+                      const cityIds = facilityWarehouses.filter((w) => w.city === e.target.value).map((w) => Number(w.id));
+                      setInviteForm((p) => ({ ...p, warehouse_ids: cityIds }));
+                    }}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="" disabled>Select…</option>
+                    {[...new Set(facilityWarehouses.map((w) => w.city).filter(Boolean))].sort().map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              )}
               {inviteForm.role !== 'ADMIN' && (
                 <div>
                   <label className="text-xs font-medium text-slate-500 mb-1 block">Business Unit <span className="text-red-500">*</span></label>
@@ -2710,6 +2730,26 @@ function AdminPanel({ token, tabOverride }) {
                 </div>
               </div>
             )}
+            {editUserModal.role === 'FAC_INDENT' && (
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">City</label>
+                <p className="text-xs text-slate-400 mb-1.5">Grants access to every CC/FC facility in the selected city — indent uploads name the facility per row, so this role isn't scoped to just one.</p>
+                <select
+                  value={(() => {
+                    const ids = new Set(editUserModal.warehouse_ids.map(Number));
+                    const city = facilityWarehouses.find((w) => ids.has(Number(w.id)))?.city;
+                    return city || '';
+                  })()}
+                  onChange={(e) => {
+                    const cityIds = facilityWarehouses.filter((w) => w.city === e.target.value).map((w) => Number(w.id));
+                    setEditUserModal((p) => ({ ...p, warehouse_ids: cityIds }));
+                  }}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="" disabled>Select…</option>
+                  {[...new Set(facilityWarehouses.map((w) => w.city).filter(Boolean))].sort().map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            )}
             {editUserModal.role !== 'ADMIN' && (
               <div>
                 <label className="text-xs font-medium text-slate-500 mb-1 block">Business Unit</label>
@@ -2869,8 +2909,26 @@ function AdminPanel({ token, tabOverride }) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-slate-500 mb-1 block">City <span className="text-red-500">*</span></label>
-                <input value={facilityModal.city} onChange={(e) => setFacilityModal((p) => ({ ...p, city: e.target.value }))}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                {(() => {
+                  const knownCities = [...new Set(facilitiesList.map((f) => f.city).filter(Boolean))].sort();
+                  const isKnown = knownCities.includes(facilityModal.city);
+                  return (
+                    <>
+                      <select value={isKnown ? facilityModal.city : (facilityModal.city ? '__new__' : '')}
+                        onChange={(e) => setFacilityModal((p) => ({ ...p, city: e.target.value === '__new__' ? '' : e.target.value }))}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="" disabled>Select…</option>
+                        {knownCities.map((c) => <option key={c} value={c}>{c}</option>)}
+                        <option value="__new__">+ Add new city</option>
+                      </select>
+                      {!isKnown && (
+                        <input value={facilityModal.city} onChange={(e) => setFacilityModal((p) => ({ ...p, city: e.target.value }))}
+                          placeholder="New city name" autoFocus
+                          className="mt-1.5 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      )}
+                    </>
+                  );
+                })()}
               </div>
               <div>
                 <label className="text-xs font-medium text-slate-500 mb-1 block">Business Unit <span className="text-red-500">*</span></label>
