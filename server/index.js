@@ -303,6 +303,39 @@ async function getOnHandQty(client, warehouseId, materialId) {
   return Number(r.rows[0].qty);
 }
 
+// Which PM Store warehouse an indent/issue action should act against. A
+// PM_STORE_EXEC is mapped to exactly their own PM store via user_warehouses —
+// use that, never "whichever PM store has the lowest id" (that was always
+// Bangalore/CS-001, silently wrong for every action taken by Chennai's
+// CS-002 exec once a second PM store went live). ADMIN has no single "own"
+// PM store (warehouse_ids defaults to all active ones), so it falls back to
+// an explicit from_warehouse_id, else the historical first-by-id default.
+async function resolvePmStoreWarehouseId(client, req, explicitWhId) {
+  if (explicitWhId) return Number(explicitWhId);
+  if (req.user.role === 'PM_STORE_EXEC' && req.user.warehouse_ids.length) return Number(req.user.warehouse_ids[0]);
+  const r = await client.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
+  return r.rows[0]?.id || null;
+}
+
+// Authorization check mirroring resolvePmStoreWarehouseId's scope: can this
+// PM store exec act on this facility? Same-city, or (facility's city has no
+// PM store of its own) and this is Bangalore's exec. ADMIN is unrestricted.
+async function isFacilityInPmStoreScope(client, req, facilityWarehouseId) {
+  if (req.user.role === 'ADMIN') return true;
+  const pmWhId = await resolvePmStoreWarehouseId(client, req);
+  if (!pmWhId) return false;
+  const [pmCityRes, facCityRes, pmCitiesRes] = await Promise.all([
+    client.query('SELECT city FROM warehouses WHERE id = $1', [pmWhId]),
+    client.query('SELECT city FROM warehouses WHERE id = $1', [facilityWarehouseId]),
+    client.query("SELECT DISTINCT city FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active"),
+  ]);
+  const pmCity = pmCityRes.rows[0]?.city;
+  const facCity = facCityRes.rows[0]?.city;
+  const pmCities = pmCitiesRes.rows.map((r) => r.city);
+  if (facCity === pmCity) return true;
+  return pmCity === 'Bangalore' && !pmCities.includes(facCity);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // AUTH — real sessions, bcrypt-hashed passwords, httpOnly cookie or bearer token
 // ─────────────────────────────────────────────────────────────────────────
@@ -861,6 +894,24 @@ app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STO
     params.push(req.query.date);
     extraWhere = `AND il.indent_date = $${params.length}`;
   }
+  const pmWhId = await resolvePmStoreWarehouseId(pool, req);
+  params.push(pmWhId);
+  const pmWhParamIdx = params.length;
+
+  // City scoping: a facility is only visible to a PM store exec if it's in
+  // their own city, or — since most CC/FC facilities have no local PM store
+  // at all and are already served cross-city by Bangalore — it has no PM
+  // store in its own city and this is Bangalore's exec. ADMIN sees everything.
+  let cityWhere = '';
+  if (req.user.role !== 'ADMIN' && pmWhId) {
+    const pmCityRes = await pool.query('SELECT city FROM warehouses WHERE id = $1', [pmWhId]);
+    const pmCity = pmCityRes.rows[0]?.city;
+    const pmCitiesRes = await pool.query("SELECT DISTINCT city FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active");
+    const pmCities = pmCitiesRes.rows.map((r) => r.city);
+    params.push(pmCity, pmCities, pmCity === 'Bangalore');
+    cityWhere = `AND (w.city = $${params.length - 2} OR (NOT (w.city = ANY($${params.length - 1})) AND $${params.length}))`;
+  }
+
   const result = await pool.query(`
     SELECT il.id, il.indent_ref, il.indent_date,
            il.requested_qty::numeric, il.issued_qty::numeric,
@@ -873,10 +924,9 @@ app.get('/api/v1/indents/pending-by-facility', authenticate, requireRole('PM_STO
     FROM indent_lines il
     JOIN warehouses w ON w.id = il.warehouse_id
     JOIN materials m ON m.id = il.material_id
-    CROSS JOIN (SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1) pm_wh
-    LEFT JOIN v_current_stock pm_cs ON pm_cs.warehouse_id = pm_wh.id AND pm_cs.material_id = il.material_id
+    LEFT JOIN v_current_stock pm_cs ON pm_cs.warehouse_id = $${pmWhParamIdx} AND pm_cs.material_id = il.material_id
     LEFT JOIN v_current_stock fac_cs ON fac_cs.warehouse_id = il.warehouse_id AND fac_cs.material_id = il.material_id
-    WHERE il.status IN ('PENDING', 'PARTIALLY_ISSUED') ${extraWhere}
+    WHERE il.status IN ('PENDING', 'PARTIALLY_ISSUED') ${extraWhere} ${cityWhere}
     ORDER BY w.name, m.name
   `, params);
   res.json(result.rows);
@@ -1669,9 +1719,11 @@ app.get('/api/v1/indent-lines/:id/issue-defaults', authenticate, requireRole('PM
   const lineRes = await pool.query('SELECT * FROM indent_lines WHERE id = $1', [req.params.id]);
   if (!lineRes.rows.length) throw new ApiError(404, 'NOT_FOUND', `Indent line ${req.params.id} not found`);
   const line = lineRes.rows[0];
+  if (!(await isFacilityInPmStoreScope(pool, req, line.warehouse_id))) {
+    throw new ApiError(403, 'FORBIDDEN', 'This facility is not served by your PM Store');
+  }
   const expectedQty = Number(line.requested_qty) - Number(line.issued_qty);
-  const pmWhRes = await pool.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
-  const pmWhId = pmWhRes.rows[0]?.id;
+  const pmWhId = await resolvePmStoreWarehouseId(pool, req);
   const onHandQty = pmWhId ? await getOnHandQty(pool, pmWhId, line.material_id) : 0;
   const facilityOnHandQty = await getOnHandQty(pool, line.warehouse_id, line.material_id);
   const suggestedActualQty = Math.min(expectedQty, onHandQty);
@@ -1690,11 +1742,14 @@ app.post('/api/v1/stock-issues', authenticate, requireRole('PM_STORE_EXEC', 'ADM
     if (!lineRes.rows.length) throw new ApiError(404, 'INDENT_LINE_NOT_FOUND', `Indent line ${d.indent_line_id} not found`);
     const line = lineRes.rows[0];
     if (['CANCELLED', 'FORCE_COMPLETED'].includes(line.status)) throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is ${line.status}`);
+    if (!(await isFacilityInPmStoreScope(client, req, line.warehouse_id))) {
+      throw new ApiError(403, 'FORBIDDEN', 'This facility is not served by your PM Store');
+    }
 
     const remainingOnIndent = Number(line.requested_qty) - Number(line.issued_qty);
     if (d.issued_qty > remainingOnIndent) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${d.issued_qty} exceeds remaining indent qty ${remainingOnIndent}`, { remainingOnIndent });
 
-    const fromWhId = d.from_warehouse_id || (await client.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1")).rows[0]?.id;
+    const fromWhId = await resolvePmStoreWarehouseId(client, req, d.from_warehouse_id);
     if (!fromWhId) throw new ApiError(422, 'NO_PM_STORE', 'No active PM Store warehouse configured');
 
     const onHand = await getOnHandQty(client, fromWhId, line.material_id);
@@ -1754,8 +1809,7 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
   try {
     await client.query('BEGIN');
 
-    const pmWhRes = await client.query("SELECT id FROM warehouses WHERE warehouse_type='PM_STORE' AND is_active ORDER BY id LIMIT 1");
-    const fromWhId = pmWhRes.rows[0]?.id;
+    const fromWhId = await resolvePmStoreWarehouseId(client, req);
     if (!fromWhId) throw new ApiError(422, 'NO_PM_STORE', 'No active PM Store warehouse configured');
 
     const lineIds = items.map((i) => i.indent_line_id);
@@ -1781,6 +1835,9 @@ app.post('/api/v1/stock-issues/batch', authenticate, requireRole('PM_STORE_EXEC'
       const line = lineMap.get(item.indent_line_id);
       if (!line) throw new ApiError(404, 'INDENT_LINE_NOT_FOUND', `Indent line ${item.indent_line_id} not found`);
       if (['CANCELLED', 'FORCE_COMPLETED'].includes(line.status)) throw new ApiError(409, 'INDENT_LINE_CLOSED', `Indent line ${line.indent_ref} is ${line.status}`);
+      if (!(await isFacilityInPmStoreScope(client, req, line.warehouse_id))) {
+        throw new ApiError(403, 'FORBIDDEN', `Indent line ${line.indent_ref}'s facility is not served by your PM Store`);
+      }
       const remaining = Number(line.requested_qty) - Number(line.issued_qty);
       if (item.issued_qty > remaining) throw new ApiError(422, 'ISSUE_EXCEEDS_INDENT', `Issue qty ${item.issued_qty} exceeds remaining indent qty ${remaining} for ${line.indent_ref}`, { remaining, indent_line_id: line.id });
       materialTotals.set(line.material_id, (materialTotals.get(line.material_id) || 0) + item.issued_qty);
