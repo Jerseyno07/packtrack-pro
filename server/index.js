@@ -1371,6 +1371,13 @@ app.get('/api/v1/purchase-orders', authenticate, asyncHandler(async (req, res) =
   }
   if (warehouse_id) { params.push(warehouse_id); conditions.push(`po.pm_store_warehouse_id = $${params.length}`); }
   if (material_id) { params.push(material_id); conditions.push(`po.material_id = $${params.length}`); }
+  // A PO is inbound to one specific PM store — unlike GRN/stock-issue, there's
+  // no cross-city PM_STORE_EXEC exemption here. Always scope non-ADMINs to
+  // their own assigned warehouse(s), regardless of what the client passed.
+  if (req.user.role !== 'ADMIN') {
+    params.push(req.user.warehouse_ids.length ? req.user.warehouse_ids : [-1]);
+    conditions.push(`po.pm_store_warehouse_id = ANY($${params.length})`);
+  }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query(
     `SELECT po.*, m.code AS material_code, m.name AS material_name, m.unit,
